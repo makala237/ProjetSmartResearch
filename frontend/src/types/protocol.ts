@@ -1,0 +1,385 @@
+export type EntryMode = "new_topic" | "existing_protocol";
+
+export type StepStatus = "pending" | "in_progress" | "needs_revision" | "validated";
+
+export interface CanvasConstraint {
+  min_pages?: number | null;
+  max_pages?: number | null;
+  min_references?: number | null;
+  max_references?: number | null;
+  min_words?: number | null;
+  max_words?: number | null;
+  table_policy?: "forbidden" | "optional_if_justified" | "required" | string;
+  table_guidance?: string;
+  figure_policy?: "none" | "recommended" | "required" | string;
+  figure_guidance?: string;
+  required: boolean;
+  notes?: string | null;
+}
+
+export interface CanvasSectionSpec {
+  id: string;
+  chapter_id: string;
+  chapter_title: string;
+  title: string;
+  order: number;
+  description: string;
+  guidance_points: string[];
+  cames_concepts_required?: string[];
+  concepts_to_avoid?: string[];
+  constraints: CanvasConstraint;
+  supports_images: boolean;
+  supports_tables: boolean;
+  table_type?: string | null;
+}
+
+export interface SupervisorInfo {
+  name: string;
+  rank: string;
+  specialty: string;
+}
+
+export interface CoverMetadata {
+  title: string;
+  degree_label: string;
+  department_fr: string;
+  department_en: string;
+  author_name: string;
+  matricule: string;
+  student_level: string;
+  student_phone: string;
+  student_email: string;
+  director: string;
+  director_info?: SupervisorInfo;
+  co_directors: string[];
+  co_directors_info?: SupervisorInfo[];
+  academic_year: string;
+  study_period_label: string;
+  host_institutions: string[];
+  ethics_committees: string[];
+}
+
+export interface ReferenceItem {
+  ref_id: string;
+  order_index?: number | null;
+  pmid?: string | null;
+  pmcid?: string | null;
+  doi?: string | null;
+  source_platform: string;
+  authors: string[];
+  title: string;
+  journal: string;
+  year?: number | null;
+  volume: string;
+  issue: string;
+  pages: string;
+  url: string;
+  abstract: string;
+  vancouver_citation: string;
+  verified: boolean;
+}
+
+export interface ArticleSegment {
+  segment_id: string;
+  ref_id: string;
+  target_section_ids: string[];
+  summary: string;
+  key_quote_or_data: string;
+  epidemiology_scope?: string | null;
+  relevance_note: string;
+  approved: boolean;
+}
+
+export interface ImageAsset {
+  asset_id: string;
+  target_section_id: string;
+  anchor_hint?: string;
+  title: string;
+  caption: string;
+  source_url: string;
+  local_path?: string | null;
+  source_ref_id?: string | null;
+  license_info: string;
+  width_cm: number;
+  approved: boolean;
+}
+
+export interface SectionTable {
+  table_id: string;
+  title: string;
+  anchor_hint: string;
+  headers: string[];
+  rows: string[][];
+}
+
+export interface DiagramNode {
+  id: string;
+  shape: "rectangle" | "rounded" | "circle" | "diamond";
+  title: string;
+  items: string[];
+  width_px?: number;
+  color?: string;
+}
+
+export interface DiagramConnection {
+  from_id: string;
+  to_id: string;
+  label?: string;
+  style?: "solid" | "dashed";
+}
+
+export interface SectionDiagram {
+  diagram_id: string;
+  title: string;
+  caption: string;
+  anchor_hint: string;
+  layout: "vertical" | "horizontal";
+  nodes: DiagramNode[];
+  connections: DiagramConnection[];
+}
+
+export interface VariableItem {
+  name: string;
+  category: string;
+  role: string;
+  definition: string;
+  measurement_scale: string;
+  modalities: string;
+  collection_tool: string;
+}
+
+export interface LiteratureSynthesisItem {
+  authors_country_year: string;
+  study_design: string;
+  population: string;
+  main_results: string;
+  limits: string;
+}
+
+export interface TimelineGridRow {
+  activity: string;
+  active_periods: string[];
+}
+
+export interface TimelineGrid {
+  periods: string[];
+  rows: TimelineGridRow[];
+}
+
+export interface BudgetItem {
+  category: string;
+  designation: string;
+  quantity: number;
+  unit_cost_fcfa: number;
+  total_fcfa: number;
+}
+
+export interface AnnexesConfig {
+  study_goal_short: string;
+  include_data_collection_form: boolean;
+  include_info_notice: boolean;
+  include_consent_form: boolean;
+  include_ethics_clearance_request: boolean;
+  include_research_auth_requests: boolean;
+  include_confidentiality_declaration: boolean;
+  include_commitment_letter: boolean;
+}
+
+export interface AbbreviationItem {
+  acronym: string;
+  full_form: string;
+}
+
+export interface FormattingRules {
+  page_size: string;
+  margin_cm: number;
+  font_family: string;
+  body_font_size_pt: number;
+  cover_title_min_pt: number;
+  cover_title_max_pt: number;
+  line_spacing: number;
+  text_align: "justify" | "left" | "center" | "right";
+  auto_toc: boolean;
+  toc_depth?: number;
+  auto_list_of_tables: boolean;
+  auto_list_of_figures: boolean;
+  auto_abbreviations_table: boolean;
+  citation_style: string;
+  page_numbering: string;
+  chapter_box_style?: "rounded" | "square" | "minimal";
+  cover_border_style?: "double" | "single" | "none";
+  border_color?: string;
+  box_border_width_pt?: number;
+  box_corner_radius_pct?: number;
+}
+
+export interface SectionState {
+  section_id: string;
+  status: StepStatus;
+  content_markdown: string;
+  content_html: string;
+  cited_ref_ids: string[];
+  audit_notes: string[];
+  custom_tables?: SectionTable[];
+  custom_diagrams?: SectionDiagram[];
+  suppress_structured_table?: boolean;
+  user_notes: string;
+  updated_at: string;
+}
+
+export type CRFFieldType =
+  | "dichotomous"
+  | "single_choice"
+  | "multi_choice"
+  | "number"
+  | "date"
+  | "text";
+
+export interface CRFFieldSpec {
+  field_id: string;
+  code: string;
+  section_title: string;
+  label: string;
+  field_type: CRFFieldType | string;
+  options: string[];
+  unit: string;
+  placeholder: string;
+  sub_field_label: string;
+  required: boolean;
+}
+
+export interface PatientRecord {
+  record_id: string;
+  patient_code: string;
+  inclusion_date: string;
+  hospital_site: string;
+  investigator_name: string;
+  values: Record<string, string | string[] | number | boolean | null>;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProtocolProject {
+  project_id: string;
+  name: string;
+  entry_mode: EntryMode;
+  research_idea: string;
+  study_type: string;
+  cover: CoverMetadata;
+  sections: Record<string, SectionState>;
+  references: ReferenceItem[];
+  article_segments: ArticleSegment[];
+  images: ImageAsset[];
+  abbreviations: AbbreviationItem[];
+  variables: VariableItem[];
+  crf_fields?: CRFFieldSpec[];
+  patient_records?: PatientRecord[];
+  literature_synthesis: LiteratureSynthesisItem[];
+  timeline_grid: TimelineGrid;
+  budget: BudgetItem[];
+  annexes_config: AnnexesConfig;
+  formatting: FormattingRules;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ModelsStatus {
+  connected: boolean;
+  error?: string;
+  configured_chains: Record<string, string[]>;
+  available_models: Array<{
+    id: string;
+    display_name: string;
+    description: string;
+  }>;
+}
+
+export interface ResearchReport {
+  planner_model: string;
+  plan: {
+    pubmed_queries: string[];
+    local_epidemiology_query: string;
+    target_sites: string[];
+  };
+  web_summary: string;
+  added_references_count: number;
+  total_references_count: number;
+  added_images_count: number;
+  source_errors: string[];
+}
+
+export interface SegmentReport {
+  processed_articles: number;
+  added_segments: number;
+  total_segments: number;
+  models_used: string[];
+  errors: string[];
+}
+
+export interface SectionOrchestrationTrace {
+  action: string;
+  initial_text_present: boolean;
+  memory_sections_count: number;
+  gap_model?: string | null;
+  gap_needs_external_info: boolean;
+  decision_model: string;
+  antigravity_called: boolean;
+  added_references_count: number;
+  added_images_count: number;
+  routing_summary: string;
+}
+
+export interface DraftResult {
+  model_used: string;
+  content_markdown: string;
+  content_html?: string;
+  cited_ref_ids: string[];
+  assistant_commentary: string;
+  deterministic_notes: string[];
+  orchestration_trace?: SectionOrchestrationTrace;
+}
+
+export interface AuditResult {
+  model_used?: string | null;
+  compliant: boolean;
+  issues: string[];
+  recommendations: string[];
+  orchestration_trace?: SectionOrchestrationTrace;
+}
+
+export interface ImportReport {
+  model_used: string;
+  filename: string;
+  extracted_chars: number;
+  total_blocks: number;
+  global_summary: string;
+  mapped_sections_count: number;
+  extracted_references_count?: number;
+  extracted_images_count?: number;
+}
+
+export interface GlobalAuditCheck {
+  id: string;
+  label: string;
+  status: "ok" | "warning" | "error";
+  summary: string;
+  details: string[];
+}
+
+export interface GlobalAuditReport {
+  ready_for_print: boolean;
+  score_percent: number;
+  validated_sections_count: number;
+  drafted_sections_count: number;
+  total_sections_count: number;
+  checks: GlobalAuditCheck[];
+  missing_acronyms: string[];
+}
+
+export interface SyncStructuredReport {
+  added_abbreviations: number;
+  added_variables: number;
+  added_literature_rows: number;
+  added_budget_items: number;
+}

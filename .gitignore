@@ -1,0 +1,24 @@
+# Secrets & environment
+.env
+.env.local
+backend/.env
+cléAPI.txt
+*API*.txt
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+
+# Node / Frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Local runtime storage & exports
+backend/storage/
+*.log
+~$*

@@ -1,0 +1,937 @@
+from __future__ import annotations
+
+import csv
+import io
+import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from PIL import Image, ImageDraw
+
+from app.schemas.protocol import CRFFieldSpec, ProtocolProject, VariableItem
+
+
+# ---------------------------------------------------------------------------
+# Checkbox PNG graphic cache (crisp 300-DPI drawn square for Word .docx)
+# ---------------------------------------------------------------------------
+_CHECKBOX_ICON_PATH: Optional[Path] = None
+
+
+def get_crf_checkbox_png_bytes(checked: bool = False) -> bytes:
+    """Return PNG bytes for a crisp drawn graphical checkbox square."""
+    size = 128
+    img = Image.new("RGBA", (size, size), (255, 255, 255, 0))
+    draw = ImageDraw.Draw(img)
+    pad = 10
+    # Outer white background + crisp bordeaux medical stroke
+    draw.rounded_rectangle(
+        [pad, pad, size - pad, size - pad],
+        radius=14,
+        fill=(255, 255, 255, 255),
+        outline=(108, 40, 38, 255),
+        width=9,
+    )
+    if checked:
+        draw.line(
+            [(30, 66), (54, 92), (98, 36)],
+            fill=(108, 40, 38, 255),
+            width=12,
+        )
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Helpers for parsing Annexe 1 Markdown & project variables into CRFFieldSpec
+# ---------------------------------------------------------------------------
+
+_ANNEXE1_START_RE = re.compile(r"^#{1,3}\s*ANNEXE\s*1\b", re.IGNORECASE)
+_NEXT_ANNEXE_RE = re.compile(r"^#{1,3}\s*ANNEXE\s*[2-9]\b", re.IGNORECASE)
+_SECTION_HEAD_RE = re.compile(r"^#{2,4}\s*(.+)$")
+_CHECKBOX_SPLIT_RE = re.compile(r"(?:\[\s*[xX ]?\s*\]|☐)")
+
+_UNIT_HINTS = [
+    "mois / ans",
+    "mois/ans",
+    "ans / mois",
+    "grammes",
+    "kg/m²",
+    "kg/m2",
+    "minutes",
+    "heures",
+    "jours",
+    "semaines",
+    "mois",
+    "ans",
+    "SA",
+    "mmHg",
+    "FCFA",
+    "g/dL",
+    "UI/L",
+    "ng/mL",
+    "cm",
+    "mm",
+    "kg",
+    "%",
+]
+
+
+def extract_annexe1_block(annexes_md: str) -> Tuple[str, str, str]:
+    """
+    Split annexes_md into (before_annexe1, annexe1_block, after_annexe1).
+    Preserves all other annexes (Annexe 2..7) intact when Annexe 1 is updated.
+    """
+    if not annexes_md.strip():
+        return "", "", ""
+    lines = annexes_md.splitlines()
+    start_idx: Optional[int] = None
+    end_idx: int = len(lines)
+    for idx, line in enumerate(lines):
+        s = line.strip()
+        if start_idx is None:
+            if _ANNEXE1_START_RE.match(s):
+                start_idx = idx
+        else:
+            if _NEXT_ANNEXE_RE.match(s):
+                end_idx = idx
+                break
+    if start_idx is None:
+        return "", "", annexes_md.strip()
+    before = "\n".join(lines[:start_idx]).strip()
+    ann1 = "\n".join(lines[start_idx:end_idx]).strip()
+    after = "\n".join(lines[end_idx:]).strip()
+    return before, ann1, after
+
+
+def _clean_md_text(raw: str) -> str:
+    txt = re.sub(r"\*\*([^*]+)\*\*", r"\1", raw or "")
+    txt = re.sub(r"\*([^*]+)\*", r"\1", txt)
+    txt = txt.replace("**", "")
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt
+
+
+def _slug_id(text: str, fallback: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", _clean_md_text(text).lower()).strip("_")
+    return slug[:40] or fallback
+
+
+def _extract_conditional_sub(raw_line: str) -> Tuple[str, str]:
+    """
+    Extract inline conditional follow-up prompts like:
+      '(Si oui, préciser : [__________________])'
+      '(Âge gestationnel : ____ SA)'
+      '/ Autre : [__________________]'
+    Returns (cleaned_main_line, sub_field_label).
+    """
+    sub_label = ""
+    work = raw_line
+
+    # Parenthetical prompt containing ____ or [...]
+    paren_m = re.search(
+        r"\(([^()]*?(?:____|\[_{2,}\]|⟦[^⟧]*⟧)[^()]*?)\)",
+        work,
+    )
+    if paren_m:
+        inside = paren_m.group(1)
+        lbl = re.sub(r"\[[^\]]*\]|_+|\b20__\b", "", inside)
+        lbl = re.sub(r"\s*:\s*", " ", lbl)
+        lbl = _clean_md_text(lbl).strip(" :-")
+        if lbl:
+            sub_label = lbl
+        work = (work[: paren_m.start()] + " " + work[paren_m.end() :]).strip()
+
+    # Trailing 'Autre : [_____]' on a checkbox line
+    autre_m = re.search(
+        r"(?:\[\s*[xX ]?\s*\]|☐)?\s*(?:Autre|Autres?)\s*[:：]\s*(?:\[_{2,}\]|_+)",
+        work,
+        re.IGNORECASE,
+    )
+    if autre_m and not sub_label:
+        sub_label = "Si Autre, préciser"
+        work = work[: autre_m.start()].strip() + " [ ] Autre"
+
+    return work, sub_label
+
+
+def _parse_checkbox_options(text_block: str) -> List[str]:
+    parts = _CHECKBOX_SPLIT_RE.split(text_block)
+    opts: List[str] = []
+    for p in parts[1:]:
+        cand = _clean_md_text(p)
+        cand = re.sub(r"[:：]\s*(?:\[_{2,}\]|_+|⟦[^⟧]*⟧).*$", "", cand).strip(" /|,;-")
+        if cand and cand not in opts:
+            opts.append(cand)
+    return opts
+
+
+def _infer_unit(label: str, answer_spec: str) -> str:
+    combined = f"{label} {answer_spec}"
+    for u in _UNIT_HINTS:
+        if re.search(rf"(?i)(?:\b|/|_| ){re.escape(u)}(?:\b|$|\))", combined):
+            return u
+    return ""
+
+
+def _infer_field_from_spec(
+    code: str,
+    label: str,
+    answer_spec: str,
+    section_title: str,
+    extra_sub_label: str = "",
+) -> CRFFieldSpec:
+    cleaned_spec, inline_sub = _extract_conditional_sub(answer_spec)
+    sub_field = extra_sub_label or inline_sub
+    clean_lbl = _clean_md_text(label).rstrip(" :：")
+
+    has_checkboxes = bool(_CHECKBOX_SPLIT_RE.search(cleaned_spec))
+    options = _parse_checkbox_options(cleaned_spec) if has_checkboxes else []
+
+    lower_lbl = clean_lbl.lower()
+    lower_opts = [o.lower() for o in options]
+
+    if options:
+        if len(options) == 2 and set(lower_opts) == {"oui", "non"}:
+            ftype = "dichotomous"
+        elif any(
+            kw in lower_lbl
+            for kw in (
+                "complication",
+                "malformation",
+                "antécédent",
+                "procédure",
+                "signe",
+                "symptôme",
+                "facteur",
+                "médicament",
+            )
+        ) and not any(kw in lower_opts for kw in ("oui", "non")):
+            ftype = "multi_choice"
+        else:
+            ftype = "single_choice"
+    elif "____/____" in answer_spec or "date" in lower_lbl:
+        ftype = "date"
+    elif (
+        "____" in re.sub(r"\[_{4,}\]", "", answer_spec)
+        and "[" not in answer_spec
+    ) or any(
+        lower_lbl.startswith(k)
+        for k in (
+            "âge",
+            "age",
+            "poids",
+            "taille",
+            "durée",
+            "délai",
+            "rang",
+            "score",
+            "nombre",
+            "indice",
+            "fréquence",
+            "température",
+            "glycémie",
+        )
+    ):
+        ftype = "number"
+    else:
+        ftype = "text"
+
+    if ftype in ("dichotomous", "single_choice", "multi_choice", "date"):
+        unit = ""
+    elif ftype == "number":
+        unit = _infer_unit(clean_lbl, cleaned_spec)
+    else:
+        unit = _infer_unit("", cleaned_spec)
+        if unit and "____" in cleaned_spec and "[" not in cleaned_spec:
+            ftype = "number"
+
+    fid = _slug_id(f"{code}_{clean_lbl}" if code else clean_lbl, f"field_{code or 'item'}")
+    placeholder = "JJ / MM / AAAA" if ftype == "date" else (f"Ex. valeur ({unit})" if unit else "")
+
+    return CRFFieldSpec(
+        field_id=fid,
+        code=code,
+        section_title=section_title,
+        label=clean_lbl,
+        field_type=ftype,
+        options=options if options else (["Oui", "Non"] if ftype == "dichotomous" else []),
+        unit=unit,
+        placeholder=placeholder,
+        sub_field_label=sub_field,
+        required=code.upper().startswith(("A1", "A4", "B1", "D1", "D4", "E")),
+    )
+
+
+def extract_hospital_sites_from_project(project: ProtocolProject) -> List[str]:
+    """Extract hospital site choices from cover metadata or Annexe 1 markdown header."""
+    sites: List[str] = [s.strip() for s in (project.cover.host_institutions or []) if s and s.strip()]
+    ann_sec = project.sections.get("annexes")
+    if ann_sec and ann_sec.content_markdown:
+        _, ann1, _ = extract_annexe1_block(ann_sec.content_markdown)
+        for line in ann1.splitlines()[:12]:
+            if "hôpital" in line.lower() or "site" in line.lower():
+                opts = _parse_checkbox_options(re.sub(r"(?i)/?\s*Autre\s*:.*$", "", line))
+                for o in opts:
+                    if o and o not in sites:
+                        sites.append(o)
+    return sites or ["HGOPY", "HCBY", "HGY"]
+
+
+def extract_crf_fields_from_project(project: ProtocolProject) -> List[CRFFieldSpec]:
+    """
+    Extract structured CRFFieldSpec objects from Annexe 1 Markdown (sections A..E,
+    questions A1..E3 with nested sub-questions and multi-line checkbox options)
+    and merge any additional variables from `project.variables`.
+    """
+    fields: List[CRFFieldSpec] = []
+    seen_ids: set[str] = set()
+
+    def _add_field(spec: CRFFieldSpec) -> None:
+        base_id = spec.field_id
+        idx = 2
+        while spec.field_id in seen_ids:
+            spec.field_id = f"{base_id}_{idx}"
+            idx += 1
+        seen_ids.add(spec.field_id)
+        fields.append(spec)
+
+    ann_sec = project.sections.get("annexes")
+    if ann_sec and ann_sec.content_markdown:
+        _, ann1_md, _ = extract_annexe1_block(ann_sec.content_markdown)
+        lines = ann1_md.splitlines()
+        current_section = "SECTION A : IDENTIFICATION ET CARACTÉRISTIQUES SOCIODÉMOGRAPHIQUES"
+
+        i = 0
+        while i < len(lines):
+            raw = lines[i]
+            s = raw.strip()
+            if not s or _ANNEXE1_START_RE.match(s) or s.startswith("---"):
+                i += 1
+                continue
+
+            # Section header line: ### SECTION A : ...
+            sec_m = _SECTION_HEAD_RE.match(s)
+            if sec_m:
+                current_section = _clean_md_text(sec_m.group(1))
+                i += 1
+                continue
+
+            # Skip the 3 top identification metadata lines before SECTION A
+            # (they map to PatientRecord.patient_code / inclusion_date / hospital_site / investigator_name)
+            lower_s = s.lower()
+            if (
+                "**code participant" in lower_s
+                or "**hôpital d'inclusion" in lower_s
+                or "**nom de l'enquêteur" in lower_s
+            ):
+                i += 1
+                continue
+
+            # Top-level question bullet: - **A1. Label :** rest
+            top_m = re.match(
+                r"^-\s+\*\*([A-Z]\d+)\.\s*([^:*]+?)\s*:\*\*\s*(.*)$",
+                s,
+            ) or re.match(
+                r"^-\s+\*\*([^:*]+?)\s*:\*\*\s*(.*)$",
+                s,
+            )
+            if top_m:
+                if len(top_m.groups()) == 3:
+                    q_code, q_label, q_rest = top_m.group(1).strip(), top_m.group(2).strip(), top_m.group(3).strip()
+                else:
+                    q_code, q_label, q_rest = "", top_m.group(1).strip(), top_m.group(2).strip()
+
+                # Gather immediately following indented child lines (indent >= 2 spaces)
+                children: List[Tuple[int, str]] = []
+                j = i + 1
+                while j < len(lines):
+                    nxt_raw = lines[j]
+                    nxt_s = nxt_raw.strip()
+                    if not nxt_s:
+                        j += 1
+                        continue
+                    indent = len(nxt_raw) - len(nxt_raw.lstrip(" "))
+                    if indent >= 2 and nxt_s.startswith("-"):
+                        children.append((indent, nxt_s))
+                        j += 1
+                    else:
+                        break
+
+                if q_rest:
+                    # Top line already defines the question control!
+                    # Check if the child line is a follow-up ("Si oui, résultat : ...")
+                    inline_sub = ""
+                    extra_children: List[Tuple[int, str]] = []
+                    for ch_indent, ch_txt in children:
+                        ch_body = ch_txt.lstrip("- ").strip()
+                        if (
+                            re.match(r"^(?:\*\*)?si\s+oui\b", ch_body, re.IGNORECASE)
+                            and not _CHECKBOX_SPLIT_RE.search(ch_body)
+                        ):
+                            ch_lbl = _clean_md_text(ch_body.split(":")[0])
+                            inline_sub = ch_lbl
+                        else:
+                            extra_children.append((ch_indent, ch_txt))
+
+                    _add_field(
+                        _infer_field_from_spec(
+                            code=q_code,
+                            label=q_label,
+                            answer_spec=q_rest,
+                            section_title=current_section,
+                            extra_sub_label=inline_sub,
+                        )
+                    )
+                    # Process any standalone conditional/option child questions (e.g. C1.1)
+                    sub_idx = 1
+                    for ch_indent, ch_txt in extra_children:
+                        ch_body = ch_txt.lstrip("- ").strip()
+                        if ":" in ch_body:
+                            sub_lhs, sub_rhs = ch_body.split(":", 1)
+                            sub_code = f"{q_code}.{sub_idx}" if q_code else ""
+                            sub_idx += 1
+                            _add_field(
+                                _infer_field_from_spec(
+                                    code=sub_code,
+                                    label=f"{q_label} — {_clean_md_text(sub_lhs)}",
+                                    answer_spec=sub_rhs.strip(),
+                                    section_title=current_section,
+                                )
+                            )
+                else:
+                    # Group header or multi-line option block!
+                    # Classify children: option bullets vs named sub-questions
+                    are_option_bullets = False
+                    if children:
+                        first_body = children[0][1].lstrip("- ").strip()
+                        if first_body.startswith("[ ]") or first_body.startswith("☐"):
+                            are_option_bullets = True
+
+                    if are_option_bullets:
+                        # Combine all option bullets + any trailing "Autre ... : [____]" into ONE field
+                        combined_opts: List[str] = []
+                        sub_follow = ""
+                        for _, ch_txt in children:
+                            ch_body = ch_txt.lstrip("- ").strip()
+                            if _CHECKBOX_SPLIT_RE.search(ch_body):
+                                cleaned_ch, sub_inline = _extract_conditional_sub(ch_body)
+                                if sub_inline and not sub_follow:
+                                    sub_follow = sub_inline
+                                combined_opts.extend(_parse_checkbox_options(cleaned_ch))
+                            elif ":" in ch_body and ("____" in ch_body or "[" in ch_body):
+                                sub_lhs = _clean_md_text(ch_body.split(":", 1)[0])
+                                if not sub_follow:
+                                    sub_follow = sub_lhs
+                        rebuilt_spec = "  ".join(f"[ ] {o}" for o in combined_opts)
+                        _add_field(
+                            _infer_field_from_spec(
+                                code=q_code,
+                                label=q_label,
+                                answer_spec=rebuilt_spec,
+                                section_title=current_section,
+                                extra_sub_label=sub_follow,
+                            )
+                        )
+                    else:
+                        # Nested named sub-questions (e.g. B2.1, B2.2, E3.1, E3.2)
+                        k = 0
+                        sub_idx = 1
+                        while k < len(children):
+                            ch_indent, ch_txt = children[k]
+                            ch_body = ch_txt.lstrip("- ").strip()
+                            if ":" in ch_body:
+                                sub_lhs, sub_rhs = ch_body.split(":", 1)
+                                sub_lhs_clean = _clean_md_text(sub_lhs)
+                                sub_rhs_clean = re.sub(r"^\*+|\*+$", "", sub_rhs.strip()).strip()
+                                # Collect deeper-indented option lines (e.g. E3.2 Trophicité)
+                                if not sub_rhs_clean:
+                                    deep_opts: List[str] = []
+                                    sub_follow = ""
+                                    m = k + 1
+                                    while m < len(children) and children[m][0] > ch_indent:
+                                        deep_body = children[m][1].lstrip("- ").strip()
+                                        cleaned_d, d_sub = _extract_conditional_sub(deep_body)
+                                        if d_sub and not sub_follow:
+                                            sub_follow = d_sub
+                                        deep_opts.extend(_parse_checkbox_options(cleaned_d))
+                                        m += 1
+                                    rebuilt_spec = "  ".join(f"[ ] {o}" for o in deep_opts)
+                                    sub_code = f"{q_code}.{sub_idx}" if q_code else ""
+                                    sub_idx += 1
+                                    _add_field(
+                                        _infer_field_from_spec(
+                                            code=sub_code,
+                                            label=f"{q_label} — {sub_lhs_clean}",
+                                            answer_spec=rebuilt_spec,
+                                            section_title=current_section,
+                                            extra_sub_label=sub_follow,
+                                        )
+                                    )
+                                    k = m
+                                    continue
+
+                                sub_code = f"{q_code}.{sub_idx}" if q_code else ""
+                                sub_idx += 1
+                                _add_field(
+                                    _infer_field_from_spec(
+                                        code=sub_code,
+                                        label=f"{q_label} — {sub_lhs_clean}",
+                                        answer_spec=sub_rhs_clean,
+                                        section_title=current_section,
+                                    )
+                                )
+                            k += 1
+
+                i = j
+                continue
+
+            i += 1
+
+    # Merge any project.variables not already represented in fields
+    existing_labels = {f.label.lower() for f in fields}
+    for idx, var in enumerate(project.variables or [], start=1):
+        v_name = (var.name or "").strip()
+        if not v_name or v_name.lower() in existing_labels:
+            continue
+        mod = (var.modalities or "").strip()
+        sec = (var.category or "SECTION A : VARIABLES OPÉRATIONNELLES").strip()
+        if mod and ("/" in mod or "oui" in mod.lower()):
+            opts = [o.strip(" []☐") for o in re.split(r"[/|;]|☐|\[\s*\]", mod) if o.strip(" []☐")]
+            spec = _infer_field_from_spec(
+                code=f"V{idx}",
+                label=v_name,
+                answer_spec="  ".join(f"[ ] {o}" for o in opts) if opts else mod,
+                section_title=sec,
+            )
+        elif "quantitat" in (var.measurement_scale or "").lower():
+            spec = CRFFieldSpec(
+                field_id=_slug_id(v_name, f"v{idx}"),
+                code=f"V{idx}",
+                section_title=sec,
+                label=v_name,
+                field_type="number",
+                unit=_infer_unit(v_name, mod),
+            )
+        else:
+            spec = _infer_field_from_spec(
+                code=f"V{idx}",
+                label=v_name,
+                answer_spec=mod or "[__________________]",
+                section_title=sec,
+            )
+        _add_field(spec)
+        existing_labels.add(v_name.lower())
+
+    # Ultimate fallback if project has neither Annexe 1 questions nor variables yet
+    if not fields:
+        defaults = [
+            CRFFieldSpec(
+                field_id="a1_age",
+                code="A1",
+                section_title="SECTION A : IDENTIFICATION ET CARACTÉRISTIQUES SOCIODÉMOGRAPHIQUES",
+                label="Âge du participant",
+                field_type="number",
+                unit="ans",
+                required=True,
+            ),
+            CRFFieldSpec(
+                field_id="a2_sexe",
+                code="A2",
+                section_title="SECTION A : IDENTIFICATION ET CARACTÉRISTIQUES SOCIODÉMOGRAPHIQUES",
+                label="Sexe",
+                field_type="single_choice",
+                options=["Masculin", "Féminin"],
+                required=True,
+            ),
+            CRFFieldSpec(
+                field_id="a3_consentement",
+                code="A3",
+                section_title="SECTION A : IDENTIFICATION ET CARACTÉRISTIQUES SOCIODÉMOGRAPHIQUES",
+                label="Consentement éclairé obtenu",
+                field_type="dichotomous",
+                options=["Oui", "Non"],
+                required=True,
+            ),
+            CRFFieldSpec(
+                field_id="b1_antecedent",
+                code="B1",
+                section_title="SECTION B : DONNÉES CLINIQUES ET PARACLINIQUES",
+                label="Antécédents médico-chirurgicaux particuliers",
+                field_type="dichotomous",
+                options=["Oui", "Non"],
+                sub_field_label="Si oui, préciser",
+            ),
+            CRFFieldSpec(
+                field_id="b2_observation",
+                code="B2",
+                section_title="SECTION B : DONNÉES CLINIQUES ET PARACLINIQUES",
+                label="Observations cliniques principales",
+                field_type="text",
+            ),
+        ]
+        return defaults
+
+    return fields
+
+
+def ensure_project_crf_fields(project: ProtocolProject) -> bool:
+    """
+    Ensure `project.crf_fields` (and `project.variables` if empty) are populated.
+    Returns True if the project was modified.
+    """
+    changed = False
+    if not project.crf_fields:
+        extracted = extract_crf_fields_from_project(project)
+        if extracted:
+            project.crf_fields = extracted
+            changed = True
+
+    if not project.variables and project.crf_fields:
+        project.variables = crf_fields_to_variables(project.crf_fields)
+        changed = True
+    return changed
+
+
+def crf_fields_to_variables(crf_fields: List[CRFFieldSpec]) -> List[VariableItem]:
+    """Convert CRF fields back to VariableItem entries for protocol consistency."""
+    items: List[VariableItem] = []
+    for f in crf_fields:
+        if f.field_type == "dichotomous":
+            scale = "Qualitative dichotomique"
+            modalities = " / ".join(f.options or ["Oui", "Non"])
+        elif f.field_type in ("single_choice", "multi_choice"):
+            scale = "Qualitative nominale"
+            modalities = " / ".join(f.options)
+        elif f.field_type == "number":
+            scale = "Quantitative"
+            modalities = f"Valeur numérique ({f.unit})" if f.unit else "Valeur numérique"
+        elif f.field_type == "date":
+            scale = "Date"
+            modalities = "JJ/MM/AAAA"
+        else:
+            scale = "Qualitative libre"
+            modalities = "Texte libre"
+
+        items.append(
+            VariableItem(
+                name=f"{f.code + '. ' if f.code else ''}{f.label}",
+                category=f.section_title,
+                role="Variable collectée (Annexe 1)",
+                measurement_scale=scale,
+                definition=f.sub_field_label or "",
+                modalities=modalities,
+            )
+        )
+    return items
+
+
+# ---------------------------------------------------------------------------
+# Visual Markdown & HTML Drawing Generators for Annexe 1
+# ---------------------------------------------------------------------------
+
+def draw_field_control_markdown(field: CRFFieldSpec) -> str:
+    """Render graphical-style box and checkbox indicators for Markdown preview."""
+    if field.field_type == "dichotomous":
+        opts = field.options or ["Oui", "Non"]
+        ctl = "    ".join(f"☐ {o}" for o in opts)
+    elif field.field_type in ("single_choice", "multi_choice"):
+        opts = field.options or ["Option 1", "Option 2"]
+        ctl = "    ".join(f"☐ {o}" for o in opts)
+    elif field.field_type == "date":
+        ctl = "⟦  |  ⟧ / ⟦  |  ⟧ / ⟦ 2 | 0 |  |  ⟧"
+    elif field.field_type == "number":
+        u = f" {field.unit}" if field.unit else ""
+        ctl = f"⟦______________⟧{u}"
+    else:
+        ctl = "⟦____________________________________⟧"
+
+    if field.sub_field_label:
+        ctl += f"   *(▸ {field.sub_field_label} : ⟦____________________⟧)*"
+    return ctl
+
+
+def render_crf_annexe1_markdown(project: ProtocolProject) -> str:
+    """Render Annexe 1 Markdown using visual checkbox & fill-in box drawings."""
+    ensure_project_crf_fields(project)
+    sites = extract_hospital_sites_from_project(project)
+    author = project.cover.author_name or "[Nom de l'enquêteur]"
+    matricule = f" (Matricule : {project.cover.matricule})" if project.cover.matricule else ""
+    sites_boxes = "  ".join(f"☐ {s}" for s in sites) + "  ☐ Autre : ⟦________________⟧"
+
+    lines = [
+        "## ANNEXE 1 : FICHE DE COLLECTE DES DONNÉES",
+        f"**Code participant :** ⟦  |  |  |  -  |  |  ⟧ | **Date de collecte :** ⟦  |  ⟧ / ⟦  |  ⟧ / ⟦ 2 | 0 |  |  ⟧",
+        f"**Hôpital d'inclusion :** {sites_boxes}",
+        f"**Nom de l'enquêteur :** {author}{matricule}",
+        "",
+    ]
+
+    grouped: Dict[str, List[CRFFieldSpec]] = {}
+    for f in project.crf_fields:
+        grouped.setdefault(f.section_title or "SECTION A : DONNÉES COLLECTÉES", []).append(f)
+
+    for sec_title, items in grouped.items():
+        lines.append(f"### {sec_title}")
+        for f in items:
+            code_prefix = f"{f.code}. " if f.code else ""
+            lines.append(f"- **{code_prefix}{f.label} :** {draw_field_control_markdown(f)}")
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
+def _html_esc(txt: str) -> str:
+    return (
+        (txt or "")
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _draw_html_checkbox(label: str) -> str:
+    return (
+        '<span style="display:inline-flex;align-items:center;gap:6px;margin-right:16px;margin-bottom:4px;">'
+        '<span style="display:inline-block;width:15px;height:15px;border:1.8px solid #6C2826;'
+        'border-radius:2px;background:#FFFFFF;flex-shrink:0;"></span>'
+        f'<span style="font-size:12.5px;color:#1E293B;">{_html_esc(label)}</span>'
+        "</span>"
+    )
+
+
+def _draw_html_fillbox(width_px: int = 175, unit: str = "", hint: str = "") -> str:
+    unit_html = (
+        f'<span style="font-size:12px;font-weight:600;color:#475569;margin-left:8px;">{_html_esc(unit)}</span>'
+        if unit
+        else ""
+    )
+    hint_html = f'<span style="color:#94A3B8;font-size:10.5px;">{_html_esc(hint)}</span>' if hint else ""
+    return (
+        '<span style="display:inline-flex;align-items:center;gap:4px;">'
+        f'<span style="display:inline-flex;align-items:center;justify-content:center;min-width:{width_px}px;'
+        'height:24px;border:1.5px solid #475569;border-radius:3px;background:#F8FAFC;padding:0 8px;">'
+        f"{hint_html}"
+        "</span>"
+        f"{unit_html}"
+        "</span>"
+    )
+
+
+def _draw_html_date_boxes() -> str:
+    box = (
+        '<span style="display:inline-block;width:20px;height:24px;border:1.5px solid #475569;'
+        'background:#F8FAFC;text-align:center;line-height:22px;font-family:monospace;font-size:11px;'
+        'color:#64748B;">{}</span>'
+    )
+    sep = '<span style="margin:0 4px;font-weight:700;color:#475569;">/</span>'
+    return (
+        '<span style="display:inline-flex;align-items:center;gap:2px;">'
+        + box.format("J")
+        + box.format("J")
+        + sep
+        + box.format("M")
+        + box.format("M")
+        + sep
+        + box.format("2")
+        + box.format("0")
+        + box.format("A")
+        + box.format("A")
+        + "</span>"
+    )
+
+
+def render_crf_annexe1_html(project: ProtocolProject) -> str:
+    """
+    Generate an authentic A4 paper-like graphical HTML preview of Annexe 1
+    with drawn square checkboxes and drawn fill-in rectangular boxes.
+    """
+    ensure_project_crf_fields(project)
+    sites = extract_hospital_sites_from_project(project)
+    title = project.cover.title or project.name
+    author = project.cover.author_name or "Investigateur principal"
+    matricule = f" (Matricule : {project.cover.matricule})" if project.cover.matricule else ""
+
+    site_checks = "".join(_draw_html_checkbox(s) for s in sites) + _draw_html_checkbox("Autre :") + _draw_html_fillbox(110)
+
+    sections_html: List[str] = []
+    grouped: Dict[str, List[CRFFieldSpec]] = {}
+    for f in project.crf_fields:
+        grouped.setdefault(f.section_title or "SECTION A : DONNÉES COLLECTÉES", []).append(f)
+
+    for sec_title, items in grouped.items():
+        rows_html: List[str] = []
+        for idx, f in enumerate(items):
+            bg = "#FFFFFF" if idx % 2 == 0 else "#F8FAFC"
+            if f.field_type == "dichotomous":
+                opts = f.options or ["Oui", "Non"]
+                ctl_html = "".join(_draw_html_checkbox(o) for o in opts)
+            elif f.field_type in ("single_choice", "multi_choice"):
+                opts = f.options or ["Option 1", "Option 2"]
+                ctl_html = (
+                    '<div style="display:flex;flex-wrap:wrap;gap:6px 12px;">'
+                    + "".join(_draw_html_checkbox(o) for o in opts)
+                    + "</div>"
+                )
+            elif f.field_type == "date":
+                ctl_html = _draw_html_date_boxes()
+            elif f.field_type == "number":
+                ctl_html = _draw_html_fillbox(width_px=130, unit=f.unit)
+            else:
+                ctl_html = _draw_html_fillbox(width_px=260, unit=f.unit)
+
+            if f.sub_field_label:
+                ctl_html += (
+                    '<div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">'
+                    f'<span style="font-size:11.5px;color:#475569;font-style:italic;">▸ {_html_esc(f.sub_field_label)} :</span>'
+                    + _draw_html_fillbox(width_px=165)
+                    + "</div>"
+                )
+
+            code_badge = (
+                f'<span style="font-weight:700;color:#6C2826;margin-right:5px;">{_html_esc(f.code)}.</span>'
+                if f.code
+                else ""
+            )
+            rows_html.append(
+                f'<tr style="background:{bg};">'
+                '<td style="width:44%;padding:8px 10px;border:1px solid #CBD5E1;vertical-align:top;font-size:12.5px;color:#0F172A;">'
+                f"{code_badge}{_html_esc(f.label)}"
+                "</td>"
+                '<td style="width:56%;padding:8px 10px;border:1px solid #CBD5E1;vertical-align:middle;">'
+                f"{ctl_html}"
+                "</td>"
+                "</tr>"
+            )
+
+        sections_html.append(
+            '<div style="margin-top:14px;">'
+            '<div style="background:#6C2826;color:#FFFFFF;font-weight:700;font-size:12.5px;'
+            'padding:6px 10px;letter-spacing:0.3px;">'
+            f"{_html_esc(sec_title)}"
+            "</div>"
+            '<table style="width:100%;border-collapse:collapse;">'
+            + "".join(rows_html)
+            + "</table></div>"
+        )
+
+    code_boxes = (
+        '<span style="display:inline-flex;align-items:center;gap:2px;">'
+        + "".join(
+            '<span style="display:inline-block;width:18px;height:22px;border:1.5px solid #475569;background:#fff;"></span>'
+            for _ in range(3)
+        )
+        + '<span style="margin:0 4px;font-weight:700;">-</span>'
+        + "".join(
+            '<span style="display:inline-block;width:18px;height:22px;border:1.5px solid #475569;background:#fff;"></span>'
+            for _ in range(3)
+        )
+        + "</span>"
+    )
+
+    return (
+        '<div style="font-family:Times New Roman, Georgia, serif;color:#0F172A;background:#FFFFFF;padding:18px;border:1px solid #CBD5E1;border-radius:6px;">'
+        '<div style="border:2px solid #6C2826;padding:12px 14px;background:#FDF8F8;">'
+        '<div style="text-align:center;font-size:15px;font-weight:700;color:#6C2826;letter-spacing:0.4px;">'
+        "ANNEXE 1 : FICHE DE COLLECTE DES DONNÉES (ANONYME)"
+        "</div>"
+        f'<div style="text-align:center;font-size:11.5px;color:#334155;margin-top:4px;">{_html_esc(title)}</div>'
+        '<div style="text-align:center;font-size:11px;color:#64748B;margin-top:4px;font-style:italic;">'
+        "Consigne : Cocher la case correspondante ☐ ou inscrire lisiblement la valeur dans le cadre prévu à cet effet."
+        "</div>"
+        '<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #CBD5E1;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;">'
+        f'<div><strong>Code participant :</strong> {code_boxes}</div>'
+        f'<div><strong>Date de collecte :</strong> {_draw_html_date_boxes()}</div>'
+        f'<div style="grid-column:span 2;"><strong>Site / Hôpital d\'inclusion :</strong> {site_checks}</div>'
+        f'<div style="grid-column:span 2;"><strong>Enquêteur :</strong> {_html_esc(author)}{_html_esc(matricule)}</div>'
+        "</div>"
+        "</div>"
+        + "".join(sections_html)
+        + "</div>"
+    )
+
+
+def sync_crf_to_project(project: ProtocolProject, sync_annexe1_markdown: bool = True) -> None:
+    """
+    Synchronize `project.crf_fields` into `project.variables` and replace ONLY
+    the Annexe 1 block of `project.sections["annexes"]` (keeping Annexes 2..7 intact).
+    """
+    project.variables = crf_fields_to_variables(project.crf_fields)
+
+    if not sync_annexe1_markdown:
+        return
+
+    ann_sec = project.sections.get("annexes")
+    if ann_sec is None:
+        return
+
+    rendered_ann1 = render_crf_annexe1_markdown(project)
+    existing_md = ann_sec.content_markdown or ""
+    before, ann1, after = extract_annexe1_block(existing_md)
+
+    parts: List[str] = []
+    if before:
+        parts.append(before)
+    elif not existing_md.strip().startswith("# "):
+        parts.append("# ANNEXES DU PROTOCOLE DE RECHERCHE")
+    parts.append(rendered_ann1)
+    if after:
+        parts.append("---\n\n" + after if not after.startswith("---") else after)
+
+    ann_sec.content_markdown = "\n\n".join(p for p in parts if p).strip()
+
+
+# ---------------------------------------------------------------------------
+# CSV / Excel Patient Dataset Exporter
+# ---------------------------------------------------------------------------
+
+def export_patient_records_csv(project: ProtocolProject) -> str:
+    """Export collected patient records as a semicolon-delimited UTF-8-BOM CSV."""
+    ensure_project_crf_fields(project)
+    buf = io.StringIO()
+    writer = csv.writer(buf, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+
+    headers = [
+        "ID_Enregistrement",
+        "Code_Patient",
+        "Date_Inclusion",
+        "Site_Hospitalier",
+        "Enqueteur",
+    ]
+    field_keys: List[Tuple[str, bool]] = []
+    for f in project.crf_fields:
+        col_name = f"{f.code} - {f.label}" if f.code else f.label
+        if f.unit:
+            col_name += f" ({f.unit})"
+        headers.append(col_name)
+        has_sub = bool(f.sub_field_label)
+        field_keys.append((f.field_id, has_sub))
+        if has_sub:
+            headers.append(f"{col_name} [{f.sub_field_label}]")
+    headers.append("Observations")
+
+    writer.writerow(headers)
+
+    for rec in project.patient_records:
+        row: List[str] = [
+            rec.record_id,
+            rec.patient_code,
+            rec.inclusion_date,
+            rec.hospital_site,
+            rec.investigator_name,
+        ]
+        vals = rec.values or {}
+        for fid, has_sub in field_keys:
+            v = vals.get(fid, "")
+            if isinstance(v, list):
+                row.append(" | ".join(str(x) for x in v))
+            else:
+                row.append("" if v is None else str(v))
+            if has_sub:
+                sv = vals.get(f"{fid}__sub", "")
+                row.append("" if sv is None else str(sv))
+        row.append(rec.notes or "")
+        writer.writerow(row)
+
+    return "\ufeff" + buf.getvalue()
