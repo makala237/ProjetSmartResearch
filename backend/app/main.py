@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -69,10 +69,18 @@ from app.services.working_memory import (
     refresh_all_working_memory,
     update_section_working_memory,
 )
+from app.data.pptx_canvas import SLIDE_TEMPLATE_CATALOG
 from app.services.pdf_exporter import compile_protocol_pdf, update_docx_fields_via_word_com
 from app.services.presentation_orchestrator import PresentationOrchestrator
 from app.services.pptx_exporter import compile_presentation_pptx
-from app.schemas.presentation import PresentationDeck, Slide, SlideElement
+from app.services.pptx_renderer import export_pptx_to_pdf, render_pptx_previews
+from app.services.slide_layout_engine import compute_deck_layout
+from app.schemas.presentation import (
+    PresentationAuditReport,
+    PresentationDeck,
+    Slide,
+    SlideElement,
+)
 from app.services.rich_formatter import markdown_to_clean_html
 from app.services.segmentation import segment_project_articles
 from app.services.storage import project_storage, sync_special_sections
@@ -1153,33 +1161,45 @@ def test_antigravity_agent(payload: Optional[AntigravityAgentRequest] = None) ->
 presentation_orchestrator = PresentationOrchestrator()
 
 
+class GenerateSlideRequest(BaseModel):
+    instruction: str = ""
+    layout_mode: Optional[str] = None
+
+
+def _load_valid_deck(project_id: str) -> Tuple[ProtocolProject, PresentationDeck]:
+    project = project_storage.get(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    cached = project_storage.get_presentation(project_id)
+    deck, changed = presentation_orchestrator.ensure_fresh_valid_deck(project, cached)
+    if changed:
+        project_storage.save_presentation(deck)
+    return project, deck
+
+
 @app.get("/api/projects/{project_id}/presentation")
 def get_presentation(project_id: str) -> PresentationDeck:
-    """Retrieve or automatically initialize the CAMES 15-slide PowerPoint deck."""
-    deck = project_storage.get_presentation(project_id)
-    if not deck:
-        project = project_storage.get(project_id)
-        if not project:
-            raise HTTPException(status_code=404, detail="Projet introuvable.")
-        deck = presentation_orchestrator.build_default_deck_from_protocol(project)
-        project_storage.save_presentation(deck)
+    """Retrieve, auto-migrate if needed, and return the presentation deck with Welcome first."""
+    _, deck = _load_valid_deck(project_id)
     return deck
 
 
 @app.put("/api/projects/{project_id}/presentation")
 def update_presentation(project_id: str, payload: PresentationDeck) -> PresentationDeck:
-    """Save modified slides, speaker notes, and layout templates."""
+    """Save modified slides, speaker notes, layout modes, enforce opening order and recompute geometry."""
     project = project_storage.get(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Projet introuvable.")
     payload.project_id = project_id
+    presentation_orchestrator.enforce_opening_order(payload)
+    compute_deck_layout(payload, project=project)
     project_storage.save_presentation(payload)
     return payload
 
 
 @app.post("/api/projects/{project_id}/presentation/reset-from-protocol")
 def reset_presentation_from_protocol(project_id: str) -> PresentationDeck:
-    """Rebuild the entire 15-slide presentation deck directly from protocol sections."""
+    """Rebuild the entire presentation deck directly from real protocol data."""
     project = project_storage.get(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Projet introuvable.")
@@ -1188,67 +1208,66 @@ def reset_presentation_from_protocol(project_id: str) -> PresentationDeck:
     return deck
 
 
-@app.post("/api/projects/{project_id}/presentation/generate-slide/{slide_index}")
-def ai_generate_slide(project_id: str, slide_index: int) -> Dict[str, Any]:
-    """Stage 1 & 2: Summarize and label a slide using Gemini 3.5 Flash Lite and 3.1 Flash Lite."""
+@app.post("/api/projects/{project_id}/presentation/generate-all")
+def generate_full_presentation_ai(project_id: str) -> Dict[str, Any]:
+    """Orchestrate 3 Gemini roles (3.5 Flash Lite drafting, 3.1 Flash Lite audit, Decision 1 layout)."""
     project = project_storage.get(project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Projet introuvable.")
-    deck = project_storage.get_presentation(project_id)
-    if not deck:
-        deck = presentation_orchestrator.build_default_deck_from_protocol(project)
+    deck = presentation_orchestrator.generate_full_deck_with_ai(project)
+    project_storage.save_presentation(deck)
+    return {
+        "deck": deck,
+        "models_used": deck.models_used,
+        "decision_notes": deck.decision_notes,
+    }
 
-    target_slide = next((s for s in deck.slides if s.slide_index == slide_index), None)
-    if not target_slide:
-        raise HTTPException(status_code=404, detail=f"Diapositive {slide_index} introuvable.")
 
-    sec_key = target_slide.section_key or ""
-    sec_state = project.sections.get(sec_key)
-    raw_content = (sec_state.content_markdown if sec_state else "") or target_slide.title
+@app.post("/api/projects/{project_id}/presentation/generate-slide/{slide_index}")
+def ai_generate_slide(
+    project_id: str,
+    slide_index: int,
+    payload: Optional[GenerateSlideRequest] = None,
+) -> Dict[str, Any]:
+    """Regenerate one slide via Gemini 3.5 Flash Lite + Gemini 3.1 Flash Lite with optional instruction."""
+    project, deck = _load_valid_deck(project_id)
 
-    result = presentation_orchestrator.generate_slide_ai_summary(
-        section_id=sec_key,
-        section_title=target_slide.title,
-        raw_content=raw_content,
-    )
-    if result.get("status") == "ok":
-        data = result["data"]
-        target_slide.title = data.get("slide_title") or target_slide.title
-        target_slide.breadcrumb = data.get("breadcrumb") or target_slide.breadcrumb
-        target_slide.presenter_notes = data.get("presenter_speech") or target_slide.presenter_notes
+    instruction = payload.instruction if payload else ""
+    preferred_layout = payload.layout_mode if payload else None
+    try:
+        result = presentation_orchestrator.generate_slide_ai_summary(
+            project=project,
+            deck=deck,
+            slide_index=slide_index,
+            user_instruction=instruction,
+            preferred_layout=preferred_layout,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        elements: List[SlideElement] = []
-        for idx, el_raw in enumerate(data.get("elements", []), start=1):
-            elements.append(
-                SlideElement(
-                    id=f"el-{slide_index}-{idx}",
-                    element_type=el_raw.get("element_type", "bullet_main"),
-                    content=el_raw.get("text", ""),
-                    sub_content=el_raw.get("stat_unit_or_label"),
-                    order=idx,
-                )
-            )
-        if elements:
-            target_slide.elements = elements
-        project_storage.save_presentation(deck)
+    project_storage.save_presentation(result["deck"])
+    return result
 
-    return {"status": result.get("status"), "slide": target_slide, "model_used": result.get("model_used")}
+
+@app.post("/api/projects/{project_id}/presentation/audit", response_model=PresentationAuditReport)
+def audit_presentation(project_id: str) -> PresentationAuditReport:
+    """Audit slide readability (>=24pt, <=6 lines), oral duration (10-15 min), and protocol fidelity."""
+    project, deck = _load_valid_deck(project_id)
+    report = presentation_orchestrator.audit_presentation_deck(project, deck)
+    project_storage.save_presentation(deck)
+    return report
 
 
 @app.get("/api/projects/{project_id}/presentation/export/pptx")
 @app.post("/api/projects/{project_id}/presentation/export/pptx")
 def export_presentation_pptx(project_id: str) -> FileResponse:
     """Compile and download the native Microsoft PowerPoint (.pptx) presentation."""
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
-    deck = project_storage.get_presentation(project_id)
-    if not deck:
-        deck = presentation_orchestrator.build_default_deck_from_protocol(project)
-        project_storage.save_presentation(deck)
+    project, deck = _load_valid_deck(project_id)
 
     out_pptx = settings.storage_dir / "exports" / f"{project.project_id}_soutenance.pptx"
-    compile_presentation_pptx(deck, out_pptx)
+    compile_presentation_pptx(deck, out_pptx, project=project)
 
     return FileResponse(
         path=str(out_pptx),
@@ -1257,12 +1276,67 @@ def export_presentation_pptx(project_id: str) -> FileResponse:
     )
 
 
+@app.get("/api/projects/{project_id}/presentation/export/pdf")
+@app.post("/api/projects/{project_id}/presentation/export/pdf")
+def export_presentation_pdf(project_id: str) -> FileResponse:
+    """Compile the presentation to .pptx and render PDF via Microsoft PowerPoint COM."""
+    project, deck = _load_valid_deck(project_id)
+
+    out_pptx = settings.storage_dir / "exports" / f"{project.project_id}_soutenance.pptx"
+    out_pdf = settings.storage_dir / "exports" / f"{project.project_id}_soutenance_slides.pdf"
+    compile_presentation_pptx(deck, out_pptx, project=project)
+    try:
+        export_pptx_to_pdf(out_pptx, out_pdf)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return FileResponse(
+        path=str(out_pdf),
+        filename=f"Soutenance_Protocole_{project.project_id}.pdf",
+        media_type="application/pdf",
+    )
+
+
+@app.post("/api/projects/{project_id}/presentation/render-previews")
+def render_presentation_previews(project_id: str) -> Dict[str, Any]:
+    """Compile .pptx and export genuine Microsoft PowerPoint PNG slide previews (1280x720)."""
+    project, deck = _load_valid_deck(project_id)
+
+    out_pptx = settings.storage_dir / "exports" / f"{project.project_id}_soutenance.pptx"
+    previews_dir = settings.storage_dir / "exports" / f"{project.project_id}_previews"
+    compile_presentation_pptx(deck, out_pptx, project=project)
+    try:
+        pngs = render_pptx_previews(out_pptx, previews_dir)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    ts = int(datetime.now(timezone.utc).timestamp())
+    return {
+        "count": len(pngs),
+        "preview_urls": [
+            f"/api/projects/{project_id}/presentation/previews/{i}?v={ts}"
+            for i in range(1, len(pngs) + 1)
+        ],
+    }
+
+
+@app.get("/api/projects/{project_id}/presentation/previews/{slide_num}")
+def get_presentation_preview_png(project_id: str, slide_num: int) -> FileResponse:
+    """Serve a rendered PowerPoint PNG preview image for a specific slide index."""
+    png_path = settings.storage_dir / "exports" / f"{project_id}_previews" / f"slide_{slide_num:02d}.png"
+    if not png_path.exists():
+        raise HTTPException(status_code=404, detail="Aperçu PNG non encore généré.")
+    return FileResponse(
+        path=str(png_path),
+        media_type="image/png",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/api/presentation/templates")
 def list_presentation_templates() -> Dict[str, Any]:
-    """Return available Tailwind/PowerPoint container shape templates."""
-    from app.services.slide_templates import TEMPLATE_CATALOG
-
-    return {"templates": list(TEMPLATE_CATALOG.values())}
+    """Return available FMSB/CAMES slide graphic templates."""
+    return {"templates": SLIDE_TEMPLATE_CATALOG}
 
 
 # Serve user presentation image templates

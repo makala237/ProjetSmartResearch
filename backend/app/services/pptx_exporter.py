@@ -1,127 +1,196 @@
+"""High-Precision Native PowerPoint (.pptx) Compiler.
+
+Renders every slide directly from the physical 16:9 RenderPlan (slide.render_boxes)
+computed by slide_layout_engine.py, ensuring 1:1 fidelity with the web studio,
+borderless transparent editable foreground textboxes per bullet, proportional figures,
+native vector procedure flows, and strict FMSB/CAMES cover rules.
+"""
+
 import logging
 from pathlib import Path
-from typing import Any, Optional
-from pptx import Presentation
-from pptx.util import Inches, Pt
-from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN
-from pptx.enum.shapes import MSO_SHAPE
+from typing import Optional, Tuple
 
-from app.schemas.presentation import PresentationDeck, Slide, SlideElement
-from app.services.slide_templates import (
-    COLORS,
-    SLIDE_WIDTH_IN,
+from PIL import Image as PILImage
+from pptx import Presentation
+from pptx.dml.color import RGBColor
+from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import MSO_ANCHOR, PP_ALIGN
+from pptx.util import Inches, Pt
+
+from app.data.pptx_canvas import TPL_CHRONOGRAM, TPL_COVER_BG, TPL_LOGO
+from app.schemas.presentation import LayoutBox, PresentationDeck, Slide
+from app.schemas.protocol import ProtocolProject
+from app.services.slide_layout_engine import (
     SLIDE_HEIGHT_IN,
+    SLIDE_WIDTH_IN,
+    compute_deck_layout,
+    compute_fit_contain_rect,
 )
 
 logger = logging.getLogger(__name__)
-
-# User template directories & files
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-TEMPLATE_DIR = PROJECT_ROOT / "tamplates"
-BASE_PPTX = PROJECT_ROOT / "tamplatePowerpointProtocole.pptx"
-
-TPL_COVER_BG = TEMPLATE_DIR / "tamplate image de fond première et deuxième diapositive.png"
-TPL_PLAN = TEMPLATE_DIR / "tamplate diapositive Plan.png"
-TPL_INTRO = TEMPLATE_DIR / "tamplate diapositive introduction.png"
-TPL_OBJ_GEN = TEMPLATE_DIR / "tamplate diapositive objectif générale.png"
-TPL_OBJ_SPEC = TEMPLATE_DIR / "tamplate objectifs spécifiques.png"
-TPL_METHODOLOGY = TEMPLATE_DIR / "tamplate diapositive  méthodologie.png"
-TPL_CHRONOGRAM = TEMPLATE_DIR / "Diapositive..Chronogramme des activités 2026–2027 (1).png"
-TPL_BUDGET = TEMPLATE_DIR / "Tamplate diapositive budget.png"
-TPL_THANKS = TEMPLATE_DIR / "Merci pour votre attention !.png"
-TPL_LOGO = TEMPLATE_DIR / "fmsb_uy1_logo.png"
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _to_rgb(color_tuple) -> RGBColor:
-    return RGBColor(color_tuple[0], color_tuple[1], color_tuple[2])
+def _hex_to_rgb(hex_color: str, fallback: Tuple[int, int, int] = (30, 41, 59)) -> RGBColor:
+    clean = (hex_color or "").strip().lstrip("#")
+    if len(clean) == 6:
+        try:
+            return RGBColor(int(clean[0:2], 16), int(clean[2:4], 16), int(clean[4:6], 16))
+        except ValueError:
+            pass
+    return RGBColor(*fallback)
 
 
-def _add_borderless_textbox(
-    slide,
+def _to_align(align_str: str) -> PP_ALIGN:
+    if align_str == "center":
+        return PP_ALIGN.CENTER
+    if align_str == "right":
+        return PP_ALIGN.RIGHT
+    return PP_ALIGN.LEFT
+
+
+def _to_anchor(valign_str: str) -> MSO_ANCHOR:
+    if valign_str == "top":
+        return MSO_ANCHOR.TOP
+    if valign_str == "bottom":
+        return MSO_ANCHOR.BOTTOM
+    return MSO_ANCHOR.MIDDLE
+
+
+def _resolve_asset_path(rel_or_abs: Optional[str]) -> Optional[Path]:
+    if not rel_or_abs:
+        return None
+    p = Path(rel_or_abs)
+    if not p.is_absolute():
+        p = WORKSPACE_ROOT / p
+    return p if p.exists() else None
+
+
+def _add_picture_fit_contain(
+    pptx_slide,
+    img_path: Path,
     left_in: float,
     top_in: float,
     width_in: float,
     height_in: float,
-    text: str = "",
-    font_size_pt: int = 24,
-    bold: bool = False,
-    italic: bool = False,
-    color_rgb: RGBColor = _to_rgb(COLORS["navy_slate"]),
-    align: PP_ALIGN = PP_ALIGN.LEFT,
-    word_wrap: bool = True,
+) -> None:
+    """Insert picture preserving exact native aspect ratio inside bounding box."""
+    try:
+        with PILImage.open(img_path) as im:
+            iw, ih = im.size
+        dl, dt, dw, dh = compute_fit_contain_rect(iw, ih, left_in, top_in, width_in, height_in)
+        pptx_slide.shapes.add_picture(
+            str(img_path.resolve()),
+            Inches(dl),
+            Inches(dt),
+            width=Inches(dw),
+            height=Inches(dh),
+        )
+    except Exception as exc:
+        logger.warning("Failed to insert fit-contain picture %s: %s", img_path, exc)
+
+
+def _add_borderless_textbox(
+    pptx_slide,
+    box: LayoutBox,
+    text_override: Optional[str] = None,
+    font_name: str = "Arial",
 ):
-    """Add a borderless, transparent, strictly editable textbox placed in the foreground."""
-    tx_box = slide.shapes.add_textbox(
+    """Create a borderless, transparent, 100% editable textbox placed in the foreground."""
+    left_in = box.x_pct * SLIDE_WIDTH_IN
+    top_in = box.y_pct * SLIDE_HEIGHT_IN
+    width_in = max(0.3, box.w_pct * SLIDE_WIDTH_IN)
+    height_in = max(0.25, box.h_pct * SLIDE_HEIGHT_IN)
+
+    tx = pptx_slide.shapes.add_textbox(
         Inches(left_in), Inches(top_in), Inches(width_in), Inches(height_in)
     )
-    tf = tx_box.text_frame
-    tf.word_wrap = word_wrap
-    tf.margin_left = Inches(0.05)
-    tf.margin_right = Inches(0.05)
-    tf.margin_top = Inches(0.05)
-    tf.margin_bottom = Inches(0.05)
-
-    p = tf.paragraphs[0]
-    p.text = text
-    p.font.name = "Arial"
-    p.font.size = Pt(font_size_pt)
-    p.font.bold = bold
-    p.font.italic = italic
-    p.font.color.rgb = color_rgb
-    p.alignment = align
-    return tx_box, tf
-
-
-def _add_full_background(slide, image_path: Path):
-    """Add background image stretched cleanly across 16:9 widescreen dimensions."""
-    if image_path.exists():
-        try:
-            slide.shapes.add_picture(
-                str(image_path.resolve()),
-                Inches(0),
-                Inches(0),
-                width=Inches(SLIDE_WIDTH_IN),
-                height=Inches(SLIDE_HEIGHT_IN),
-            )
-            return True
-        except Exception as e:
-            logger.warning(f"Could not add background {image_path}: {e}")
-    return False
-
-
-# =========================================================================
-# 1. WELCOME SLIDE (Bienvenue)
-# =========================================================================
-def _render_welcome_slide(prs, pptx_slide, slide: Slide):
-    _add_full_background(pptx_slide, TPL_COVER_BG)
-
-    # Rounded banner capsule for welcome
-    banner = pptx_slide.shapes.add_shape(
-        MSO_SHAPE.ROUNDED_RECTANGLE,
-        Inches(1.5),
-        Inches(2.6),
-        Inches(10.333),
-        Inches(2.2),
-    )
-    banner.fill.solid()
-    banner.fill.fore_color.rgb = RGBColor(255, 255, 255)
-    banner.line.color.rgb = RGBColor(0, 75, 135)
-    banner.line.width = Pt(2.5)
-
-    tf = banner.text_frame
+    tf = tx.text_frame
     tf.word_wrap = True
+    tf.vertical_anchor = _to_anchor(box.valign)
+    tf.margin_left = Inches(0.06)
+    tf.margin_right = Inches(0.06)
+    tf.margin_top = Inches(0.04)
+    tf.margin_bottom = Inches(0.04)
+
+    content = box.text if text_override is None else text_override
+    lines = (content or "").split("\n")
+    color = _hex_to_rgb(box.color_hex)
+    align = _to_align(box.align)
+
+    for idx, ln in enumerate(lines):
+        p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
+        p.text = ln
+        p.font.name = font_name
+        p.font.size = Pt(box.font_size_pt)
+        p.font.bold = box.bold
+        p.font.italic = box.italic
+        p.font.color.rgb = color
+        p.alignment = align
+    return tx, tf
+
+
+def _add_card_backdrop(
+    pptx_slide,
+    box: LayoutBox,
+    corner_shape: MSO_SHAPE = MSO_SHAPE.ROUNDED_RECTANGLE,
+    border_width_pt: float = 1.25,
+) -> None:
+    """Draw a decorative rounded backdrop shape *behind* the editable foreground textbox."""
+    if not box.bg_hex and not box.border_hex:
+        return
+    shape = pptx_slide.shapes.add_shape(
+        corner_shape,
+        Inches(box.x_pct * SLIDE_WIDTH_IN),
+        Inches(box.y_pct * SLIDE_HEIGHT_IN),
+        Inches(box.w_pct * SLIDE_WIDTH_IN),
+        Inches(box.h_pct * SLIDE_HEIGHT_IN),
+    )
+    if box.bg_hex:
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = _hex_to_rgb(box.bg_hex, (255, 255, 255))
+    else:
+        shape.fill.background()
+
+    if box.border_hex:
+        shape.line.color.rgb = _hex_to_rgb(box.border_hex, (203, 213, 225))
+        shape.line.width = Pt(border_width_pt)
+    else:
+        shape.line.fill.background()
+
+
+def _render_welcome_slide(pptx_slide, slide: Slide) -> None:
+    bg_path = _resolve_asset_path(slide.background_image_path or TPL_COVER_BG)
+    if bg_path:
+        pptx_slide.shapes.add_picture(
+            str(bg_path.resolve()), 0, 0, Inches(SLIDE_WIDTH_IN), Inches(SLIDE_HEIGHT_IN)
+        )
+    card = slide.render_boxes[0] if slide.render_boxes else None
+    if not card:
+        return
+    _add_card_backdrop(pptx_slide, card, border_width_pt=2.5)
+    # Editable foreground textbox inside welcome card
+    tx = pptx_slide.shapes.add_textbox(
+        Inches(card.x_pct * SLIDE_WIDTH_IN + 0.25),
+        Inches(card.y_pct * SLIDE_HEIGHT_IN + 0.15),
+        Inches(card.w_pct * SLIDE_WIDTH_IN - 0.5),
+        Inches(card.h_pct * SLIDE_HEIGHT_IN - 0.3),
+    )
+    tf = tx.text_frame
+    tf.word_wrap = True
+    tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+
     p0 = tf.paragraphs[0]
-    p0.text = "BIENVENUE À LA SOUTENANCE DU PROTOCOLE DE RECHERCHE"
+    p0.text = card.text
     p0.font.name = "Arial"
     p0.font.size = Pt(22)
     p0.font.bold = True
     p0.font.color.rgb = RGBColor(0, 75, 135)
     p0.alignment = PP_ALIGN.CENTER
+    p0.space_after = Pt(14)
 
-    cand_txt = slide.subtitle or "DE L'IMPÉTRANT(E) : CANDIDAT EN MÉDECINE"
     p1 = tf.add_paragraph()
-    p1.text = cand_txt
+    p1.text = card.sub_text
     p1.font.name = "Arial"
     p1.font.size = Pt(26)
     p1.font.bold = True
@@ -129,483 +198,317 @@ def _render_welcome_slide(prs, pptx_slide, slide: Slide):
     p1.alignment = PP_ALIGN.CENTER
 
 
-# =========================================================================
-# 2. COVER SLIDE (Strict FMSB / CAMES Official Page de Garde)
-# =========================================================================
-def _render_cover_slide(prs, pptx_slide, slide: Slide):
-    # Medical background on bottom section
-    if TPL_COVER_BG.exists():
-        try:
-            pptx_slide.shapes.add_picture(
-                str(TPL_COVER_BG.resolve()),
-                Inches(0),
-                Inches(1.8),
-                width=Inches(SLIDE_WIDTH_IN),
-                height=Inches(5.7),
+def _render_cover_slide(pptx_slide, slide: Slide) -> None:
+    bg_path = _resolve_asset_path(slide.background_image_path or TPL_COVER_BG)
+    if bg_path:
+        # Leave pure white strip on top (y=0..0.255) for official bilingual UY1/FMSB headers & emblem
+        pptx_slide.shapes.add_picture(
+            str(bg_path.resolve()),
+            Inches(0),
+            Inches(SLIDE_HEIGHT_IN * 0.255),
+            Inches(SLIDE_WIDTH_IN),
+            Inches(SLIDE_HEIGHT_IN * 0.745),
+        )
+
+    for box in slide.render_boxes:
+        if box.role == "cover_logo":
+            logo_p = _resolve_asset_path(box.image_path or TPL_LOGO)
+            if logo_p:
+                _add_picture_fit_contain(
+                    pptx_slide,
+                    logo_p,
+                    box.x_pct * SLIDE_WIDTH_IN,
+                    box.y_pct * SLIDE_HEIGHT_IN,
+                    box.w_pct * SLIDE_WIDTH_IN,
+                    box.h_pct * SLIDE_HEIGHT_IN,
+                )
+            continue
+
+        if box.role in ("cover_header_fr", "cover_header_en"):
+            tx = pptx_slide.shapes.add_textbox(
+                Inches(box.x_pct * SLIDE_WIDTH_IN),
+                Inches(box.y_pct * SLIDE_HEIGHT_IN),
+                Inches(box.w_pct * SLIDE_WIDTH_IN),
+                Inches(box.h_pct * SLIDE_HEIGHT_IN),
             )
-        except Exception:
-            pass
+            tf = tx.text_frame
+            tf.word_wrap = True
+            tf.vertical_anchor = MSO_ANCHOR.TOP
+            tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Inches(0.02)
+            for idx, ln in enumerate(box.text.splitlines()):
+                p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
+                p.text = ln
+                p.font.name = "Times New Roman"
+                p.font.size = Pt(9.5 if idx == 0 else 8.5)
+                p.font.bold = (idx != 1 and "*" not in ln)
+                p.font.italic = (idx == 1)
+                p.font.color.rgb = RGBColor(15, 23, 42)
+                p.alignment = PP_ALIGN.CENTER
+            continue
 
-    # Header Left (Cameroon FR)
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=0.6,
-        top_in=0.15,
-        width_in=4.6,
-        height_in=1.6,
-        text="RÉPUBLIQUE DU CAMEROUN\nPaix - Travail - Patrie\n----------\nUNIVERSITÉ DE YAOUNDÉ I\n----------\nFACULTÉ DE MÉDECINE ET DES SCIENCES BIOMÉDICALES",
-        font_size_pt=10,
-        bold=True,
-        color_rgb=RGBColor(15, 23, 42),
-        align=PP_ALIGN.CENTER,
-    )
+        if box.role == "cover_title":
+            _add_card_backdrop(pptx_slide, box, border_width_pt=2.0)
+            _add_borderless_textbox(pptx_slide, box, font_name="Times New Roman")
+            continue
 
-    # University Emblem in center
-    if TPL_LOGO.exists():
-        try:
-            pptx_slide.shapes.add_picture(
-                str(TPL_LOGO.resolve()),
-                Inches(5.9),
-                Inches(0.1),
-                width=Inches(1.5),
-                height=Inches(1.7),
+        if box.role == "cover_candidate":
+            tx = pptx_slide.shapes.add_textbox(
+                Inches(box.x_pct * SLIDE_WIDTH_IN),
+                Inches(box.y_pct * SLIDE_HEIGHT_IN),
+                Inches(box.w_pct * SLIDE_WIDTH_IN),
+                Inches(box.h_pct * SLIDE_HEIGHT_IN),
             )
-        except Exception:
-            pass
+            tf = tx.text_frame
+            tf.word_wrap = True
+            tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+            lines = box.text.splitlines()
+            for idx, ln in enumerate(lines):
+                p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
+                p.text = ln
+                p.font.name = "Times New Roman"
+                p.font.size = Pt(14 if idx == 1 else 12)
+                p.font.bold = (idx == 1)
+                p.font.italic = (idx == 0)
+                p.font.color.rgb = RGBColor(108, 40, 38) if idx == 0 else RGBColor(15, 23, 42)
+                p.alignment = PP_ALIGN.CENTER
+            continue
 
-    # Header Right (Cameroon EN)
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=8.1,
-        top_in=0.15,
-        width_in=4.6,
-        height_in=1.6,
-        text="REPUBLIC OF CAMEROON\nPeace - Work - Fatherland\n----------\nTHE UNIVERSITY OF YAOUNDÉ I\n----------\nFACULTY OF MEDICINE AND BIOMEDICAL SCIENCES",
-        font_size_pt=10,
-        bold=True,
-        color_rgb=RGBColor(15, 23, 42),
-        align=PP_ALIGN.CENTER,
-    )
+        if box.role in ("cover_director", "cover_codirector"):
+            _add_card_backdrop(pptx_slide, box, border_width_pt=1.0)
+            tx = pptx_slide.shapes.add_textbox(
+                Inches(box.x_pct * SLIDE_WIDTH_IN),
+                Inches(box.y_pct * SLIDE_HEIGHT_IN),
+                Inches(box.w_pct * SLIDE_WIDTH_IN),
+                Inches(box.h_pct * SLIDE_HEIGHT_IN),
+            )
+            tf = tx.text_frame
+            tf.word_wrap = True
+            tf.vertical_anchor = MSO_ANCHOR.TOP
+            tf.margin_top = Inches(0.05)
 
-    # Extract elements
-    dept_text = "DÉPARTEMENT DE CHIRURGIE ET SPÉCIALITÉS"
-    author_text = "Rédigé et présenté par : MBIANDA TCHOUAFA BRICE KEVIN    |    Matricule : 2026-FMSB-042"
-    directors_text = slide.subtitle or "Directeur de thèse : Prof. Angwafo III Fru\nCo-directeur(s) : Dr. Mvogo Jean"
-    year_text = "Année académique 2025 - 2026"
+            p_head = tf.paragraphs[0]
+            p_head.text = box.text
+            p_head.font.name = "Times New Roman"
+            p_head.font.size = Pt(box.font_size_pt)
+            p_head.font.bold = True
+            p_head.font.color.rgb = RGBColor(0, 75, 135)
+            p_head.alignment = PP_ALIGN.CENTER
+            p_head.space_after = Pt(4)
 
-    for el in slide.elements:
-        if el.element_type == "department":
-            dept_text = el.content
-        elif el.element_type == "author":
-            author_text = el.content
-        elif el.element_type == "directors":
-            directors_text = el.content
-        elif el.element_type == "year":
-            year_text = el.content
+            for blk in (box.sub_text or "").split("\n\n"):
+                blk_lines = [l.strip() for l in blk.splitlines() if l.strip()]
+                for bi, ln in enumerate(blk_lines):
+                    p = tf.add_paragraph()
+                    p.text = ln
+                    p.font.name = "Times New Roman"
+                    p.font.size = Pt(box.font_size_pt if bi == 0 else max(9.5, box.font_size_pt - 1.5))
+                    p.font.bold = (bi == 0)
+                    p.font.color.rgb = RGBColor(15, 23, 42)
+                    p.alignment = PP_ALIGN.CENTER
+                    if bi == len(blk_lines) - 1:
+                        p.space_after = Pt(4)
+            continue
 
-    # Department Banner
-    dept_box = pptx_slide.shapes.add_shape(
-        MSO_SHAPE.ROUNDED_RECTANGLE,
-        Inches(1.2),
-        Inches(1.85),
-        Inches(10.933),
-        Inches(0.45),
-    )
-    dept_box.fill.solid()
-    dept_box.fill.fore_color.rgb = RGBColor(108, 40, 38)
-    dept_box.line.fill.background()
-    p = dept_box.text_frame.paragraphs[0]
-    p.text = dept_text
-    p.font.name = "Arial"
-    p.font.size = Pt(13)
-    p.font.bold = True
-    p.font.color.rgb = RGBColor(255, 255, 255)
-    p.alignment = PP_ALIGN.CENTER
+        if box.role == "cover_year":
+            _add_card_backdrop(pptx_slide, box, corner_shape=MSO_SHAPE.ROUNDED_RECTANGLE, border_width_pt=1.5)
+            _add_borderless_textbox(pptx_slide, box, font_name="Times New Roman")
 
-    # Title Banner Box
-    title_box = pptx_slide.shapes.add_shape(
-        MSO_SHAPE.ROUNDED_RECTANGLE,
-        Inches(1.2),
-        Inches(2.45),
-        Inches(10.933),
-        Inches(1.5),
-    )
-    title_box.fill.solid()
-    title_box.fill.fore_color.rgb = RGBColor(255, 255, 255)
-    title_box.line.color.rgb = RGBColor(0, 75, 135)
-    title_box.line.width = Pt(2.0)
-    p = title_box.text_frame.paragraphs[0]
-    p.text = (slide.title or "TITRE DU PROTOCOLE DE RECHERCHE").upper()
-    p.font.name = "Arial"
-    p.font.size = Pt(18)
-    p.font.bold = True
-    p.font.color.rgb = RGBColor(0, 75, 135)
-    p.alignment = PP_ALIGN.CENTER
 
-    # Degree Mention
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=1.2,
-        top_in=4.1,
-        width_in=10.933,
-        height_in=0.5,
-        text="Protocole de Thèse rédigé en vue de l'obtention du Diplôme de Docteur en Médecine",
-        font_size_pt=12,
-        bold=True,
-        italic=True,
-        color_rgb=RGBColor(108, 40, 38),
-        align=PP_ALIGN.CENTER,
-    )
-
-    # Author & Matricule
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=1.2,
-        top_in=4.65,
-        width_in=10.933,
-        height_in=0.5,
-        text=author_text.replace("\n", "    |    "),
-        font_size_pt=13,
-        bold=True,
-        color_rgb=RGBColor(15, 23, 42),
-        align=PP_ALIGN.CENTER,
-    )
-
-    # Directors: Director left, Co-director right
-    dir_parts = directors_text.split("Co-directeur(s) :")
-    dir_left = dir_parts[0].strip()
-    dir_right = ("Co-directeur(s) :\n" + dir_parts[1].strip()) if len(dir_parts) > 1 else ""
-
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=1.2,
-        top_in=5.35,
-        width_in=5.0,
-        height_in=0.9,
-        text=dir_left,
-        font_size_pt=12,
-        bold=True,
-        color_rgb=RGBColor(15, 23, 42),
-        align=PP_ALIGN.CENTER,
-    )
-    if dir_right:
-        _add_borderless_textbox(
-            pptx_slide,
-            left_in=7.133,
-            top_in=5.35,
-            width_in=5.0,
-            height_in=0.9,
-            text=dir_right,
-            font_size_pt=12,
-            bold=True,
-            color_rgb=RGBColor(15, 23, 42),
-            align=PP_ALIGN.CENTER,
+def _render_plan_slide(pptx_slide, slide: Slide) -> None:
+    bg_path = _resolve_asset_path(slide.background_image_path)
+    if bg_path:
+        pptx_slide.shapes.add_picture(
+            str(bg_path.resolve()), 0, 0, Inches(SLIDE_WIDTH_IN), Inches(SLIDE_HEIGHT_IN)
         )
-
-    # Academic Year
-    yr_box = pptx_slide.shapes.add_shape(
-        MSO_SHAPE.RECTANGLE,
-        Inches(4.66),
-        Inches(6.65),
-        Inches(4.0),
-        Inches(0.45),
-    )
-    yr_box.fill.solid()
-    yr_box.fill.fore_color.rgb = RGBColor(241, 245, 249)
-    yr_box.line.color.rgb = RGBColor(203, 213, 225)
-    p = yr_box.text_frame.paragraphs[0]
-    p.text = year_text
-    p.font.name = "Arial"
-    p.font.size = Pt(12)
-    p.font.bold = True
-    p.font.color.rgb = RGBColor(71, 85, 105)
-    p.alignment = PP_ALIGN.CENTER
+    for box in slide.render_boxes:
+        _add_borderless_textbox(pptx_slide, box, font_name="Arial")
 
 
-# =========================================================================
-# 3. PLAN SLIDE (6 Puces - Template Plan)
-# =========================================================================
-def _render_plan_slide(prs, pptx_slide, slide: Slide):
-    _add_full_background(pptx_slide, TPL_PLAN)
-
-    # Title in left flask
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=0.8,
-        top_in=2.7,
-        width_in=4.0,
-        height_in=1.8,
-        text="PLAN DU DIAPORAMA\nSommaire du Protocole",
-        font_size_pt=22,
-        bold=True,
-        color_rgb=RGBColor(0, 75, 135),
-        align=PP_ALIGN.CENTER,
-    )
-
-    # 6 Right Pills
-    default_plan = [
-        "1. INTRODUCTION & CONTEXTE",
-        "2. OBJECTIF GÉNÉRAL",
-        "3. OBJECTIFS SPÉCIFIQUES",
-        "4. MÉTHODOLOGIE DE L'ÉTUDE",
-        "5. CHRONOGRAMME DES ACTIVITÉS",
-        "6. BUDGET PRÉVISIONNEL",
-    ]
-    pills = [el.content for el in slide.elements] or default_plan
-
-    for i, txt in enumerate(pills[:6]):
-        top_pos = 0.85 + i * 1.0
-        _add_borderless_textbox(
-            pptx_slide,
-            left_in=5.0,
-            top_in=top_pos,
-            width_in=7.4,
-            height_in=0.65,
-            text=txt,
-            font_size_pt=15,
-            bold=True,
-            color_rgb=RGBColor(15, 23, 42),
-            align=PP_ALIGN.LEFT,
+def _render_chronogram_slide(pptx_slide, slide: Slide) -> None:
+    """Deposit the chronogram slide image as-is with exact proportional scaling (never stretched)."""
+    bg_path = _resolve_asset_path(slide.background_image_path or TPL_CHRONOGRAM)
+    if bg_path:
+        _add_picture_fit_contain(
+            pptx_slide, bg_path, 0.0, 0.0, SLIDE_WIDTH_IN, SLIDE_HEIGHT_IN
         )
 
 
-# =========================================================================
-# 4 & 5. INTRODUCTION SLIDES (Template Introduction)
-# =========================================================================
-def _render_intro_slide(prs, pptx_slide, slide: Slide):
-    _add_full_background(pptx_slide, TPL_INTRO)
-
-    # Top Capsule Title
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=2.2,
-        top_in=0.35,
-        width_in=9.0,
-        height_in=0.85,
-        text=slide.title,
-        font_size_pt=22,
-        bold=True,
-        color_rgb=RGBColor(0, 75, 135),
-    )
-
-    # Bullets in white body
-    bullets_text = "\n\n".join(f"• {el.content}" for el in slide.elements)
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=1.0,
-        top_in=2.0,
-        width_in=11.33,
-        height_in=4.6,
-        text=bullets_text,
-        font_size_pt=18,
-        color_rgb=RGBColor(30, 41, 59),
-    )
+def _render_budget_slide(pptx_slide, slide: Slide) -> None:
+    bg_path = _resolve_asset_path(slide.background_image_path)
+    if bg_path:
+        pptx_slide.shapes.add_picture(
+            str(bg_path.resolve()), 0, 0, Inches(SLIDE_WIDTH_IN), Inches(SLIDE_HEIGHT_IN)
+        )
+    for box in slide.render_boxes:
+        _add_borderless_textbox(pptx_slide, box, font_name="Arial")
 
 
-# =========================================================================
-# 6. OBJECTIF GÉNÉRAL (Template Objectif Général)
-# =========================================================================
-def _render_obj_gen_slide(prs, pptx_slide, slide: Slide):
-    _add_full_background(pptx_slide, TPL_OBJ_GEN)
-
-    # Top Capsule Title
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=2.2,
-        top_in=0.35,
-        width_in=9.0,
-        height_in=0.85,
-        text="OBJECTIF GÉNÉRAL",
-        font_size_pt=24,
-        bold=True,
-        color_rgb=RGBColor(0, 75, 135),
-    )
-
-    # Central Objective Box
-    obj_text = slide.elements[0].content if slide.elements else slide.subtitle
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=1.2,
-        top_in=2.8,
-        width_in=11.0,
-        height_in=3.5,
-        text=obj_text,
-        font_size_pt=24,
-        bold=True,
-        color_rgb=RGBColor(15, 23, 42),
-        align=PP_ALIGN.CENTER,
-    )
+def _render_acknowledgements_slide(pptx_slide, slide: Slide) -> None:
+    bg_path = _resolve_asset_path(slide.background_image_path)
+    if bg_path:
+        pptx_slide.shapes.add_picture(
+            str(bg_path.resolve()), 0, 0, Inches(SLIDE_WIDTH_IN), Inches(SLIDE_HEIGHT_IN)
+        )
+    for box in slide.render_boxes:
+        _add_borderless_textbox(pptx_slide, box, font_name="Arial")
 
 
-# =========================================================================
-# 7 & 8. OBJECTIFS SPÉCIFIQUES (Template Objectifs Spécifiques)
-# =========================================================================
-def _render_obj_spec_slide(prs, pptx_slide, slide: Slide):
-    _add_full_background(pptx_slide, TPL_OBJ_SPEC)
-
-    # Top Capsule Title
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=2.2,
-        top_in=0.35,
-        width_in=9.0,
-        height_in=0.85,
-        text=slide.title,
-        font_size_pt=22,
-        bold=True,
-        color_rgb=RGBColor(0, 75, 135),
-    )
-
-    # OS Bullets
-    bullets_text = "\n\n".join(f"• {el.content}" for el in slide.elements)
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=1.0,
-        top_in=2.0,
-        width_in=11.33,
-        height_in=4.6,
-        text=bullets_text,
-        font_size_pt=18,
-        color_rgb=RGBColor(30, 41, 59),
-    )
-
-
-# =========================================================================
-# 9 to 14. MÉTHODOLOGIE (Template Méthodologie)
-# =========================================================================
-def _render_methodology_slide(prs, pptx_slide, slide: Slide):
-    _add_full_background(pptx_slide, TPL_METHODOLOGY)
-
-    # Top Capsule Title
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=2.2,
-        top_in=0.35,
-        width_in=9.0,
-        height_in=0.85,
-        text=slide.title,
-        font_size_pt=22,
-        bold=True,
-        color_rgb=RGBColor(0, 75, 135),
-    )
-
-    # Methodology content
-    bullets_text = "\n\n".join(
-        el.content if el.content.startswith(("•", " ", "-")) else f"• {el.content}"
-        for el in slide.elements
-    )
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=1.0,
-        top_in=2.0,
-        width_in=11.33,
-        height_in=4.6,
-        text=bullets_text,
-        font_size_pt=18,
-        color_rgb=RGBColor(30, 41, 59),
-    )
-
-
-# =========================================================================
-# 15. CHRONOGRAMME (Déposée telle quelle sans texte !)
-# =========================================================================
-def _render_chronogram_slide(prs, pptx_slide, slide: Slide):
-    _add_full_background(pptx_slide, TPL_CHRONOGRAM)
-    # Strictly deposited as-is without extra text overlaid!
-
-
-# =========================================================================
-# 16. BUDGET PRÉVISIONNEL (Template Budget Radial)
-# =========================================================================
-def _render_budget_slide(prs, pptx_slide, slide: Slide):
-    _add_full_background(pptx_slide, TPL_BUDGET)
-
-    # Total in central pill
-    total_text = slide.subtitle or "1 250 000 FCFA"
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=5.7,
-        top_in=4.4,
-        width_in=2.0,
-        height_in=0.5,
-        text=total_text,
-        font_size_pt=16,
-        bold=True,
-        color_rgb=RGBColor(0, 75, 135),
-        align=PP_ALIGN.CENTER,
-    )
-
-    # 10 Pills around (5 left, 5 right)
-    default_pills = [
-        "1. Matériel & consommables : 350 000",
-        "2. Transport & logistique : 200 000",
-        "3. Clairance éthique : 100 000",
-        "4. Analyse statistique : 150 000",
-        "5. Reprographie & reliure : 120 000",
-        "6. Enquêtes & fiches CRF : 80 000",
-        "7. Communication & téléphone : 50 000",
-        "8. Restitution des résultats : 70 000",
-        "9. Imprévus (10%) : 130 000",
-        "10. Financement : Fonds propres",
-    ]
-    pills = [el.content for el in slide.elements] or default_pills
-
-    # Left 5 pills
-    for i, txt in enumerate(pills[:5]):
-        top_pos = 1.1 + i * 1.2
-        _add_borderless_textbox(
-            pptx_slide,
-            left_in=1.0,
-            top_in=top_pos,
-            width_in=4.2,
-            height_in=0.65,
-            text=txt,
-            font_size_pt=11,
-            bold=True,
-            color_rgb=RGBColor(15, 23, 42),
+def _render_content_slide(pptx_slide, slide: Slide) -> None:
+    bg_path = _resolve_asset_path(slide.background_image_path)
+    if bg_path:
+        pptx_slide.shapes.add_picture(
+            str(bg_path.resolve()), 0, 0, Inches(SLIDE_WIDTH_IN), Inches(SLIDE_HEIGHT_IN)
         )
 
-    # Right 5 pills
-    for i, txt in enumerate(pills[5:10]):
-        top_pos = 1.1 + i * 1.2
-        _add_borderless_textbox(
-            pptx_slide,
-            left_in=8.2,
-            top_in=top_pos,
-            width_in=4.2,
-            height_in=0.65,
-            text=txt,
-            font_size_pt=11,
-            bold=True,
-            color_rgb=RGBColor(15, 23, 42),
-        )
+    proc_boxes = [b for b in slide.render_boxes if b.role == "procedure_step"]
+    if proc_boxes:
+        n_steps = len(proc_boxes)
+        for idx, pbox in enumerate(proc_boxes):
+            left_in = pbox.x_pct * SLIDE_WIDTH_IN
+            top_in = pbox.y_pct * SLIDE_HEIGHT_IN
+            w_in = pbox.w_pct * SLIDE_WIDTH_IN
+            h_in = pbox.h_pct * SLIDE_HEIGHT_IN
+
+            # Card background shape (white with blue border)
+            card = pptx_slide.shapes.add_shape(
+                MSO_SHAPE.ROUNDED_RECTANGLE,
+                Inches(left_in),
+                Inches(top_in),
+                Inches(w_in),
+                Inches(h_in),
+            )
+            card.fill.solid()
+            card.fill.fore_color.rgb = RGBColor(248, 250, 252)
+            card.line.color.rgb = RGBColor(0, 75, 135)
+            card.line.width = Pt(1.75)
+
+            # Top header ribbon inside each procedure box
+            hdr = pptx_slide.shapes.add_shape(
+                MSO_SHAPE.ROUNDED_RECTANGLE,
+                Inches(left_in),
+                Inches(top_in),
+                Inches(w_in),
+                Inches(0.68),
+            )
+            hdr.fill.solid()
+            hdr.fill.fore_color.rgb = RGBColor(0, 75, 135)
+            hdr.line.fill.background()
+
+            # Foreground editable textbox for step title
+            tx_h = pptx_slide.shapes.add_textbox(
+                Inches(left_in + 0.08), Inches(top_in + 0.04), Inches(w_in - 0.16), Inches(0.60)
+            )
+            tf_h = tx_h.text_frame
+            tf_h.word_wrap = True
+            tf_h.vertical_anchor = MSO_ANCHOR.MIDDLE
+            ph = tf_h.paragraphs[0]
+            ph.text = pbox.text
+            ph.font.name = "Arial"
+            ph.font.size = Pt(16)
+            ph.font.bold = True
+            ph.font.color.rgb = RGBColor(255, 255, 255)
+            ph.alignment = PP_ALIGN.CENTER
+
+            # Foreground editable textbox for step description
+            tx_b = pptx_slide.shapes.add_textbox(
+                Inches(left_in + 0.12), Inches(top_in + 0.78), Inches(w_in - 0.24), Inches(h_in - 0.90)
+            )
+            tf_b = tx_b.text_frame
+            tf_b.word_wrap = True
+            tf_b.vertical_anchor = MSO_ANCHOR.MIDDLE
+            pb = tf_b.paragraphs[0]
+            pb.text = pbox.sub_text
+            pb.font.name = "Arial"
+            pb.font.size = Pt(pbox.font_size_pt)
+            pb.font.color.rgb = RGBColor(30, 41, 59)
+            pb.alignment = PP_ALIGN.CENTER
+
+            # Vector connecting arrow between steps
+            if idx < n_steps - 1:
+                next_left = proc_boxes[idx + 1].x_pct * SLIDE_WIDTH_IN
+                gap = max(0.25, next_left - (left_in + w_in))
+                arrow_w = gap * 0.72
+                arrow_left = left_in + w_in + (gap - arrow_w) / 2.0
+                arrow_top = top_in + h_in / 2.0 - 0.22
+                arr = pptx_slide.shapes.add_shape(
+                    MSO_SHAPE.RIGHT_ARROW,
+                    Inches(arrow_left),
+                    Inches(arrow_top),
+                    Inches(arrow_w),
+                    Inches(0.44),
+                )
+                arr.fill.solid()
+                arr.fill.fore_color.rgb = RGBColor(108, 40, 38)
+                arr.line.fill.background()
+
+    for box in slide.render_boxes:
+        if box.role == "procedure_step":
+            continue
+
+        if box.role == "media":
+            _add_card_backdrop(pptx_slide, box, border_width_pt=1.0)
+            fig_p = _resolve_asset_path(box.image_path)
+            if fig_p:
+                _add_picture_fit_contain(
+                    pptx_slide,
+                    fig_p,
+                    box.x_pct * SLIDE_WIDTH_IN + 0.08,
+                    box.y_pct * SLIDE_HEIGHT_IN + 0.08,
+                    box.w_pct * SLIDE_WIDTH_IN - 0.16,
+                    box.h_pct * SLIDE_HEIGHT_IN - 0.16,
+                )
+            continue
+
+        if box.role == "stat_card":
+            _add_card_backdrop(pptx_slide, box, border_width_pt=1.5)
+            tx = pptx_slide.shapes.add_textbox(
+                Inches(box.x_pct * SLIDE_WIDTH_IN + 0.12),
+                Inches(box.y_pct * SLIDE_HEIGHT_IN + 0.12),
+                Inches(box.w_pct * SLIDE_WIDTH_IN - 0.24),
+                Inches(box.h_pct * SLIDE_HEIGHT_IN - 0.24),
+            )
+            tf = tx.text_frame
+            tf.word_wrap = True
+            tf.vertical_anchor = MSO_ANCHOR.MIDDLE
+            p0 = tf.paragraphs[0]
+            p0.text = box.text
+            p0.font.name = "Arial"
+            p0.font.size = Pt(28)
+            p0.font.bold = True
+            p0.font.color.rgb = RGBColor(108, 40, 38)
+            p0.alignment = PP_ALIGN.CENTER
+            p0.space_after = Pt(6)
+            p1 = tf.add_paragraph()
+            p1.text = box.sub_text
+            p1.font.name = "Arial"
+            p1.font.size = Pt(box.font_size_pt)
+            p1.font.color.rgb = RGBColor(30, 41, 59)
+            p1.alignment = PP_ALIGN.CENTER
+            continue
+
+        if box.role == "bullet_card":
+            # Optional subtle card backdrop drawn behind the borderless foreground textbox
+            if slide.slide_type == "objective_general":
+                _add_card_backdrop(pptx_slide, box, border_width_pt=1.75)
+                _add_borderless_textbox(pptx_slide, box, text_override=box.text, font_name="Arial")
+            else:
+                _add_card_backdrop(pptx_slide, box, border_width_pt=0.75)
+                bullet_txt = box.text if box.text.lstrip().startswith("•") else f"• {box.text}"
+                _add_borderless_textbox(pptx_slide, box, text_override=bullet_txt, font_name="Arial")
+            continue
+
+        # title, breadcrumb, slide_number, media_caption -> strictly borderless foreground textboxes
+        _add_borderless_textbox(pptx_slide, box, font_name="Arial")
 
 
-# =========================================================================
-# 17. REMERCIEMENTS & CLÔTURE (Template Merci)
-# =========================================================================
-def _render_acknowledgements_slide(prs, pptx_slide, slide: Slide):
-    _add_full_background(pptx_slide, TPL_THANKS)
+def compile_presentation_pptx(
+    deck: PresentationDeck,
+    output_path: Path,
+    project: Optional[ProtocolProject] = None,
+) -> Path:
+    """Compile a native 16:9 PowerPoint (.pptx) from the physical RenderPlan."""
+    compute_deck_layout(deck, project=project)
 
-    _add_borderless_textbox(
-        pptx_slide,
-        left_in=8.1,
-        top_in=2.8,
-        width_in=4.2,
-        height_in=2.2,
-        text="MERCI POUR VOTRE AIMABLE ATTENTION\n\n« Sapientia Collativa Cognitio »\nFaculté de Médecine et des Sciences Biomédicales\nUniversité de Yaoundé I",
-        font_size_pt=14,
-        bold=True,
-        color_rgb=RGBColor(0, 75, 135),
-        align=PP_ALIGN.CENTER,
-    )
-
-
-# =========================================================================
-# MAIN PPTX COMPILER
-# =========================================================================
-def compile_presentation_pptx(deck: PresentationDeck, output_path: Path) -> Path:
-    """Generate a high-grade native PowerPoint (.pptx) deck mapped directly to user templates."""
     prs = Presentation()
     prs.slide_width = Inches(SLIDE_WIDTH_IN)
     prs.slide_height = Inches(SLIDE_HEIGHT_IN)
@@ -613,43 +516,31 @@ def compile_presentation_pptx(deck: PresentationDeck, output_path: Path) -> Path
 
     for slide_data in deck.slides:
         pptx_slide = prs.slides.add_slide(blank_layout)
-
-        # Dispatch by slide type
         stype = slide_data.slide_type
-        if stype == "welcome":
-            _render_welcome_slide(prs, pptx_slide, slide_data)
-        elif stype == "cover":
-            _render_cover_slide(prs, pptx_slide, slide_data)
-        elif stype == "plan":
-            _render_plan_slide(prs, pptx_slide, slide_data)
-        elif stype == "introduction":
-            _render_intro_slide(prs, pptx_slide, slide_data)
-        elif stype == "objective_general":
-            _render_obj_gen_slide(prs, pptx_slide, slide_data)
-        elif stype == "objective_specific":
-            _render_obj_spec_slide(prs, pptx_slide, slide_data)
-        elif stype == "methodology":
-            _render_methodology_slide(prs, pptx_slide, slide_data)
-        elif stype == "chronogram":
-            _render_chronogram_slide(prs, pptx_slide, slide_data)
-        elif stype == "budget":
-            _render_budget_slide(prs, pptx_slide, slide_data)
-        elif stype == "acknowledgements":
-            _render_acknowledgements_slide(prs, pptx_slide, slide_data)
-        else:
-            # Fallback to methodology template or intro
-            _render_methodology_slide(prs, pptx_slide, slide_data)
 
-        # Inject Speaker Notes
+        if stype == "welcome":
+            _render_welcome_slide(pptx_slide, slide_data)
+        elif stype == "cover":
+            _render_cover_slide(pptx_slide, slide_data)
+        elif stype == "plan":
+            _render_plan_slide(pptx_slide, slide_data)
+        elif stype == "chronogram" or slide_data.locked_as_is:
+            _render_chronogram_slide(pptx_slide, slide_data)
+        elif stype == "budget":
+            _render_budget_slide(pptx_slide, slide_data)
+        elif stype == "acknowledgements":
+            _render_acknowledgements_slide(pptx_slide, slide_data)
+        else:
+            _render_content_slide(pptx_slide, slide_data)
+
         if slide_data.presenter_notes:
             try:
                 notes_slide = pptx_slide.notes_slide
-                text_frame = notes_slide.notes_text_frame
-                text_frame.text = slide_data.presenter_notes
+                notes_slide.notes_text_frame.text = slide_data.presenter_notes
             except Exception:
                 pass
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(output_path.resolve()))
-    logger.info(f"Successfully compiled PPTX ({len(deck.slides)} slides) to {output_path}")
+    logger.info("Compiled %d-slide PPTX -> %s", len(deck.slides), output_path)
     return output_path

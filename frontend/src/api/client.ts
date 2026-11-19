@@ -522,15 +522,57 @@ export const api = {
       { method: "POST" }
     ),
 
-  generateSlideAi: (projectId: string, slideIndex: number) =>
+  generateFullPresentationAi: (projectId: string) =>
     request<{
-      status: string;
-      slide: import("../types/presentation").Slide;
-      model_used?: string;
-    }>(`/api/projects/${projectId}/presentation/generate-slide/${slideIndex}`, {
+      deck: import("../types/presentation").PresentationDeck;
+      models_used: Record<string, string>;
+      decision_notes: string;
+    }>(`/api/projects/${projectId}/presentation/generate-all`, {
       method: "POST",
     }),
 
+  generateSlideAi: (
+    projectId: string,
+    slideIndex: number,
+    payload?: { instruction?: string; layout_mode?: string }
+  ) =>
+    request<{
+      status: string;
+      message?: string;
+      slide: import("../types/presentation").Slide;
+      deck?: import("../types/presentation").PresentationDeck;
+      model_used?: string;
+      models_used?: Record<string, string>;
+    }>(`/api/projects/${projectId}/presentation/generate-slide/${slideIndex}`, {
+      method: "POST",
+      body: payload ? JSON.stringify(payload) : undefined,
+    }),
+
+  auditPresentation: (projectId: string) =>
+    request<import("../types/presentation").PresentationAuditReport>(
+      `/api/projects/${projectId}/presentation/audit`,
+      { method: "POST" }
+    ),
+
+  renderPresentationPreviews: (projectId: string) =>
+    request<{ count: number; preview_urls: string[] }>(
+      `/api/projects/${projectId}/presentation/render-previews`,
+      { method: "POST" }
+    ),
+
+  listPresentationTemplates: () =>
+    request<{
+      templates: Array<{
+        id: string;
+        label: string;
+        slide_type: string;
+        path: string;
+      }>;
+    }>(`/api/presentation/templates`),
+
   exportPresentationPptxUrl: (projectId: string) =>
     `/api/projects/${projectId}/presentation/export/pptx`,
+
+  exportPresentationPdfUrl: (projectId: string) =>
+    `/api/projects/${projectId}/presentation/export/pdf`,
 };
