@@ -20,5 +20,7 @@ frontend/.vite/
 
 # Local runtime storage & exports
 backend/storage/
+*.db
+*.sqlite*
 *.log
 ~$*

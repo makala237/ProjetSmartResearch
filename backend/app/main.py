@@ -4,14 +4,47 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
+from app.api.admin_routes import router as admin_router
+from app.api.deps import (
+    enforce_topic_lock_on_cover_update,
+    get_active_user,
+    get_active_user_allow_query_token,
+    get_authorized_project,
+    get_client_ip,
+    get_current_user,
+    require_admin,
+    require_any_active_license,
+    require_module_write,
+)
 from app.core.config import WORKSPACE_DIR, get_settings
 from app.data.fmsb_canvas import FMSB_CANVAS_VERSION, FMSB_SECTIONS
+from app.db.database import engine, get_db, init_db
+from app.db.models import UserORM
+from app.schemas.auth import (
+    ChangePasswordRequest,
+    LoginRequest,
+    RefreshTokenRequest,
+    TokenResponse,
+    UserMeOut,
+)
+from app.services.auth_service import (
+    authenticate_and_login,
+    build_user_me_out,
+    change_user_password,
+    logout_user,
+    refresh_session_tokens,
+)
+from app.services.licensing_service import (
+    assert_ai_quota_available,
+    record_usage_and_debit,
+)
 from app.schemas.protocol import (
     CoverMetadata,
     CreateProjectRequest,
@@ -51,6 +84,10 @@ from app.services.gemini_client import gemini_router
 from app.services.global_audit import (
     run_global_protocol_audit,
     sync_structured_from_sections,
+)
+from app.services.humanizer import (
+    humanize_entire_protocol,
+    humanize_section_with_ai,
 )
 from app.services.importer import analyze_and_import_protocol
 from app.services.list_builder import generate_all_lists_and_toc
@@ -141,7 +178,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=settings.cors_origins_list(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -197,6 +234,7 @@ class TranslateDepartmentRequest(BaseModel):
 
 @app.on_event("startup")
 def on_startup() -> None:
+    init_db()
     try:
         ensure_master_template()
     except FileNotFoundError:
@@ -211,12 +249,86 @@ def health_check() -> Dict[str, object]:
         "version": settings.app_version,
         "canvas_version": FMSB_CANVAS_VERSION,
         "gemini_key_configured": bool(settings.gemini_api_key),
+        "auth_enabled": True,
+        "database_dialect": engine.dialect.name,
         "model_chains": settings.model_chains(),
     }
 
 
+@app.post("/api/auth/login", response_model=TokenResponse)
+def auth_login(
+    payload: LoginRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> TokenResponse:
+    client_ip = request.client.host if request.client else ""
+    user, access_tok, refresh_tok = authenticate_and_login(
+        db=db,
+        email=payload.email,
+        password=payload.password,
+        ip_address=client_ip,
+    )
+    return TokenResponse(
+        access_token=access_tok,
+        refresh_token=refresh_tok,
+        must_change_password=user.must_change_password,
+        user=build_user_me_out(db, user),
+    )
+
+
+@app.post("/api/auth/refresh", response_model=TokenResponse)
+def auth_refresh(
+    payload: RefreshTokenRequest,
+    db: Session = Depends(get_db),
+) -> TokenResponse:
+    user, access_tok, refresh_tok = refresh_session_tokens(db, payload.refresh_token)
+    return TokenResponse(
+        access_token=access_tok,
+        refresh_token=refresh_tok,
+        must_change_password=user.must_change_password,
+        user=build_user_me_out(db, user),
+    )
+
+
+@app.get("/api/auth/me", response_model=UserMeOut)
+def auth_me(
+    current_user: UserORM = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UserMeOut:
+    return build_user_me_out(db, current_user)
+
+
+@app.post("/api/auth/change-password", response_model=TokenResponse)
+def auth_change_password(
+    payload: ChangePasswordRequest,
+    current_user: UserORM = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> TokenResponse:
+    access_tok, refresh_tok = change_user_password(
+        db=db,
+        user=current_user,
+        current_password=payload.current_password,
+        new_password=payload.new_password,
+    )
+    return TokenResponse(
+        access_token=access_tok,
+        refresh_token=refresh_tok,
+        must_change_password=current_user.must_change_password,
+        user=build_user_me_out(db, current_user),
+    )
+
+
+@app.post("/api/auth/logout")
+def auth_logout(
+    current_user: UserORM = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, str]:
+    logout_user(db, current_user)
+    return {"status": "ok"}
+
+
 @app.get("/api/models")
-def list_models() -> Dict[str, object]:
+def list_models(_current_user: UserORM = Depends(get_active_user)) -> Dict[str, object]:
     try:
         available = gemini_router.list_available_models()
         return {
@@ -243,39 +355,79 @@ def get_canvas() -> Dict[str, object]:
 
 
 @app.post("/api/translate-department")
-def translate_department(payload: TranslateDepartmentRequest) -> Dict[str, str]:
-    return gemini_router.translate_department_live(
+def translate_department(
+    payload: TranslateDepartmentRequest,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, str]:
+    cost = assert_ai_quota_available(db, current_user, module_key="general", action="translate_department")
+    res = gemini_router.translate_department_live(
         text=payload.text,
         source_lang=payload.source_lang,
         target_lang=payload.target_lang,
     )
+    model_used = res.get("model_used", "")
+    is_real_ai = model_used not in ("none", "passthrough", "fmsb-glossary-fallback", "")
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="general",
+        action="translate_department",
+        credits_cost=cost if is_real_ai else 0,
+        model_used=model_used,
+        ip_address=get_client_ip(request),
+    )
+    return res
 
 
 @app.get("/api/projects", response_model=List[ProtocolProject])
-def list_projects() -> List[ProtocolProject]:
-    return project_storage.list_all()
+def list_projects(current_user: UserORM = Depends(get_active_user)) -> List[ProtocolProject]:
+    return project_storage.list_for_user(current_user.id, current_user.role)
 
 
 @app.post("/api/projects", response_model=ProtocolProject)
-def create_project(payload: CreateProjectRequest) -> ProtocolProject:
-    return project_storage.create(payload)
+def create_project(
+    payload: CreateProjectRequest,
+    current_user: UserORM = Depends(require_any_active_license()),
+) -> ProtocolProject:
+    try:
+        return project_storage.create(
+            payload,
+            owner_user_id=current_user.id,
+            owner_role=current_user.role,
+            owner_full_name=current_user.full_name,
+            owner_matricule=current_user.matricule,
+        )
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "ONE_PROTOCOL_LIMIT",
+                "message": "Chaque compte étudiant est strictement limité à 1 seul protocole.",
+            },
+        ) from exc
 
 
 @app.get("/api/projects/{project_id}", response_model=ProtocolProject)
-def get_project(project_id: str) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def get_project(
+    project_id: str,
+    current_user: UserORM = Depends(get_active_user),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
     if ensure_project_crf_fields(project):
         project = project_storage.save(project)
     return project
 
 
 @app.patch("/api/projects/{project_id}/cover", response_model=ProtocolProject)
-def update_cover(project_id: str, cover: CoverMetadata) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def update_cover(
+    project_id: str,
+    cover: CoverMetadata,
+    current_user: UserORM = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
+    enforce_topic_lock_on_cover_update(project, cover, current_user)
     project.cover = cover
     saved = project_storage.save(project)
     update_section_working_memory(saved, "cover_page")
@@ -287,10 +439,9 @@ def update_section(
     project_id: str,
     section_id: str,
     payload: UpdateSectionRequest,
+    current_user: UserORM = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue dans le canevas FMSB.")
 
@@ -323,10 +474,9 @@ def update_section(
 def update_formatting(
     project_id: str,
     payload: UpdateFormattingRequest,
+    current_user: UserORM = Depends(require_module_write("module2")),
 ) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     project.formatting = payload.formatting
     return project_storage.save(project)
 
@@ -335,10 +485,9 @@ def update_formatting(
 def update_structured_data(
     project_id: str,
     payload: UpdateStructuredDataRequest,
+    current_user: UserORM = Depends(require_module_write("module2")),
 ) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     if payload.abbreviations is not None:
         project.abbreviations = payload.abbreviations
     if payload.variables is not None:
@@ -364,15 +513,19 @@ def update_structured_data(
 
 
 @app.get("/api/projects/{project_id}/annexes/preview")
-def preview_annexes(project_id: str) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def preview_annexes(
+    project_id: str,
+    current_user: UserORM = Depends(get_active_user),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
     return {"annexes": build_annexes_pack(project)}
 
 
 @app.delete("/api/projects/{project_id}")
-def delete_project(project_id: str) -> Dict[str, bool]:
+def delete_project(
+    project_id: str,
+    _admin: UserORM = Depends(require_admin),
+) -> Dict[str, bool]:
     deleted = project_storage.delete(project_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Projet introuvable.")
@@ -383,10 +536,15 @@ def delete_project(project_id: str) -> Dict[str, bool]:
 
 
 @app.post("/api/projects/{project_id}/research")
-def run_project_research(project_id: str, payload: ResearchRequest) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def run_project_research(
+    project_id: str,
+    payload: ResearchRequest,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="research")
     try:
         report = run_research_pipeline(
             project,
@@ -395,16 +553,31 @@ def run_project_research(project_id: str, payload: ResearchRequest) -> Dict[str,
             include_web_grounding=payload.include_web_grounding,
         )
         project_storage.save(project)
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="research",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(report.get("planner_model", "")),
+            ip_address=get_client_ip(request),
+        )
         return {"project": project.model_dump(mode="json"), "report": report}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/projects/{project_id}/segment")
-def segment_project(project_id: str, payload: SegmentRequest) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def segment_project(
+    project_id: str,
+    payload: SegmentRequest,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="segment")
     if not project.references:
         raise HTTPException(
             status_code=400,
@@ -417,6 +590,17 @@ def segment_project(project_id: str, payload: SegmentRequest) -> Dict[str, objec
             only_unsegmented=payload.only_unsegmented,
         )
         project_storage.save(project)
+        models = report.get("models") or []
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="segment",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=",".join(str(m) for m in models[:2]),
+            ip_address=get_client_ip(request),
+        )
         return {"project": project.model_dump(mode="json"), "report": report}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -427,10 +611,9 @@ def update_segment(
     project_id: str,
     segment_id: str,
     payload: ToggleSegmentRequest,
+    current_user: UserORM = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     for seg in project.article_segments:
         if seg.segment_id == segment_id:
             if payload.approved is not None:
@@ -446,10 +629,9 @@ def update_image_asset(
     project_id: str,
     asset_id: str,
     payload: ToggleImageRequest,
+    current_user: UserORM = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     for img in project.images:
         if img.asset_id == asset_id:
             if payload.approved is not None:
@@ -475,10 +657,9 @@ async def upload_project_image(
     title: str = Form("Figure personnalisée"),
     caption: str = Form(""),
     anchor_hint: str = Form(""),
+    current_user: UserORM = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     suffix = Path(file.filename or "image.png").suffix.lower()
     if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
         raise HTTPException(status_code=400, detail="Format d'image non supporté (PNG, JPG, JPEG, WEBP uniquement).")
@@ -508,10 +689,12 @@ async def upload_project_image(
 
 
 @app.get("/api/projects/{project_id}/images/{asset_id}/file")
-def get_uploaded_image_file(project_id: str, asset_id: str) -> FileResponse:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def get_uploaded_image_file(
+    project_id: str,
+    asset_id: str,
+    current_user: UserORM = Depends(get_active_user_allow_query_token),
+) -> FileResponse:
+    project = get_authorized_project(project_id, current_user)
     for img in project.images:
         if img.asset_id == asset_id:
             if not img.local_path or not Path(img.local_path).exists():
@@ -525,10 +708,12 @@ def get_uploaded_image_file(project_id: str, asset_id: str) -> FileResponse:
 
 
 @app.delete("/api/projects/{project_id}/images/{asset_id}", response_model=ProtocolProject)
-def delete_image_asset(project_id: str, asset_id: str) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def delete_image_asset(
+    project_id: str,
+    asset_id: str,
+    current_user: UserORM = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
     remaining = []
     found = False
     for img in project.images:
@@ -553,12 +738,14 @@ def draft_section(
     project_id: str,
     section_id: str,
     payload: DraftSectionRequest,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="draft_section")
     try:
         if section_id in ("toc", "abbreviations", "list_of_tables", "list_of_figures"):
             res_lists = generate_all_lists_and_toc(project, use_gemini_decision=True)
@@ -569,6 +756,16 @@ def draft_section(
                 f"Liste automatique unifiée sans doublon ({res_lists['abbreviations_count']} abréviations, "
                 f"{res_lists['tables_count']} tableaux, {res_lists['figures_count']} figures, "
                 f"{plan.total_roman_pages} p. romaines + {plan.total_arabic_pages} p. arabes)."
+            )
+            record_usage_and_debit(
+                db=db,
+                user=current_user,
+                module_key="module1",
+                action="draft_section",
+                credits_cost=cost,
+                project_id=project_id,
+                model_used=str(plan.model_used or ""),
+                ip_address=get_client_ip(request),
             )
             return {
                 "project": saved.model_dump(mode="json"),
@@ -601,37 +798,116 @@ def draft_section(
                 ]
         _sync_module2_queue(project)
         project_storage.save(project)
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="draft_section",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(result.get("model_used", "")),
+            ip_address=get_client_ip(request),
+        )
         return {"project": project.model_dump(mode="json"), "result": result}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/projects/{project_id}/sections/{section_id}/audit")
-def audit_section(project_id: str, section_id: str) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def audit_section(
+    project_id: str,
+    section_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="audit_section")
     try:
         result = audit_section_with_ai(project, section_id=section_id)
         project_storage.save(project)
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="audit_section",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(result.get("model_used", "")),
+            ip_address=get_client_ip(request),
+        )
         return {"project": project.model_dump(mode="json"), "result": result}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/projects/{project_id}/sections/{section_id}/fix")
-def fix_section(project_id: str, section_id: str) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def fix_section(
+    project_id: str,
+    section_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="fix_section")
     try:
         result = fix_section_issues_with_ai(project, section_id=section_id)
         _sync_module2_queue(project)
         project_storage.save(project)
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="fix_section",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(result.get("model_used", "")),
+            ip_address=get_client_ip(request),
+        )
+        return {"project": project.model_dump(mode="json"), "result": result}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+class HumanizeRequest(BaseModel):
+    use_ai: bool = True
+
+
+@app.post("/api/projects/{project_id}/sections/{section_id}/humanize")
+def humanize_section(
+    project_id: str,
+    section_id: str,
+    request: Request,
+    payload: Optional[HumanizeRequest] = None,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="humanize_section")
+    try:
+        use_ai = True if payload is None else bool(payload.use_ai)
+        result = humanize_section_with_ai(project, section_id=section_id, use_ai=use_ai)
+        _sync_module2_queue(project)
+        project_storage.save(project)
+        model_used = str(result.get("model_used", ""))
+        is_real_ai = model_used not in ("none", "humanizer-deterministe-fmsb", "")
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="humanize_section",
+            credits_cost=cost if (is_real_ai and not result.get("skipped")) else 0,
+            project_id=project_id,
+            model_used=model_used,
+            ip_address=get_client_ip(request),
+        )
         return {"project": project.model_dump(mode="json"), "result": result}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -646,13 +922,15 @@ class SectionAntigravityRequest(BaseModel):
 def run_section_antigravity(
     project_id: str,
     section_id: str,
+    request: Request,
     payload: Optional[SectionAntigravityRequest] = None,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="antigravity_section")
     try:
         orch = orchestrate_section_action(
             project,
@@ -663,6 +941,16 @@ def run_section_antigravity(
         )
         _sync_module2_queue(project)
         project_storage.save(project)
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="antigravity_section",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str((orch.get("antigravity_report") or {}).get("agent_used", "")),
+            ip_address=get_client_ip(request),
+        )
         return {
             "project": project.model_dump(mode="json"),
             "orchestration_trace": orch["orchestration_trace"],
@@ -677,18 +965,30 @@ def suggest_section_table(
     project_id: str,
     section_id: str,
     payload: SuggestTableRequest,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="suggest_table")
     try:
         result = suggest_section_table_with_ai(
             project,
             section_id=section_id,
             table_title=payload.title,
             table_goal=payload.goal,
+        )
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="suggest_table",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(result.get("model_used", "")),
+            ip_address=get_client_ip(request),
         )
         return {"suggestion": result}
     except Exception as exc:
@@ -700,10 +1000,9 @@ def add_section_table(
     project_id: str,
     section_id: str,
     payload: CreateSectionTableRequest,
+    current_user: UserORM = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
     tbl = SectionTable(
@@ -723,10 +1022,9 @@ def delete_section_table(
     project_id: str,
     section_id: str,
     table_id: str,
+    current_user: UserORM = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
     sec = project.sections[section_id]
@@ -753,11 +1051,12 @@ def delete_section_table(
 
 
 @app.post("/api/projects/{project_id}/media/transport-sync")
-def sync_media_transport(project_id: str) -> Dict[str, object]:
+def sync_media_transport(
+    project_id: str,
+    current_user: UserORM = Depends(require_module_write("module1")),
+) -> Dict[str, object]:
     """Transport downloaded/captured images locally and strictly synchronize Module 1 -> Module 2 tables."""
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     image_report = transport_and_repair_project_images(project)
     table_report = synchronize_module1_to_module2_tables(project)
     _sync_module2_queue(project)
@@ -783,18 +1082,30 @@ def suggest_section_diagram(
     project_id: str,
     section_id: str,
     payload: SuggestTableRequest,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="suggest_diagram")
     try:
         result = suggest_section_diagram_with_ai(
             project,
             section_id=section_id,
             diagram_title=payload.title,
             diagram_goal=payload.goal,
+        )
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="suggest_diagram",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(result.get("model_used", "")),
+            ip_address=get_client_ip(request),
         )
         return {"suggestion": result}
     except Exception as exc:
@@ -806,10 +1117,9 @@ def add_section_diagram(
     project_id: str,
     section_id: str,
     payload: CreateSectionDiagramRequest,
+    current_user: UserORM = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
     dg = SectionDiagram(
@@ -831,9 +1141,10 @@ def get_section_diagram_svg(
     project_id: str,
     section_id: str,
     diagram_id: str,
+    current_user: UserORM = Depends(get_active_user_allow_query_token),
 ) -> Response:
-    project = project_storage.get(project_id)
-    if not project or section_id not in project.sections:
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section introuvable.")
     for dg in project.sections[section_id].custom_diagrams:
         if dg.diagram_id == diagram_id:
@@ -847,10 +1158,9 @@ def delete_section_diagram(
     project_id: str,
     section_id: str,
     diagram_id: str,
+    current_user: UserORM = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
     sec = project.sections[section_id]
@@ -865,11 +1175,19 @@ def delete_section_diagram(
 @app.post("/api/projects/{project_id}/import")
 async def import_existing_protocol(
     project_id: str,
+    request: Request,
     file: UploadFile = File(...),
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="import_protocol")
+    locked_snapshot = (
+        project.name,
+        project.cover.title,
+        project.cover.author_name,
+        project.cover.matricule,
+    )
     content = await file.read()
     try:
         report = analyze_and_import_protocol(
@@ -877,25 +1195,93 @@ async def import_existing_protocol(
             filename=file.filename or "protocole.docx",
             content_bytes=content,
         )
+        if current_user.role != "admin" and project.topic_locked:
+            project.name = locked_snapshot[0]
+            if project.locked_title:
+                project.cover.title = project.locked_title
+            else:
+                project.cover.title = locked_snapshot[1]
+            if project.locked_author_name:
+                project.cover.author_name = project.locked_author_name
+            if project.locked_matricule:
+                project.cover.matricule = project.locked_matricule
         project_storage.save(project)
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="import_protocol",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(report.get("model_used", "")),
+            ip_address=get_client_ip(request),
+        )
         return {"project": project.model_dump(mode="json"), "report": report}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/projects/{project_id}/global-audit")
-def global_audit_protocol(project_id: str) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
-    return run_global_protocol_audit(project)
+def global_audit_protocol(
+    project_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
+    cost = assert_ai_quota_available(db, current_user, module_key="module2", action="global_audit")
+    res = run_global_protocol_audit(project)
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module2",
+        action="global_audit",
+        credits_cost=cost,
+        project_id=project_id,
+        model_used=str(res.get("model_used", "")),
+        ip_address=get_client_ip(request),
+    )
+    return res
+
+
+@app.post("/api/projects/{project_id}/humanize-all")
+def humanize_protocol(
+    project_id: str,
+    request: Request,
+    payload: Optional[HumanizeRequest] = None,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
+    cost = assert_ai_quota_available(db, current_user, module_key="module2", action="humanize_protocol")
+    use_ai = True if payload is None else bool(payload.use_ai)
+    report = humanize_entire_protocol(project, use_ai=use_ai)
+    _sync_module2_queue(project)
+    saved = project_storage.save(project)
+    model_used = str(report.get("model_used", ""))
+    is_real_ai = model_used not in ("none", "humanizer-deterministe-fmsb", "")
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module2",
+        action="humanize_protocol",
+        credits_cost=cost if (is_real_ai and report.get("sections_humanized", 0) > 0) else 0,
+        project_id=project_id,
+        model_used=model_used,
+        ip_address=get_client_ip(request),
+    )
+    return {
+        "project": saved.model_dump(mode="json"),
+        "report": report,
+    }
 
 
 @app.post("/api/projects/{project_id}/sync-structured")
-def sync_structured_data(project_id: str) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def sync_structured_data(
+    project_id: str,
+    current_user: UserORM = Depends(require_module_write("module2")),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
     report = sync_structured_from_sections(project)
     saved = project_storage.save(project)
     return {"project": saved.model_dump(mode="json"), "report": report}
@@ -903,14 +1289,28 @@ def sync_structured_data(project_id: str) -> Dict[str, object]:
 
 @app.post("/api/projects/{project_id}/generate-toc")
 @app.post("/api/projects/{project_id}/generate-lists")
-def generate_project_toc(project_id: str) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def generate_project_toc(
+    project_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
+    cost = assert_ai_quota_available(db, current_user, module_key="module2", action="generate_toc")
     res = generate_all_lists_and_toc(project, use_gemini_decision=True)
     plan = res["plan"]
     entries = res["toc_entries"]
     saved = project_storage.save(project)
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module2",
+        action="generate_toc",
+        credits_cost=cost,
+        project_id=project_id,
+        model_used=str(plan.model_used or ""),
+        ip_address=get_client_ip(request),
+    )
     pagination_summary = {
         "model_used": plan.model_used,
         "decision_notes": plan.decision_notes,
@@ -933,15 +1333,29 @@ def generate_project_toc(project_id: str) -> Dict[str, object]:
 
 
 @app.post("/api/projects/{project_id}/validate-references")
-def validate_project_references(project_id: str) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def validate_project_references(
+    project_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
+    cost = assert_ai_quota_available(db, current_user, module_key="module2", action="validate_references")
     ref_report = build_and_validate_vancouver_references(
         project, use_gemini_decision=True, mark_validated=True
     )
     generate_all_lists_and_toc(project, use_gemini_decision=False)
     saved = project_storage.save(project)
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module2",
+        action="validate_references",
+        credits_cost=cost,
+        project_id=project_id,
+        model_used=str(ref_report.get("decision_model", "")),
+        ip_address=get_client_ip(request),
+    )
     return {
         "project": saved.model_dump(mode="json"),
         **ref_report,
@@ -949,16 +1363,28 @@ def validate_project_references(project_id: str) -> Dict[str, object]:
 
 
 @app.post("/api/projects/{project_id}/export/docx")
-def export_docx(project_id: str) -> FileResponse:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def export_docx(
+    project_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    project = get_authorized_project(project_id, current_user)
     out_path = settings.storage_dir / "exports" / f"{project.project_id}_protocole.docx"
     compile_protocol_docx(project, out_path)
     toc_depth = int(getattr(project.formatting, "toc_depth", 2) or 2)
     if update_docx_fields_via_word_com(out_path, toc_depth=toc_depth):
         sync_toc_from_exported_docx(project, out_path)
     project_storage.save(project)
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module2",
+        action="export_docx",
+        credits_cost=0,
+        project_id=project_id,
+        ip_address=get_client_ip(request),
+    )
     return FileResponse(
         path=str(out_path),
         filename=f"Protocole_{project.project_id}.docx",
@@ -967,10 +1393,13 @@ def export_docx(project_id: str) -> FileResponse:
 
 
 @app.post("/api/projects/{project_id}/export/pdf")
-def export_pdf(project_id: str) -> FileResponse:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def export_pdf(
+    project_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> FileResponse:
+    project = get_authorized_project(project_id, current_user)
     out_path = settings.storage_dir / "exports" / f"{project.project_id}_protocole.pdf"
     try:
         compile_protocol_pdf(project, out_path)
@@ -978,6 +1407,15 @@ def export_pdf(project_id: str) -> FileResponse:
         project_storage.save(project)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module2",
+        action="export_pdf",
+        credits_cost=0,
+        project_id=project_id,
+        ip_address=get_client_ip(request),
+    )
     return FileResponse(
         path=str(out_path),
         filename=f"Protocole_{project.project_id}.pdf",
@@ -989,10 +1427,12 @@ def export_pdf(project_id: str) -> FileResponse:
 
 
 @app.post("/api/projects/{project_id}/crf/sync")
-def sync_project_crf(project_id: str, force_extract: bool = False) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def sync_project_crf(
+    project_id: str,
+    force_extract: bool = False,
+    current_user: UserORM = Depends(require_module_write("module3")),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
     if force_extract or not project.crf_fields:
         project.crf_fields = extract_crf_fields_from_project(project)
     else:
@@ -1010,10 +1450,9 @@ def sync_project_crf(project_id: str, force_extract: bool = False) -> Dict[str, 
 def update_project_crf_schema(
     project_id: str,
     payload: UpdateCRFSchemaRequest,
+    current_user: UserORM = Depends(require_module_write("module3")),
 ) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     project.crf_fields = payload.crf_fields
     sync_crf_to_project(project, sync_annexe1_markdown=payload.sync_annexe1)
     saved = project_storage.save(project)
@@ -1025,10 +1464,11 @@ def update_project_crf_schema(
 
 
 @app.get("/api/projects/{project_id}/crf/preview-html")
-def get_crf_preview_html(project_id: str) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def get_crf_preview_html(
+    project_id: str,
+    current_user: UserORM = Depends(get_active_user),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
     if ensure_project_crf_fields(project):
         project = project_storage.save(project)
     return {
@@ -1041,10 +1481,11 @@ def get_crf_preview_html(project_id: str) -> Dict[str, object]:
 def upsert_patient_record(
     project_id: str,
     payload: UpsertPatientRecordRequest,
+    request: Request,
+    current_user: UserORM = Depends(require_module_write("module3")),
+    db: Session = Depends(get_db),
 ) -> Dict[str, object]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     ensure_project_crf_fields(project)
 
     now = datetime.now(timezone.utc)
@@ -1086,6 +1527,15 @@ def upsert_patient_record(
         project.patient_records.append(rec)
 
     saved = project_storage.save(project)
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module3",
+        action="patient_upsert",
+        credits_cost=0,
+        project_id=project_id,
+        ip_address=get_client_ip(request),
+    )
     return {
         "project": saved.model_dump(mode="json"),
         "record": rec.model_dump(mode="json"),
@@ -1093,10 +1543,12 @@ def upsert_patient_record(
 
 
 @app.delete("/api/projects/{project_id}/patients/{record_id}", response_model=ProtocolProject)
-def delete_patient_record(project_id: str, record_id: str) -> ProtocolProject:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def delete_patient_record(
+    project_id: str,
+    record_id: str,
+    current_user: UserORM = Depends(require_module_write("module3")),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
     before = len(project.patient_records)
     project.patient_records = [r for r in project.patient_records if r.record_id != record_id]
     if len(project.patient_records) == before:
@@ -1105,11 +1557,23 @@ def delete_patient_record(project_id: str, record_id: str) -> ProtocolProject:
 
 
 @app.get("/api/projects/{project_id}/patients/export.csv")
-def export_patients_csv(project_id: str) -> Response:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def export_patients_csv(
+    project_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user_allow_query_token),
+    db: Session = Depends(get_db),
+) -> Response:
+    project = get_authorized_project(project_id, current_user)
     csv_text = export_patient_records_csv(project)
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module3",
+        action="export_csv",
+        credits_cost=0,
+        project_id=project_id,
+        ip_address=get_client_ip(request),
+    )
     return Response(
         content=csv_text.encode("utf-8"),
         media_type="text/csv; charset=utf-8",
@@ -1120,10 +1584,11 @@ def export_patients_csv(project_id: str) -> Response:
 
 
 @app.get("/api/projects/{project_id}/working-memory")
-def get_working_memory(project_id: str) -> Dict[str, Any]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def get_working_memory(
+    project_id: str,
+    current_user: UserORM = Depends(get_active_user),
+) -> Dict[str, Any]:
+    project = get_authorized_project(project_id, current_user)
     memory_map = load_working_memory_map(project)
     fpath = get_working_memory_path(project_id)
     return {
@@ -1136,10 +1601,11 @@ def get_working_memory(project_id: str) -> Dict[str, Any]:
 
 
 @app.post("/api/projects/{project_id}/working-memory/refresh")
-def refresh_working_memory(project_id: str) -> Dict[str, Any]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def refresh_working_memory(
+    project_id: str,
+    current_user: UserORM = Depends(require_module_write("module1")),
+) -> Dict[str, Any]:
+    project = get_authorized_project(project_id, current_user)
     return refresh_all_working_memory(project)
 
 
@@ -1149,7 +1615,10 @@ class AntigravityAgentRequest(BaseModel):
 
 
 @app.post("/api/antigravity/test")
-def test_antigravity_agent(payload: Optional[AntigravityAgentRequest] = None) -> Dict[str, Any]:
+def test_antigravity_agent(
+    payload: Optional[AntigravityAgentRequest] = None,
+    _admin: UserORM = Depends(require_admin),
+) -> Dict[str, Any]:
     prompt = payload.prompt if payload else "Confirme ton statut opérationnel pour SmartResearch FMSB."
     model = payload.agent_model if payload else "antigravity-preview-latest"
     return gemini_router.run_antigravity_agent(prompt=prompt, agent_model=model)
@@ -1166,10 +1635,11 @@ class GenerateSlideRequest(BaseModel):
     layout_mode: Optional[str] = None
 
 
-def _load_valid_deck(project_id: str) -> Tuple[ProtocolProject, PresentationDeck]:
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+def _load_valid_deck(
+    project_id: str,
+    current_user: UserORM,
+) -> Tuple[ProtocolProject, PresentationDeck]:
+    project = get_authorized_project(project_id, current_user)
     cached = project_storage.get_presentation(project_id)
     deck, changed = presentation_orchestrator.ensure_fresh_valid_deck(project, cached)
     if changed:
@@ -1178,18 +1648,23 @@ def _load_valid_deck(project_id: str) -> Tuple[ProtocolProject, PresentationDeck
 
 
 @app.get("/api/projects/{project_id}/presentation")
-def get_presentation(project_id: str) -> PresentationDeck:
+def get_presentation(
+    project_id: str,
+    current_user: UserORM = Depends(get_active_user),
+) -> PresentationDeck:
     """Retrieve, auto-migrate if needed, and return the presentation deck with Welcome first."""
-    _, deck = _load_valid_deck(project_id)
+    _, deck = _load_valid_deck(project_id, current_user)
     return deck
 
 
 @app.put("/api/projects/{project_id}/presentation")
-def update_presentation(project_id: str, payload: PresentationDeck) -> PresentationDeck:
+def update_presentation(
+    project_id: str,
+    payload: PresentationDeck,
+    current_user: UserORM = Depends(require_module_write("module4")),
+) -> PresentationDeck:
     """Save modified slides, speaker notes, layout modes, enforce opening order and recompute geometry."""
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     payload.project_id = project_id
     presentation_orchestrator.enforce_opening_order(payload)
     compute_deck_layout(payload, project=project)
@@ -1198,24 +1673,40 @@ def update_presentation(project_id: str, payload: PresentationDeck) -> Presentat
 
 
 @app.post("/api/projects/{project_id}/presentation/reset-from-protocol")
-def reset_presentation_from_protocol(project_id: str) -> PresentationDeck:
+def reset_presentation_from_protocol(
+    project_id: str,
+    current_user: UserORM = Depends(require_module_write("module4")),
+) -> PresentationDeck:
     """Rebuild the entire presentation deck directly from real protocol data."""
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
     deck = presentation_orchestrator.build_default_deck_from_protocol(project)
     project_storage.save_presentation(deck)
     return deck
 
 
 @app.post("/api/projects/{project_id}/presentation/generate-all")
-def generate_full_presentation_ai(project_id: str) -> Dict[str, Any]:
+def generate_full_presentation_ai(
+    project_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
     """Orchestrate 3 Gemini roles (3.5 Flash Lite drafting, 3.1 Flash Lite audit, Decision 1 layout)."""
-    project = project_storage.get(project_id)
-    if not project:
-        raise HTTPException(status_code=404, detail="Projet introuvable.")
+    project = get_authorized_project(project_id, current_user)
+    cost = assert_ai_quota_available(db, current_user, module_key="module4", action="pptx_generate_all")
     deck = presentation_orchestrator.generate_full_deck_with_ai(project)
     project_storage.save_presentation(deck)
+    models_str = ",".join(str(v) for v in (deck.models_used or {}).values() if v)[:120]
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module4",
+        action="pptx_generate_all",
+        credits_cost=cost,
+        project_id=project_id,
+        model_used=models_str,
+        ip_address=get_client_ip(request),
+    )
     return {
         "deck": deck,
         "models_used": deck.models_used,
@@ -1227,10 +1718,14 @@ def generate_full_presentation_ai(project_id: str) -> Dict[str, Any]:
 def ai_generate_slide(
     project_id: str,
     slide_index: int,
+    request: Request,
     payload: Optional[GenerateSlideRequest] = None,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """Regenerate one slide via Gemini 3.5 Flash Lite + Gemini 3.1 Flash Lite with optional instruction."""
-    project, deck = _load_valid_deck(project_id)
+    project, deck = _load_valid_deck(project_id, current_user)
+    cost = assert_ai_quota_available(db, current_user, module_key="module4", action="pptx_generate_slide")
 
     instruction = payload.instruction if payload else ""
     preferred_layout = payload.layout_mode if payload else None
@@ -1248,26 +1743,67 @@ def ai_generate_slide(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     project_storage.save_presentation(result["deck"])
+    if result.get("status") == "ok":
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module4",
+            action="pptx_generate_slide",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(result.get("model_used", "")),
+            ip_address=get_client_ip(request),
+        )
     return result
 
 
 @app.post("/api/projects/{project_id}/presentation/audit", response_model=PresentationAuditReport)
-def audit_presentation(project_id: str) -> PresentationAuditReport:
+def audit_presentation(
+    project_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> PresentationAuditReport:
     """Audit slide readability (>=24pt, <=6 lines), oral duration (10-15 min), and protocol fidelity."""
-    project, deck = _load_valid_deck(project_id)
+    project, deck = _load_valid_deck(project_id, current_user)
+    cost = assert_ai_quota_available(db, current_user, module_key="module4", action="pptx_audit")
     report = presentation_orchestrator.audit_presentation_deck(project, deck)
     project_storage.save_presentation(deck)
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module4",
+        action="pptx_audit",
+        credits_cost=cost,
+        project_id=project_id,
+        model_used=str(report.model_used or ""),
+        ip_address=get_client_ip(request),
+    )
     return report
 
 
 @app.get("/api/projects/{project_id}/presentation/export/pptx")
 @app.post("/api/projects/{project_id}/presentation/export/pptx")
-def export_presentation_pptx(project_id: str) -> FileResponse:
+def export_presentation_pptx(
+    project_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user_allow_query_token),
+    db: Session = Depends(get_db),
+) -> FileResponse:
     """Compile and download the native Microsoft PowerPoint (.pptx) presentation."""
-    project, deck = _load_valid_deck(project_id)
+    project, deck = _load_valid_deck(project_id, current_user)
 
     out_pptx = settings.storage_dir / "exports" / f"{project.project_id}_soutenance.pptx"
     compile_presentation_pptx(deck, out_pptx, project=project)
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module4",
+        action="export_pptx",
+        credits_cost=0,
+        project_id=project_id,
+        ip_address=get_client_ip(request),
+    )
 
     return FileResponse(
         path=str(out_pptx),
@@ -1278,9 +1814,14 @@ def export_presentation_pptx(project_id: str) -> FileResponse:
 
 @app.get("/api/projects/{project_id}/presentation/export/pdf")
 @app.post("/api/projects/{project_id}/presentation/export/pdf")
-def export_presentation_pdf(project_id: str) -> FileResponse:
+def export_presentation_pdf(
+    project_id: str,
+    request: Request,
+    current_user: UserORM = Depends(get_active_user_allow_query_token),
+    db: Session = Depends(get_db),
+) -> FileResponse:
     """Compile the presentation to .pptx and render PDF via Microsoft PowerPoint COM."""
-    project, deck = _load_valid_deck(project_id)
+    project, deck = _load_valid_deck(project_id, current_user)
 
     out_pptx = settings.storage_dir / "exports" / f"{project.project_id}_soutenance.pptx"
     out_pdf = settings.storage_dir / "exports" / f"{project.project_id}_soutenance_slides.pdf"
@@ -1289,6 +1830,15 @@ def export_presentation_pdf(project_id: str) -> FileResponse:
         export_pptx_to_pdf(out_pptx, out_pdf)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module4",
+        action="export_pptx_pdf",
+        credits_cost=0,
+        project_id=project_id,
+        ip_address=get_client_ip(request),
+    )
 
     return FileResponse(
         path=str(out_pdf),
@@ -1298,9 +1848,12 @@ def export_presentation_pdf(project_id: str) -> FileResponse:
 
 
 @app.post("/api/projects/{project_id}/presentation/render-previews")
-def render_presentation_previews(project_id: str) -> Dict[str, Any]:
+def render_presentation_previews(
+    project_id: str,
+    current_user: UserORM = Depends(get_active_user),
+) -> Dict[str, Any]:
     """Compile .pptx and export genuine Microsoft PowerPoint PNG slide previews (1280x720)."""
-    project, deck = _load_valid_deck(project_id)
+    project, deck = _load_valid_deck(project_id, current_user)
 
     out_pptx = settings.storage_dir / "exports" / f"{project.project_id}_soutenance.pptx"
     previews_dir = settings.storage_dir / "exports" / f"{project.project_id}_previews"
@@ -1321,8 +1874,13 @@ def render_presentation_previews(project_id: str) -> Dict[str, Any]:
 
 
 @app.get("/api/projects/{project_id}/presentation/previews/{slide_num}")
-def get_presentation_preview_png(project_id: str, slide_num: int) -> FileResponse:
+def get_presentation_preview_png(
+    project_id: str,
+    slide_num: int,
+    current_user: UserORM = Depends(get_active_user_allow_query_token),
+) -> FileResponse:
     """Serve a rendered PowerPoint PNG preview image for a specific slide index."""
+    get_authorized_project(project_id, current_user)
     png_path = settings.storage_dir / "exports" / f"{project_id}_previews" / f"slide_{slide_num:02d}.png"
     if not png_path.exists():
         raise HTTPException(status_code=404, detail="Aperçu PNG non encore généré.")
@@ -1339,6 +1897,9 @@ def list_presentation_templates() -> Dict[str, Any]:
     return {"templates": SLIDE_TEMPLATE_CATALOG}
 
 
+app.include_router(admin_router)
+
+
 # Serve user presentation image templates
 TAMPLATES_DIR = WORKSPACE_DIR / "tamplates"
 if TAMPLATES_DIR.exists():
@@ -1347,4 +1908,9 @@ if TAMPLATES_DIR.exists():
 # Serve built frontend assets when present (single-server preview mode)
 FRONTEND_DIST = WORKSPACE_DIR / "frontend" / "dist"
 if FRONTEND_DIST.exists():
+    @app.get("/admin", include_in_schema=False)
+    @app.get("/admin/{full_path:path}", include_in_schema=False)
+    def serve_admin_spa(full_path: str = "") -> FileResponse:
+        return FileResponse(str(FRONTEND_DIST / "index.html"))
+
     app.mount("/", StaticFiles(directory=str(FRONTEND_DIST), html=True), name="frontend")

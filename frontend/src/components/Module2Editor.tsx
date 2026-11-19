@@ -3,6 +3,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   Download,
+  Feather,
   FileCheck2,
   FileText,
   RefreshCw,
@@ -12,11 +13,12 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { api } from "../api/client";
+import { api, authHeaders, withAuthToken } from "../api/client";
 import type {
   CanvasSectionSpec,
   FormattingRules,
   GlobalAuditReport,
+  HumanizeProtocolReport,
   ProtocolProject,
 } from "../types/protocol";
 import { StructuredTablesEditor } from "./StructuredTablesEditor";
@@ -55,6 +57,9 @@ export function Module2Editor({
   } | null>(null);
   const [auditingGlobal, setAuditingGlobal] = useState(false);
   const [globalAudit, setGlobalAudit] = useState<GlobalAuditReport | null>(null);
+  const [humanizingAll, setHumanizingAll] = useState(false);
+  const [humanizeReport, setHumanizeReport] =
+    useState<HumanizeProtocolReport | null>(null);
 
   const syncedTransportProjectRef = useRef<string | null>(null);
 
@@ -112,7 +117,10 @@ export function Module2Editor({
   const handleDownloadPdf = async () => {
     setExportingPdf(true);
     try {
-      const res = await fetch(api.exportPdfUrl(project.project_id), { method: "POST" });
+      const res = await fetch(api.exportPdfUrl(project.project_id), {
+        method: "POST",
+        headers: authHeaders(),
+      });
       if (!res.ok) {
         const errTxt = await res.text();
         throw new Error(errTxt || `Erreur HTTP ${res.status}`);
@@ -157,6 +165,24 @@ export function Module2Editor({
       onError(e instanceof Error ? e.message : "Échec de l'audit global");
     } finally {
       setAuditingGlobal(false);
+    }
+  };
+
+  const handleHumanizeAll = async () => {
+    setHumanizingAll(true);
+    onError("");
+    try {
+      const res = await api.humanizeProtocol(project.project_id, true);
+      onProjectUpdated(res.project);
+      setHumanizeReport(res.report);
+    } catch (e: unknown) {
+      onError(
+        e instanceof Error
+          ? e.message
+          : "Échec de l'humanisation académique du protocole."
+      );
+    } finally {
+      setHumanizingAll(false);
     }
   };
 
@@ -533,6 +559,79 @@ export function Module2Editor({
           </button>
         </div>
 
+        {/* Humanisation Académique & Anti-Détection IA */}
+        <div className="rounded-xl border border-amber-300 bg-gradient-to-br from-amber-50/90 via-white to-emerald-50/40 p-5 shadow-xs">
+          <div className="flex items-center gap-2">
+            <Feather className="h-4 w-4 text-amber-700" />
+            <h3 className="text-sm font-bold text-slate-900">
+              Humanisation Académique &amp; Anti-Détection IA
+            </h3>
+          </div>
+          <p className="mt-1 text-xs text-slate-600">
+            Réécriture en plume clinique FMSB authentique avant compilation Word/PDF,
+            avec conservation stricte des données et empreinte auteur réelle.
+          </p>
+          <ul className="mt-2.5 space-y-1 text-[11px] text-slate-700">
+            <li className="flex items-center gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+              <span>Réécriture naturelle FMSB (Burstiness &amp; Perplexité)</span>
+            </li>
+            <li className="flex items-center gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+              <span>Conservation 100 % des citations Vancouver [n] et chiffres</span>
+            </li>
+            <li className="flex items-center gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+              <span>
+                Signature .docx/.pdf au nom de :{" "}
+                <strong>{project.cover.author_name || "Impétrant FMSB"}</strong>
+              </span>
+            </li>
+          </ul>
+          <button
+            type="button"
+            disabled={humanizingAll}
+            onClick={handleHumanizeAll}
+            className="mt-3 flex min-h-[40px] w-full items-center justify-center gap-2 rounded-lg bg-amber-700 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
+          >
+            <Feather className={`h-4 w-4 ${humanizingAll ? "animate-pulse" : ""}`} />
+            {humanizingAll
+              ? "Humanisation du protocole en cours..."
+              : "Humaniser tout le protocole avant export Word/PDF"}
+          </button>
+
+          {humanizeReport && (
+            <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/90 p-3 text-xs text-emerald-950">
+              <div className="flex flex-wrap items-center justify-between gap-1 font-bold">
+                <span>
+                  {humanizeReport.sections_humanized} section(s) humanisée(s)
+                </span>
+                <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[11px] text-white">
+                  Style humain : {humanizeReport.average_human_score} %
+                </span>
+              </div>
+              <div className="mt-1.5 space-y-0.5 text-[11px] text-emerald-900">
+                <div>
+                  Tournures IA purgées :{" "}
+                  <strong>{humanizeReport.total_cliches_removed}</strong> · Score
+                  moyen : {humanizeReport.average_before_score} % →{" "}
+                  <strong>{humanizeReport.average_human_score} %</strong>
+                </div>
+                <div>
+                  Citations Vancouver [n] préservées :{" "}
+                  <strong>
+                    {humanizeReport.citations_preserved ? "100 % conformes" : "Vérification requise"}
+                  </strong>
+                </div>
+                <div>
+                  Auteur Word/PDF signé :{" "}
+                  <strong>{humanizeReport.author_signature}</strong>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Export Box */}
         <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-5">
           <h3 className="flex items-center gap-2 text-sm font-bold text-emerald-950">
@@ -549,8 +648,17 @@ export function Module2Editor({
               href={api.exportDocxUrl(project.project_id)}
               onClick={(e) => {
                 e.preventDefault();
-                fetch(api.exportDocxUrl(project.project_id), { method: "POST" })
-                  .then((r) => r.blob())
+                fetch(api.exportDocxUrl(project.project_id), {
+                  method: "POST",
+                  headers: authHeaders(),
+                })
+                  .then(async (r) => {
+                    if (!r.ok) {
+                      const errTxt = await r.text();
+                      throw new Error(errTxt || `Erreur HTTP ${r.status}`);
+                    }
+                    return r.blob();
+                  })
                   .then((blob) => {
                     const url = URL.createObjectURL(blob);
                     const a = document.createElement("a");
@@ -558,6 +666,9 @@ export function Module2Editor({
                     a.download = `Protocole_${project.project_id}.docx`;
                     a.click();
                     URL.revokeObjectURL(url);
+                  })
+                  .catch((err) => {
+                    onError(err instanceof Error ? err.message : "Échec de l'export DOCX");
                   });
               }}
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800"
@@ -1218,7 +1329,7 @@ export function Module2Editor({
                           )
                           .map((img) => {
                             const imgSrc = img.local_path
-                              ? `/api/projects/${project.project_id}/images/${img.asset_id}/file`
+                              ? withAuthToken(`/api/projects/${project.project_id}/images/${img.asset_id}/file`)
                               : img.source_url || "";
                             return (
                               <div key={img.asset_id} className="mt-4 rounded-lg border border-slate-200 bg-slate-50/70 p-3 text-center">

@@ -26,6 +26,10 @@ from app.services.diagram_renderer import (
     compute_minimum_legible_figure_size_cm,
     render_diagram_png,
 )
+from app.services.humanizer import (
+    apply_human_author_metadata_docx,
+    sanitize_llm_french_typography,
+)
 from app.services.list_builder import (
     build_unified_abbreviations_list,
     build_unified_tables_and_figures_lists,
@@ -1500,6 +1504,10 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         inserted_paras = []
         raw_html = html_str.strip() if html_str and html_str.strip() else ""
         raw_md = markdown_str.strip() if markdown_str and markdown_str.strip() else ""
+        if raw_html:
+            raw_html, _ = sanitize_llm_french_typography(raw_html)
+        if raw_md:
+            raw_md, _ = sanitize_llm_french_typography(raw_md)
         has_md_pipe_table = bool(re.search(r"(?m)^\s*\|[\s:\-|]+\|\s*$", raw_md))
 
         if has_md_pipe_table and "<table" not in raw_html.lower():
@@ -2147,6 +2155,7 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         cursor = render_custom_diagrams(ann_sec, cursor)
 
     _configure_fmsb_pagination(doc, anchors.get("introduction"), fmt)
+    apply_human_author_metadata_docx(doc, project)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))

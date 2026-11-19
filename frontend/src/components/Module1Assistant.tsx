@@ -5,15 +5,19 @@ import {
   CheckCircle2,
   Circle,
   Clock,
+  Feather,
   FileText,
   Globe,
   Loader2,
+  Lock,
+  Menu,
   MessageSquarePlus,
   Plus,
   ShieldCheck,
   Sparkles,
   Trash2,
   Wand2,
+  X,
 } from "lucide-react";
 import { api } from "../api/client";
 import type {
@@ -21,6 +25,7 @@ import type {
   CanvasSectionSpec,
   CoverMetadata,
   DraftResult,
+  HumanizeSectionResult,
   ProtocolProject,
   SectionOrchestrationTrace,
   StepStatus,
@@ -46,6 +51,7 @@ interface Module1Props {
   onSaveCover: (cover: CoverMetadata) => Promise<void>;
   onError: (msg: string) => void;
   saving: boolean;
+  isAdmin?: boolean;
 }
 
 const STATUS_BADGES: Record<
@@ -110,7 +116,12 @@ export function Module1Assistant({
   onSaveCover,
   onError,
   saving,
+  isAdmin = false,
 }: Module1Props) {
+  const isIdentityLocked = Boolean(project.topic_locked) && !isAdmin;
+  const isTitleLocked = isIdentityLocked && Boolean(project.locked_title || project.name);
+  const isAuthorLocked = isIdentityLocked && Boolean(project.locked_author_name);
+  const isMatriculeLocked = isIdentityLocked && Boolean(project.locked_matricule);
   const activeSpec =
     canvas.find((s) => s.id === selectedSectionId) ?? canvas[0];
   const activeState = project.sections[activeSpec.id];
@@ -118,6 +129,7 @@ export function Module1Assistant({
   const [draft, setDraft] = useState(activeState?.content_markdown ?? "");
   const [draftHtml, setDraftHtml] = useState(activeState?.content_html ?? "");
   const [notes, setNotes] = useState(activeState?.user_notes ?? "");
+  const [mobileStepsOpen, setMobileStepsOpen] = useState(false);
   const [aiInstruction, setAiInstruction] = useState("");
   const [coverForm, setCoverForm] = useState<CoverMetadata>(() =>
     withStructuredSupervisors(project.cover)
@@ -170,12 +182,15 @@ export function Module1Assistant({
   const [busyDraft, setBusyDraft] = useState(false);
   const [busyAudit, setBusyAudit] = useState(false);
   const [busyFix, setBusyFix] = useState(false);
+  const [busyHumanize, setBusyHumanize] = useState(false);
   const [busyToc, setBusyToc] = useState(false);
   const [busyRefs, setBusyRefs] = useState(false);
   const [busyAntigravity, setBusyAntigravity] = useState(false);
   const [lastRefDecisionNote, setLastRefDecisionNote] = useState<string | null>(null);
   const [lastDraftResult, setLastDraftResult] = useState<DraftResult | null>(null);
   const [lastAuditResult, setLastAuditResult] = useState<AuditResult | null>(null);
+  const [lastHumanizeResult, setLastHumanizeResult] =
+    useState<HumanizeSectionResult | null>(null);
   const [lastOrchestration, setLastOrchestration] =
     useState<SectionOrchestrationTrace | null>(null);
   const [showMemoryPanel, setShowMemoryPanel] = useState(false);
@@ -264,6 +279,7 @@ export function Module1Assistant({
     setNotes(activeState?.user_notes ?? "");
     setLastDraftResult(null);
     setLastAuditResult(null);
+    setLastHumanizeResult(null);
     setLastRefDecisionNote(null);
     setLastOrchestration(null);
   }, [activeSpec.id, activeState?.content_markdown, activeState?.content_html, activeState?.user_notes]);
@@ -380,8 +396,84 @@ export function Module1Assistant({
     }
   }
 
+  async function handleHumanizeWithAI() {
+    setBusyHumanize(true);
+    onError("");
+    try {
+      const res = await api.humanizeSection(project.project_id, activeSpec.id, true);
+      onProjectUpdated(res.project);
+      setDraft(res.result.content_markdown);
+      setDraftHtml(
+        res.result.content_html ??
+          res.project.sections[activeSpec.id]?.content_html ??
+          ""
+      );
+      setLastHumanizeResult(res.result);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyHumanize(false);
+    }
+  }
+
+  const renderStepsList = (closeDrawer?: () => void) => (
+    <div className="space-y-4">
+      {chapters.map((chap) => (
+        <div key={chap.chapterId}>
+          <div className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">
+            {chap.chapterTitle}
+          </div>
+          <div className="space-y-1">
+            {chap.items.map((item) => {
+              const st = project.sections[item.id]?.status ?? "pending";
+              const segCount = project.article_segments.filter(
+                (s) => s.approved && s.target_section_ids.includes(item.id)
+              ).length;
+              const isSelected = item.id === activeSpec.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => {
+                    onSelectSection(item.id);
+                    closeDrawer?.();
+                  }}
+                  className={`flex min-h-[42px] w-full items-start justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition ${
+                    isSelected
+                      ? "bg-indigo-50 font-medium text-indigo-900 ring-1 ring-indigo-200"
+                      : "text-slate-700 hover:bg-slate-50"
+                  }`}
+                >
+                  <span className="flex items-start gap-2">
+                    <span className="mt-0.5 shrink-0">
+                      {st === "validated" ? (
+                        <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                      ) : st === "in_progress" ? (
+                        <Clock className="h-4 w-4 text-amber-500" />
+                      ) : st === "needs_revision" ? (
+                        <AlertCircle className="h-4 w-4 text-rose-500" />
+                      ) : (
+                        <Circle className="h-4 w-4 text-slate-300" />
+                      )}
+                    </span>
+                    <span className="line-clamp-2 leading-snug">{item.title}</span>
+                  </span>
+                  {segCount > 0 && (
+                    <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                      {segCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+
   return (
-    <div className="space-y-5">
+    <div className="space-y-4 sm:space-y-5">
       {/* Top Research / Import / References Panel */}
       <ResearchPanel
         project={project}
@@ -389,9 +481,68 @@ export function Module1Assistant({
         onError={onError}
       />
 
+      {/* Mobile Sticky Step Selector Bar (< lg) */}
+      <div className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 shadow-sm lg:hidden">
+        <div className="min-w-0">
+          <div className="truncate text-[10px] font-bold uppercase tracking-wider text-indigo-600">
+            {activeSpec.chapter_title} · {validatedCount}/{canvas.length} validées
+          </div>
+          <div className="truncate text-sm font-bold text-slate-900">
+            {activeSpec.title}
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setMobileStepsOpen(true)}
+          className="inline-flex min-h-[44px] shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 text-xs font-semibold text-white shadow-xs hover:bg-indigo-700"
+        >
+          <Menu className="h-4 w-4" />
+          Étapes ({canvas.length})
+        </button>
+      </div>
+
+      {/* Mobile Slide-Over Drawer for 24 Steps */}
+      {mobileStepsOpen && (
+        <div className="fixed inset-0 z-40 flex lg:hidden">
+          <div
+            className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs"
+            onClick={() => setMobileStepsOpen(false)}
+          />
+          <div className="relative z-50 flex h-full w-80 max-w-[85vw] flex-col bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+              <div>
+                <h2 className="text-sm font-bold uppercase tracking-wide text-slate-800">
+                  Canevas FMSB
+                </h2>
+                <span className="text-xs font-semibold text-indigo-700">
+                  {validatedCount}/{canvas.length} étapes validées
+                </span>
+              </div>
+              <button
+                type="button"
+                aria-label="Fermer le plan FMSB"
+                onClick={() => setMobileStepsOpen(false)}
+                className="flex min-h-[40px] min-w-[40px] items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="h-1.5 w-full bg-slate-100">
+              <div
+                className="h-full bg-emerald-600 transition-all"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+            <div className="flex-1 overflow-y-auto p-4">
+              {renderStepsList(() => setMobileStepsOpen(false))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-        {/* Sidebar: Step-by-step FMSB Canvas */}
-        <aside className="lg:col-span-4 xl:col-span-3">
+        {/* Desktop Sidebar: Step-by-step FMSB Canvas */}
+        <aside className="hidden lg:block lg:col-span-4 xl:col-span-3">
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">
@@ -408,57 +559,8 @@ export function Module1Assistant({
               />
             </div>
 
-            <div className="max-h-[68vh] space-y-4 overflow-y-auto pr-1">
-              {chapters.map((chap) => (
-                <div key={chap.chapterId}>
-                  <div className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">
-                    {chap.chapterTitle}
-                  </div>
-                  <div className="space-y-1">
-                    {chap.items.map((item) => {
-                      const st = project.sections[item.id]?.status ?? "pending";
-                      const segCount = project.article_segments.filter(
-                        (s) => s.approved && s.target_section_ids.includes(item.id)
-                      ).length;
-                      const isSelected = item.id === activeSpec.id;
-                      return (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => onSelectSection(item.id)}
-                          className={`flex w-full items-start justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition ${
-                            isSelected
-                              ? "bg-indigo-50 font-medium text-indigo-900 ring-1 ring-indigo-200"
-                              : "text-slate-700 hover:bg-slate-50"
-                          }`}
-                        >
-                          <span className="flex items-start gap-2">
-                            <span className="mt-0.5 shrink-0">
-                              {st === "validated" ? (
-                                <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                              ) : st === "in_progress" ? (
-                                <Clock className="h-4 w-4 text-amber-500" />
-                              ) : st === "needs_revision" ? (
-                                <AlertCircle className="h-4 w-4 text-rose-500" />
-                              ) : (
-                                <Circle className="h-4 w-4 text-slate-300" />
-                              )}
-                            </span>
-                            <span className="line-clamp-2 leading-snug">
-                              {item.title}
-                            </span>
-                          </span>
-                          {segCount > 0 && (
-                            <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
-                              {segCount}
-                            </span>
-                          )}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
+            <div className="max-h-[68vh] overflow-y-auto pr-1">
+              {renderStepsList()}
             </div>
           </div>
         </aside>
@@ -540,16 +642,26 @@ export function Module1Assistant({
               </h4>
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                 <div className="md:col-span-2">
-                  <label className="block text-xs font-medium text-slate-600">
-                    Titre complet du protocole (encadré 18 à 24 pt)
+                  <label className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-600">
+                    <span>Titre complet du protocole (encadré 18 à 24 pt)</span>
+                    {isTitleLocked && (
+                      <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                        <Lock className="h-2.5 w-2.5" /> Verrouillé — 1 utilisateur = 1 protocole
+                      </span>
+                    )}
                   </label>
                   <input
                     type="text"
+                    readOnly={isTitleLocked}
                     value={coverForm.title}
-                    onChange={(e) =>
-                      setCoverForm({ ...coverForm, title: e.target.value })
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    onChange={(e) => {
+                      if (!isTitleLocked) setCoverForm({ ...coverForm, title: e.target.value });
+                    }}
+                    className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
+                      isTitleLocked
+                        ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-600"
+                        : "border-slate-300 focus:border-indigo-500"
+                    }`}
                   />
                 </div>
                 <div>
@@ -627,29 +739,49 @@ export function Module1Assistant({
                   </div>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600">
-                    Noms & Prénoms de l'étudiant(e)
+                  <label className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-slate-600">
+                    <span>Noms & Prénoms de l'étudiant(e)</span>
+                    {isAuthorLocked && (
+                      <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                        <Lock className="h-2.5 w-2.5" /> Verrouillé
+                      </span>
+                    )}
                   </label>
                   <input
                     type="text"
+                    readOnly={isAuthorLocked}
                     value={coverForm.author_name}
-                    onChange={(e) =>
-                      setCoverForm({ ...coverForm, author_name: e.target.value })
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    onChange={(e) => {
+                      if (!isAuthorLocked) setCoverForm({ ...coverForm, author_name: e.target.value });
+                    }}
+                    className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
+                      isAuthorLocked
+                        ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-600"
+                        : "border-slate-300 focus:border-indigo-500"
+                    }`}
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-600">
-                    Matricule
+                  <label className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-slate-600">
+                    <span>Matricule</span>
+                    {isMatriculeLocked && (
+                      <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
+                        <Lock className="h-2.5 w-2.5" /> Verrouillé
+                      </span>
+                    )}
                   </label>
                   <input
                     type="text"
+                    readOnly={isMatriculeLocked}
                     value={coverForm.matricule}
-                    onChange={(e) =>
-                      setCoverForm({ ...coverForm, matricule: e.target.value })
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                    onChange={(e) => {
+                      if (!isMatriculeLocked) setCoverForm({ ...coverForm, matricule: e.target.value });
+                    }}
+                    className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
+                      isMatriculeLocked
+                        ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-600"
+                        : "border-slate-300 focus:border-indigo-500"
+                    }`}
                   />
                 </div>
                 <div className="sm:col-span-2 rounded-lg border border-slate-200 bg-slate-50/70 p-3.5">
@@ -1112,6 +1244,28 @@ export function Module1Assistant({
                     "abbreviations",
                     "list_of_tables",
                     "list_of_figures",
+                    "references",
+                  ].includes(activeSpec.id) && (
+                    <button
+                      type="button"
+                      disabled={busyHumanize || !draft.trim()}
+                      onClick={handleHumanizeWithAI}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                      title="Réécrire cette section en plume médicale naturelle FMSB tout en conservant 100 % des citations [n] et chiffres"
+                    >
+                      {busyHumanize ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Feather className="h-3.5 w-3.5 text-amber-700" />
+                      )}
+                      {busyHumanize ? "Humanisation..." : "Humaniser le style"}
+                    </button>
+                  )}
+                  {![
+                    "toc",
+                    "abbreviations",
+                    "list_of_tables",
+                    "list_of_figures",
                   ].includes(activeSpec.id) && (
                     <button
                       type="button"
@@ -1207,6 +1361,27 @@ export function Module1Assistant({
                 <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3 text-xs text-indigo-950">
                   <strong>Modèle ({lastDraftResult.model_used}) :</strong>{" "}
                   {lastDraftResult.assistant_commentary}
+                </div>
+              )}
+
+              {lastHumanizeResult && !lastHumanizeResult.skipped && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-950">
+                  <div className="flex flex-wrap items-center justify-between gap-2 font-semibold">
+                    <span>
+                      Humanisation académique ({lastHumanizeResult.model_used})
+                    </span>
+                    <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[11px] text-white">
+                      Style naturel : {lastHumanizeResult.before_metrics.human_style_score} % →{" "}
+                      {lastHumanizeResult.after_metrics.human_style_score} %
+                    </span>
+                  </div>
+                  <p className="mt-1 text-[11px] text-amber-900">
+                    {lastHumanizeResult.style_adjustments_summary} · Tournures IA éliminées :{" "}
+                    <strong>{lastHumanizeResult.cliches_removed}</strong> · Citations [n] :{" "}
+                    <strong>
+                      {lastHumanizeResult.citations_preserved ? "100 % préservées" : "À vérifier"}
+                    </strong>
+                  </p>
                 </div>
               )}
 

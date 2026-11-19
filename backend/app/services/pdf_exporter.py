@@ -6,6 +6,7 @@ from typing import Optional
 
 from app.schemas.protocol import ProtocolProject
 from app.services.docx_template import compile_protocol_docx
+from app.services.humanizer import apply_human_author_metadata_pdf
 
 
 def _run_word_com_update(docx_path: Path, pdf_path: Optional[Path] = None, toc_depth: int = 2) -> None:
@@ -154,5 +155,10 @@ def compile_protocol_pdf(project: ProtocolProject, output_pdf_path: Path) -> Pat
 
     if not output_pdf_path.exists() or output_pdf_path.stat().st_size == 0:
         raise RuntimeError("Le fichier PDF généré est vide ou introuvable.")
+
+    try:
+        apply_human_author_metadata_pdf(output_pdf_path, project)
+    except Exception:
+        pass
 
     return output_pdf_path

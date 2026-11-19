@@ -3,10 +3,12 @@ from docx import Document
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests._auth_helper import login_as_admin
 
 
 def run_phase2_tests() -> None:
     client = TestClient(app)
+    login_as_admin(client)
 
     # 1. Create a real medical research project
     created = client.post(

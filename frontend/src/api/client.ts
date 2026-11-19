@@ -1,4 +1,23 @@
 import type {
+  AdminAdjustEntitlementRequest,
+  AdminAuditLogOut,
+  AdminCreateUserRequest,
+  AdminCreateUserResponse,
+  AdminDashboardStatsOut,
+  AdminGrantPlanRequest,
+  AdminRechargeAIRequest,
+  AdminResetPasswordResponse,
+  AdminStudentStatsRow,
+  AdminUpdateProjectIdentityRequest,
+  AdminUpdateUserRequest,
+  AdminUserDetailOut,
+  LicensePlanCreateRequest,
+  LicensePlanOut,
+  LicensePlanUpdateRequest,
+  UsageEventOut,
+} from "../types/admin";
+import type { TokenResponse, UserMeOut } from "../types/auth";
+import type {
   AbbreviationItem,
   AnnexesConfig,
   AuditResult,
@@ -12,6 +31,8 @@ import type {
   EntryMode,
   FormattingRules,
   GlobalAuditReport,
+  HumanizeProtocolReport,
+  HumanizeSectionResult,
   ImportReport,
   LiteratureSynthesisItem,
   ModelsStatus,
@@ -26,12 +47,137 @@ import type {
   VariableItem,
 } from "../types/protocol";
 
-async function request<T>(url: string, options?: RequestInit): Promise<T> {
+const ACCESS_TOKEN_KEY = "sr_fmsb_access_token";
+const REFRESH_TOKEN_KEY = "sr_fmsb_refresh_token";
+
+export function getAccessToken(): string | null {
+  try {
+    return localStorage.getItem(ACCESS_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function getRefreshToken(): string | null {
+  try {
+    return localStorage.getItem(REFRESH_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function setAuthTokens(accessToken: string, refreshToken: string): void {
+  try {
+    localStorage.setItem(ACCESS_TOKEN_KEY, accessToken);
+    localStorage.setItem(REFRESH_TOKEN_KEY, refreshToken);
+  } catch {
+    // Ignore storage errors in restricted contexts
+  }
+}
+
+export function clearAuthTokens(): void {
+  try {
+    localStorage.removeItem(ACCESS_TOKEN_KEY);
+    localStorage.removeItem(REFRESH_TOKEN_KEY);
+  } catch {
+    // Ignore
+  }
+}
+
+export function authHeaders(): Record<string, string> {
+  const tok = getAccessToken();
+  return tok ? { Authorization: `Bearer ${tok}` } : {};
+}
+
+export function withAuthToken(url: string): string {
+  if (
+    !url ||
+    url.startsWith("http://") ||
+    url.startsWith("https://") ||
+    url.startsWith("data:") ||
+    url.startsWith("blob:")
+  ) {
+    return url;
+  }
+  const tok = getAccessToken();
+  if (!tok || url.includes("access_token=")) {
+    return url;
+  }
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}access_token=${encodeURIComponent(tok)}`;
+}
+
+let _unauthorizedHandler: ((reason?: string) => void) | null = null;
+export function setUnauthorizedHandler(cb: ((reason?: string) => void) | null): void {
+  _unauthorizedHandler = cb;
+}
+
+async function parseApiError(res: Response): Promise<{ code: string; message: string }> {
+  const raw = await res.text();
+  if (!raw) {
+    return { code: "", message: `Erreur HTTP ${res.status}` };
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.detail === "object" && parsed.detail !== null) {
+      return {
+        code: String(parsed.detail.code || ""),
+        message: String(parsed.detail.message || JSON.stringify(parsed.detail)),
+      };
+    }
+    if (parsed && typeof parsed.detail === "string") {
+      return { code: "", message: parsed.detail };
+    }
+  } catch {
+    // Raw plain text fallback
+  }
+  return { code: "", message: raw };
+}
+
+let _refreshInFlight: Promise<boolean> | null = null;
+
+async function trySilentRefresh(): Promise<boolean> {
+  if (_refreshInFlight) return _refreshInFlight;
+  const rt = getRefreshToken();
+  if (!rt) return false;
+
+  _refreshInFlight = (async () => {
+    try {
+      const res = await fetch("/api/auth/refresh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: rt }),
+      });
+      if (!res.ok) return false;
+      const data = (await res.json()) as TokenResponse;
+      setAuthTokens(data.access_token, data.refresh_token);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      _refreshInFlight = null;
+    }
+  })();
+
+  return _refreshInFlight;
+}
+
+interface RequestOptions extends RequestInit {
+  skipAuth?: boolean;
+  _retried?: boolean;
+}
+
+async function request<T>(url: string, options?: RequestOptions): Promise<T> {
+  const { skipAuth = false, _retried = false, headers, ...fetchOptions } = options || {};
   let res: Response;
   try {
     res = await fetch(url, {
-      headers: { "Content-Type": "application/json", ...(options?.headers || {}) },
-      ...options,
+      ...fetchOptions,
+      headers: {
+        "Content-Type": "application/json",
+        ...(skipAuth ? {} : authHeaders()),
+        ...(headers || {}),
+      },
     });
   } catch (err) {
     if (err instanceof TypeError) {
@@ -41,9 +187,23 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
     }
     throw err;
   }
+
+  if (res.status === 401 && !skipAuth) {
+    const { code, message } = await parseApiError(res);
+    if (!_retried && code === "TOKEN_EXPIRED" && getRefreshToken()) {
+      const refreshed = await trySilentRefresh();
+      if (refreshed) {
+        return request<T>(url, { ...options, _retried: true });
+      }
+    }
+    clearAuthTokens();
+    _unauthorizedHandler?.(message);
+    throw new Error(message || "Session expirée. Veuillez vous reconnecter.");
+  }
+
   if (!res.ok) {
-    const detail = await res.text();
-    throw new Error(detail || `Erreur HTTP ${res.status}`);
+    const { message } = await parseApiError(res);
+    throw new Error(message || `Erreur HTTP ${res.status}`);
   }
   return res.json() as Promise<T>;
 }
@@ -182,14 +342,22 @@ export const api = {
     form.append("anchor_hint", params.anchor_hint);
     const res = await fetch(`/api/projects/${projectId}/images/upload`, {
       method: "POST",
+      headers: authHeaders(),
       body: form,
     });
     if (!res.ok) {
-      const detail = await res.text();
-      throw new Error(detail || `Erreur HTTP ${res.status}`);
+      const { message } = await parseApiError(res);
+      if (res.status === 401) {
+        clearAuthTokens();
+        _unauthorizedHandler?.(message);
+      }
+      throw new Error(message || `Erreur HTTP ${res.status}`);
     }
     return res.json();
   },
+
+  projectImageUrl: (projectId: string, assetId: string) =>
+    withAuthToken(`/api/projects/${projectId}/images/${assetId}/file`),
 
   deleteImage: (projectId: string, assetId: string) =>
     request<ProtocolProject>(`/api/projects/${projectId}/images/${assetId}`, {
@@ -218,6 +386,24 @@ export const api = {
       `/api/projects/${projectId}/sections/${sectionId}/fix`,
       {
         method: "POST",
+      }
+    ),
+
+  humanizeSection: (projectId: string, sectionId: string, useAi = true) =>
+    request<{ project: ProtocolProject; result: HumanizeSectionResult }>(
+      `/api/projects/${projectId}/sections/${sectionId}/humanize`,
+      {
+        method: "POST",
+        body: JSON.stringify({ use_ai: useAi }),
+      }
+    ),
+
+  humanizeProtocol: (projectId: string, useAi = true) =>
+    request<{ project: ProtocolProject; report: HumanizeProtocolReport }>(
+      `/api/projects/${projectId}/humanize-all`,
+      {
+        method: "POST",
+        body: JSON.stringify({ use_ai: useAi }),
       }
     ),
 
@@ -361,7 +547,7 @@ export const api = {
     ),
 
   diagramSvgUrl: (projectId: string, sectionId: string, diagramId: string) =>
-    `/api/projects/${projectId}/sections/${sectionId}/diagrams/${diagramId}/svg`,
+    withAuthToken(`/api/projects/${projectId}/sections/${sectionId}/diagrams/${diagramId}/svg`),
 
   importProtocol: async (
     projectId: string,
@@ -371,11 +557,16 @@ export const api = {
     form.append("file", file);
     const res = await fetch(`/api/projects/${projectId}/import`, {
       method: "POST",
+      headers: authHeaders(),
       body: form,
     });
     if (!res.ok) {
-      const detail = await res.text();
-      throw new Error(detail || `Erreur HTTP ${res.status}`);
+      const { message } = await parseApiError(res);
+      if (res.status === 401) {
+        clearAuthTokens();
+        _unauthorizedHandler?.(message);
+      }
+      throw new Error(message || `Erreur HTTP ${res.status}`);
     }
     return res.json();
   },
@@ -496,7 +687,7 @@ export const api = {
     ),
 
   exportPatientsCsvUrl: (projectId: string) =>
-    `/api/projects/${projectId}/patients/export.csv`,
+    withAuthToken(`/api/projects/${projectId}/patients/export.csv`),
 
   // Module 4: Diaporama & Soutenance (PowerPoint CAMES)
   getPresentation: (projectId: string) =>
@@ -571,8 +762,153 @@ export const api = {
     }>(`/api/presentation/templates`),
 
   exportPresentationPptxUrl: (projectId: string) =>
-    `/api/projects/${projectId}/presentation/export/pptx`,
+    withAuthToken(`/api/projects/${projectId}/presentation/export/pptx`),
 
   exportPresentationPdfUrl: (projectId: string) =>
-    `/api/projects/${projectId}/presentation/export/pdf`,
+    withAuthToken(`/api/projects/${projectId}/presentation/export/pdf`),
+
+  // Authentication endpoints
+  login: (email: string, password: string) =>
+    request<TokenResponse>("/api/auth/login", {
+      method: "POST",
+      skipAuth: true,
+      body: JSON.stringify({ email, password }),
+    }),
+
+  refreshSession: (refreshToken: string) =>
+    request<TokenResponse>("/api/auth/refresh", {
+      method: "POST",
+      skipAuth: true,
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    }),
+
+  getMe: () => request<UserMeOut>("/api/auth/me"),
+
+  changePassword: (currentPassword: string, newPassword: string) =>
+    request<TokenResponse>("/api/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({
+        current_password: currentPassword,
+        new_password: newPassword,
+      }),
+    }),
+
+  logout: () =>
+    request<{ status: string }>("/api/auth/logout", {
+      method: "POST",
+    }),
+
+  // Admin Portal API
+  adminGetDashboard: () =>
+    request<AdminDashboardStatsOut>("/api/admin/dashboard"),
+
+  adminListPlans: (includeInactive = true) =>
+    request<LicensePlanOut[]>(`/api/admin/plans?include_inactive=${includeInactive}`),
+
+  adminCreatePlan: (payload: LicensePlanCreateRequest) =>
+    request<LicensePlanOut>("/api/admin/plans", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  adminUpdatePlan: (planId: string, payload: LicensePlanUpdateRequest) =>
+    request<LicensePlanOut>(`/api/admin/plans/${planId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  adminDeletePlan: (planId: string) =>
+    request<{ status: string; plan_id: string }>(`/api/admin/plans/${planId}`, {
+      method: "DELETE",
+    }),
+
+  adminListUsers: (params?: { role?: string; search?: string; status?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.role) qs.set("role", params.role);
+    if (params?.search) qs.set("search", params.search);
+    if (params?.status) qs.set("status", params.status);
+    const qStr = qs.toString();
+    return request<AdminStudentStatsRow[]>(`/api/admin/users${qStr ? `?${qStr}` : ""}`);
+  },
+
+  adminCreateUser: (payload: AdminCreateUserRequest) =>
+    request<AdminCreateUserResponse>("/api/admin/users", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  adminGetUserDetail: (userId: string) =>
+    request<AdminUserDetailOut>(`/api/admin/users/${userId}`),
+
+  adminUpdateUser: (userId: string, payload: AdminUpdateUserRequest) =>
+    request<AdminStudentStatsRow>(`/api/admin/users/${userId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  adminResetPassword: (userId: string, newTemporaryPassword?: string) =>
+    request<AdminResetPasswordResponse>(`/api/admin/users/${userId}/reset-password`, {
+      method: "POST",
+      body: JSON.stringify(
+        newTemporaryPassword ? { new_temporary_password: newTemporaryPassword } : {}
+      ),
+    }),
+
+  adminGrantPlan: (userId: string, payload: AdminGrantPlanRequest) =>
+    request<AdminStudentStatsRow>(`/api/admin/users/${userId}/grant-plan`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  adminAdjustEntitlement: (
+    userId: string,
+    moduleKey: string,
+    payload: AdminAdjustEntitlementRequest
+  ) =>
+    request<AdminStudentStatsRow>(`/api/admin/users/${userId}/entitlements/${moduleKey}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  adminRechargeAI: (userId: string, payload: AdminRechargeAIRequest) =>
+    request<AdminStudentStatsRow>(`/api/admin/users/${userId}/recharge-ai`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  adminOverrideProjectIdentity: (
+    userId: string,
+    payload: AdminUpdateProjectIdentityRequest
+  ) =>
+    request<AdminStudentStatsRow>(`/api/admin/users/${userId}/project-identity`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  adminDeleteUser: (userId: string) =>
+    request<{ deleted: boolean; user_id: string }>(`/api/admin/users/${userId}`, {
+      method: "DELETE",
+    }),
+
+  adminGetStudentStats: (params?: { search?: string; sort_by?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.search) qs.set("search", params.search);
+    if (params?.sort_by) qs.set("sort_by", params.sort_by);
+    const qStr = qs.toString();
+    return request<AdminStudentStatsRow[]>(
+      `/api/admin/stats/students${qStr ? `?${qStr}` : ""}`
+    );
+  },
+
+  adminListUsageEvents: (params?: { user_id?: string; module_key?: string; limit?: number }) => {
+    const qs = new URLSearchParams();
+    if (params?.user_id) qs.set("user_id", params.user_id);
+    if (params?.module_key) qs.set("module_key", params.module_key);
+    if (params?.limit) qs.set("limit", String(params.limit));
+    const qStr = qs.toString();
+    return request<UsageEventOut[]>(`/api/admin/usage-events${qStr ? `?${qStr}` : ""}`);
+  },
+
+  adminListAuditLogs: (limit = 100) =>
+    request<AdminAuditLogOut[]>(`/api/admin/audit-logs?limit=${limit}`),
 };

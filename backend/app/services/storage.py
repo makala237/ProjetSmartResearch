@@ -157,94 +157,328 @@ def sync_special_sections(
 
 
 class ProjectStorage:
-    """Local JSON file store for protocol projects (Phase 1 persistence)."""
+    """SQLAlchemy-backed store for protocol projects and presentation decks (PostgreSQL / SQLite)."""
 
-    def __init__(self) -> None:
-        settings = get_settings()
-        self.projects_dir: Path = settings.storage_dir / "projects"
-        self.presentations_dir: Path = settings.storage_dir / "presentations"
-        self.projects_dir.mkdir(parents=True, exist_ok=True)
-        self.presentations_dir.mkdir(parents=True, exist_ok=True)
+    def _ensure_ready(self) -> None:
+        from app.db.database import init_db
 
-    def _project_path(self, project_id: str) -> Path:
-        safe_id = "".join(c for c in project_id if c.isalnum() or c in ("-", "_"))
-        return self.projects_dir / f"{safe_id}.json"
+        init_db()
 
-    def _presentation_path(self, project_id: str) -> Path:
-        safe_id = "".join(c for c in project_id if c.isalnum() or c in ("-", "_"))
-        return self.presentations_dir / f"{safe_id}.json"
+    def _hydrate_project(self, row) -> ProtocolProject:
+        from app.core.security import ensure_utc
+
+        proj = ProtocolProject.model_validate(row.data_json)
+        proj.owner_user_id = row.owner_user_id
+        proj.topic_locked = bool(row.topic_locked)
+        proj.locked_title = row.locked_title or ""
+        proj.locked_author_name = row.locked_author_name or ""
+        proj.locked_matricule = row.locked_matricule or ""
+        if row.created_at:
+            proj.created_at = ensure_utc(row.created_at) or proj.created_at
+        if row.updated_at:
+            proj.updated_at = ensure_utc(row.updated_at) or proj.updated_at
+        sync_special_sections(proj)
+        return proj
 
     def get_presentation(self, project_id: str):
+        from app.db.database import SessionLocal
+        from app.db.models import PresentationORM
         from app.schemas.presentation import PresentationDeck
 
-        path = self._presentation_path(project_id)
-        if not path.exists():
-            return None
+        self._ensure_ready()
+        db = SessionLocal()
         try:
-            return PresentationDeck.model_validate_json(path.read_text(encoding="utf-8"))
+            row = db.get(PresentationORM, project_id)
+            if not row:
+                return None
+            return PresentationDeck.model_validate(row.data_json)
         except Exception:
             return None
+        finally:
+            db.close()
 
     def save_presentation(self, deck) -> None:
-        path = self._presentation_path(deck.project_id)
-        path.write_text(deck.model_dump_json(indent=2), encoding="utf-8")
+        from app.db.database import SessionLocal
+        from app.db.models import PresentationORM, ProjectORM, utcnow
 
-    def create(self, payload: CreateProjectRequest) -> ProtocolProject:
-        sections = {
-            spec.id: SectionState(section_id=spec.id) for spec in FMSB_SECTIONS
-        }
-        cover = payload.cover or CoverMetadata(title=payload.name)
-        if not cover.title:
-            cover.title = payload.name
+        self._ensure_ready()
+        db = SessionLocal()
+        try:
+            proj_row = db.get(ProjectORM, deck.project_id)
+            if proj_row is None:
+                return
+            payload = deck.model_dump(mode="json")
+            now = utcnow()
+            existing = db.get(PresentationORM, deck.project_id)
+            if existing is None:
+                db.add(
+                    PresentationORM(
+                        project_id=deck.project_id,
+                        owner_user_id=proj_row.owner_user_id,
+                        version=deck.version or "3.1.0",
+                        slides_count=len(deck.slides),
+                        data_json=payload,
+                        updated_at=now,
+                    )
+                )
+            else:
+                existing.owner_user_id = proj_row.owner_user_id
+                existing.version = deck.version or "3.1.0"
+                existing.slides_count = len(deck.slides)
+                existing.data_json = payload
+                existing.updated_at = now
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
-        project = ProtocolProject(
-            name=payload.name,
-            entry_mode=payload.entry_mode,
-            research_idea=payload.research_idea,
-            study_type=payload.study_type,
-            cover=cover,
-            sections=sections,
-        )
-        sync_special_sections(project)
-        self.save(project)
-        return project
+    def count_for_user(self, user_id: str) -> int:
+        from app.db.database import SessionLocal
+        from app.db.models import ProjectORM
+
+        self._ensure_ready()
+        db = SessionLocal()
+        try:
+            return db.query(ProjectORM).filter(ProjectORM.owner_user_id == user_id).count()
+        finally:
+            db.close()
+
+    def create(
+        self,
+        payload: CreateProjectRequest,
+        owner_user_id: Optional[str] = None,
+        owner_role: str = "admin",
+        owner_full_name: str = "",
+        owner_matricule: str = "",
+    ) -> ProtocolProject:
+        from app.db.database import SessionLocal
+        from app.db.models import ProjectORM, UserORM
+
+        self._ensure_ready()
+        db = SessionLocal()
+        try:
+            resolved_owner_id = owner_user_id
+            if not resolved_owner_id:
+                admin = db.query(UserORM).filter(UserORM.role == "admin").first()
+                if admin is None:
+                    raise RuntimeError("Aucun utilisateur administrateur initialisé en base.")
+                resolved_owner_id = admin.id
+
+            if owner_role != "admin":
+                existing_count = (
+                    db.query(ProjectORM)
+                    .filter(ProjectORM.owner_user_id == resolved_owner_id)
+                    .count()
+                )
+                if existing_count >= 1:
+                    raise PermissionError("ONE_PROTOCOL_LIMIT")
+
+            sections = {
+                spec.id: SectionState(section_id=spec.id) for spec in FMSB_SECTIONS
+            }
+            cover = payload.cover.model_copy(deep=True) if payload.cover else CoverMetadata(title=payload.name)
+            if not cover.title:
+                cover.title = payload.name
+
+            if owner_role != "admin":
+                topic_locked = True
+                locked_title = (cover.title or payload.name).strip()
+                locked_author_name = (owner_full_name or cover.author_name or "").strip()
+                locked_matricule = (owner_matricule or cover.matricule or "").strip()
+                cover.title = locked_title
+                if locked_author_name:
+                    cover.author_name = locked_author_name
+                if locked_matricule:
+                    cover.matricule = locked_matricule
+            else:
+                topic_locked = False
+                locked_title = (cover.title or payload.name).strip()
+                locked_author_name = (cover.author_name or "").strip()
+                locked_matricule = (cover.matricule or "").strip()
+
+            project = ProtocolProject(
+                owner_user_id=resolved_owner_id,
+                topic_locked=topic_locked,
+                locked_title=locked_title,
+                locked_author_name=locked_author_name,
+                locked_matricule=locked_matricule,
+                name=payload.name,
+                entry_mode=payload.entry_mode,
+                research_idea=payload.research_idea,
+                study_type=payload.study_type,
+                cover=cover,
+                sections=sections,
+            )
+            sync_special_sections(project)
+
+            validated_count = sum(
+                1
+                for sec in project.sections.values()
+                if getattr(sec.status, "value", str(sec.status)) == "validated"
+            )
+            row = ProjectORM(
+                project_id=project.project_id,
+                owner_user_id=resolved_owner_id,
+                name=project.name,
+                locked_title=project.locked_title,
+                locked_author_name=project.locked_author_name,
+                locked_matricule=project.locked_matricule,
+                topic_locked=project.topic_locked,
+                data_json=project.model_dump(mode="json"),
+                sections_validated_count=validated_count,
+                patients_count=len(project.patient_records),
+                created_at=project.created_at,
+                updated_at=project.updated_at,
+            )
+            db.add(row)
+            db.commit()
+            return project
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def save(self, project: ProtocolProject) -> ProtocolProject:
+        from app.db.database import SessionLocal
+        from app.db.models import ProjectORM, UserORM
+
+        self._ensure_ready()
         sync_special_sections(project)
         project.updated_at = datetime.now(timezone.utc)
-        path = self._project_path(project.project_id)
-        path.write_text(project.model_dump_json(indent=2), encoding="utf-8")
-        return project
+        validated_count = sum(
+            1
+            for sec in project.sections.values()
+            if getattr(sec.status, "value", str(sec.status)) == "validated"
+        )
+        patients_count = len(project.patient_records)
+        payload = project.model_dump(mode="json")
+
+        db = SessionLocal()
+        try:
+            row = db.get(ProjectORM, project.project_id)
+            if row is None:
+                owner_id = project.owner_user_id
+                if not owner_id:
+                    admin = db.query(UserORM).filter(UserORM.role == "admin").first()
+                    if admin is None:
+                        raise RuntimeError("Aucun utilisateur administrateur initialisé en base.")
+                    owner_id = admin.id
+                    project.owner_user_id = owner_id
+                row = ProjectORM(
+                    project_id=project.project_id,
+                    owner_user_id=owner_id,
+                    name=project.name,
+                    locked_title=project.locked_title,
+                    locked_author_name=project.locked_author_name,
+                    locked_matricule=project.locked_matricule,
+                    topic_locked=bool(project.topic_locked),
+                    data_json=payload,
+                    sections_validated_count=validated_count,
+                    patients_count=patients_count,
+                    created_at=project.created_at,
+                    updated_at=project.updated_at,
+                )
+                db.add(row)
+            else:
+                if project.owner_user_id:
+                    row.owner_user_id = project.owner_user_id
+                row.name = project.name
+                row.locked_title = project.locked_title
+                row.locked_author_name = project.locked_author_name
+                row.locked_matricule = project.locked_matricule
+                row.topic_locked = bool(project.topic_locked)
+                row.data_json = payload
+                row.sections_validated_count = validated_count
+                row.patients_count = patients_count
+                row.updated_at = project.updated_at
+            db.commit()
+            return project
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
     def get(self, project_id: str) -> Optional[ProtocolProject]:
-        path = self._project_path(project_id)
-        if not path.exists():
-            return None
-        project = ProtocolProject.model_validate_json(path.read_text(encoding="utf-8"))
-        sync_special_sections(project)
-        return project
+        from app.db.database import SessionLocal
+        from app.db.models import ProjectORM
+
+        self._ensure_ready()
+        db = SessionLocal()
+        try:
+            row = db.get(ProjectORM, project_id)
+            if row is None:
+                return None
+            return self._hydrate_project(row)
+        finally:
+            db.close()
 
     def list_all(self) -> List[ProtocolProject]:
-        projects: List[ProtocolProject] = []
-        for p in sorted(
-            self.projects_dir.glob("*.json"),
-            key=lambda x: x.stat().st_mtime,
-            reverse=True,
-        ):
-            try:
-                proj = ProtocolProject.model_validate_json(p.read_text(encoding="utf-8"))
-                sync_special_sections(proj)
-                projects.append(proj)
-            except Exception:
-                continue
-        return projects
+        from app.db.database import SessionLocal
+        from app.db.models import ProjectORM
+
+        self._ensure_ready()
+        db = SessionLocal()
+        try:
+            rows = db.query(ProjectORM).order_by(ProjectORM.updated_at.desc()).all()
+            out: List[ProtocolProject] = []
+            for row in rows:
+                try:
+                    out.append(self._hydrate_project(row))
+                except Exception:
+                    continue
+            return out
+        finally:
+            db.close()
+
+    def list_for_user(self, user_id: str, role: str) -> List[ProtocolProject]:
+        """Return all projects for admins, or strictly owned projects for students."""
+        if role == "admin":
+            return self.list_all()
+
+        from app.db.database import SessionLocal
+        from app.db.models import ProjectORM
+
+        self._ensure_ready()
+        db = SessionLocal()
+        try:
+            rows = (
+                db.query(ProjectORM)
+                .filter(ProjectORM.owner_user_id == user_id)
+                .order_by(ProjectORM.updated_at.desc())
+                .all()
+            )
+            out: List[ProtocolProject] = []
+            for row in rows:
+                try:
+                    out.append(self._hydrate_project(row))
+                except Exception:
+                    continue
+            return out
+        finally:
+            db.close()
 
     def delete(self, project_id: str) -> bool:
-        path = self._project_path(project_id)
-        if path.exists():
-            path.unlink()
+        from app.db.database import SessionLocal
+        from app.db.models import ProjectORM
+
+        self._ensure_ready()
+        db = SessionLocal()
+        try:
+            row = db.get(ProjectORM, project_id)
+            if row is None:
+                return False
+            db.delete(row)
+            db.commit()
             return True
-        return False
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
 
 
 project_storage = ProjectStorage()

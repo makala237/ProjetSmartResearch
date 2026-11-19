@@ -1,0 +1,20 @@
+{
+  "name": "SmartResearch FMSB — Protocole & Collecte Clinique",
+  "short_name": "SmartResearch",
+  "description": "Assistant CAMES FMSB de rédaction de protocole médical, saisie patients CRF terrain et soutenance PowerPoint.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#F8FAFC",
+  "theme_color": "#6C2826",
+  "lang": "fr",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

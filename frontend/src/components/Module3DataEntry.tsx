@@ -446,11 +446,11 @@ export function Module3DataEntry({
         )}
 
         {/* Sub-navigation Tabs */}
-        <div className="mt-4 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
+        <div className="mt-4 flex flex-nowrap gap-2 overflow-x-auto no-scrollbar border-t border-slate-100 pt-3 pb-1">
           <button
             type="button"
             onClick={() => setSubTab("entry")}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
+            className={`inline-flex min-h-[42px] shrink-0 items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
               subTab === "entry"
                 ? "bg-[#6C2826] text-white shadow-sm"
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200"
@@ -462,26 +462,26 @@ export function Module3DataEntry({
           <button
             type="button"
             onClick={() => setSubTab("designer")}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
+            className={`inline-flex min-h-[42px] shrink-0 items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
               subTab === "designer"
                 ? "bg-[#6C2826] text-white shadow-sm"
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
             <Settings2 className="h-3.5 w-3.5" />
-            Concepteur du Masque & Annexe 1 ({fields.length} champs)
+            Concepteur du Masque &amp; Annexe 1 ({fields.length} champs)
           </button>
           <button
             type="button"
             onClick={() => setSubTab("paper_preview")}
-            className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
+            className={`inline-flex min-h-[42px] shrink-0 items-center gap-1.5 rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
               subTab === "paper_preview"
                 ? "bg-[#6C2826] text-white shadow-sm"
                 : "bg-slate-100 text-slate-700 hover:bg-slate-200"
             }`}
           >
             <Database className="h-3.5 w-3.5" />
-            Aperçu Fiche Papier A4 & Base de Données
+            Aperçu Fiche Papier A4 &amp; Base de Données
           </button>
         </div>
       </div>
@@ -489,8 +489,8 @@ export function Module3DataEntry({
       {/* SUB-TAB 1: PATIENT DATA ENTRY */}
       {subTab === "entry" && (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-          {/* Sidebar: Patient Registry */}
-          <aside className="space-y-3 lg:col-span-4">
+          {/* Sidebar: Patient Registry (below form on mobile, left on desktop) */}
+          <aside className="order-2 space-y-3 lg:order-1 lg:col-span-4">
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-sm font-bold text-slate-900">
@@ -590,13 +590,13 @@ export function Module3DataEntry({
             </div>
           </aside>
 
-          {/* Main Area: Interactive Masque de Saisie */}
+          {/* Main Area: Interactive Masque de Saisie (top priority on mobile) */}
           <form
             onSubmit={handleSavePatient}
-            className="space-y-5 lg:col-span-8"
+            className="order-1 space-y-5 lg:order-2 lg:col-span-8"
           >
             {/* Header Identification Block */}
-            <div className="rounded-2xl border-2 border-[#6C2826]/30 bg-white p-5 shadow-sm">
+            <div className="rounded-2xl border-2 border-[#6C2826]/30 bg-white p-4 shadow-sm sm:p-5">
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
                 <div>
                   <span className="text-[11px] font-bold uppercase tracking-wider text-[#6C2826]">
@@ -611,9 +611,9 @@ export function Module3DataEntry({
                 <button
                   type="submit"
                   disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#561f1d] disabled:opacity-50"
+                  className="inline-flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-lg bg-[#6C2826] px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-[#561f1d] disabled:opacity-50 sm:w-auto sm:text-xs"
                 >
-                  <Save className="h-3.5 w-3.5" />
+                  <Save className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
                   {busy
                     ? "Enregistrement..."
                     : editingRecordId
@@ -633,7 +633,7 @@ export function Module3DataEntry({
                     value={patientCode}
                     onChange={(e) => setPatientCode(e.target.value)}
                     placeholder="PAT-001"
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm font-semibold focus:border-[#6C2826] focus:outline-none"
+                    className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-base font-semibold focus:border-[#6C2826] focus:outline-none sm:text-sm"
                   />
                 </div>
                 <div>
@@ -644,7 +644,7 @@ export function Module3DataEntry({
                     type="date"
                     value={inclusionDate}
                     onChange={(e) => setInclusionDate(e.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-[#6C2826] focus:outline-none"
+                    className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 px-3 py-2 text-base focus:border-[#6C2826] focus:outline-none sm:text-sm"
                   />
                 </div>
                 <div className="sm:col-span-2">
@@ -659,14 +659,14 @@ export function Module3DataEntry({
                           key={site}
                           type="button"
                           onClick={() => setHospitalSite(site)}
-                          className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                          className={`inline-flex min-h-[44px] items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-medium transition sm:text-xs ${
                             active
                               ? "border-[#6C2826] bg-[#6C2826]/10 text-[#6C2826]"
                               : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
                           }`}
                         >
                           <span
-                            className={`flex h-3.5 w-3.5 items-center justify-center rounded-[2px] border text-[10px] font-bold ${
+                            className={`flex h-4 w-4 items-center justify-center rounded-[2px] border text-[10px] font-bold ${
                               active
                                 ? "border-[#6C2826] bg-[#6C2826] text-white"
                                 : "border-slate-400 bg-white"
@@ -683,7 +683,7 @@ export function Module3DataEntry({
                       value={hospitalSite}
                       onChange={(e) => setHospitalSite(e.target.value)}
                       placeholder="Ou autre hôpital..."
-                      className="min-w-[160px] flex-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs focus:border-[#6C2826] focus:outline-none"
+                      className="min-h-[44px] min-w-[160px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-base focus:border-[#6C2826] focus:outline-none sm:text-xs"
                     />
                   </div>
                 </div>
@@ -696,7 +696,7 @@ export function Module3DataEntry({
                     value={investigatorName}
                     onChange={(e) => setInvestigatorName(e.target.value)}
                     placeholder="Nom et matricule de l'enquêteur"
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs focus:border-[#6C2826] focus:outline-none"
+                    className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 px-3 py-2 text-base focus:border-[#6C2826] focus:outline-none sm:text-xs"
                   />
                 </div>
               </div>
@@ -750,7 +750,13 @@ export function Module3DataEntry({
                             {/* DICHOTOMOUS OR SINGLE CHOICE CHECKBOXES */}
                             {(field.field_type === "dichotomous" ||
                               field.field_type === "single_choice") && (
-                              <div className="flex flex-wrap gap-2">
+                              <div
+                                className={
+                                  field.field_type === "dichotomous" || opts.length === 2
+                                    ? "grid grid-cols-2 gap-2 sm:flex sm:flex-wrap"
+                                    : "flex flex-wrap gap-2"
+                                }
+                              >
                                 {opts.map((opt) => {
                                   const checked = currentVal === opt;
                                   return (
@@ -763,7 +769,7 @@ export function Module3DataEntry({
                                           [field.field_id]: checked ? "" : opt,
                                         }))
                                       }
-                                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-left text-xs font-medium transition ${
+                                      className={`inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg border px-3.5 py-2.5 text-left text-sm font-medium transition sm:justify-start sm:text-xs ${
                                         checked
                                           ? "border-[#6C2826] bg-[#6C2826]/10 text-[#6C2826] ring-1 ring-[#6C2826]/30"
                                           : "border-slate-300 bg-slate-50/50 text-slate-700 hover:bg-slate-100"
@@ -799,7 +805,7 @@ export function Module3DataEntry({
                                       onClick={() =>
                                         toggleMultiChoice(field.field_id, opt)
                                       }
-                                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-left text-xs font-medium transition ${
+                                      className={`inline-flex min-h-[44px] items-center gap-2 rounded-lg border px-3.5 py-2.5 text-left text-sm font-medium transition sm:text-xs ${
                                         selected
                                           ? "border-indigo-600 bg-indigo-50 text-indigo-800 ring-1 ring-indigo-300"
                                           : "border-slate-300 bg-slate-50/50 text-slate-700 hover:bg-slate-100"
@@ -840,10 +846,10 @@ export function Module3DataEntry({
                                     }))
                                   }
                                   placeholder="Saisir valeur..."
-                                  className="w-40 rounded-lg border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm font-medium focus:border-[#6C2826] focus:bg-white focus:outline-none"
+                                  className="min-h-[44px] w-full max-w-[180px] rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-base font-medium focus:border-[#6C2826] focus:bg-white focus:outline-none sm:text-sm"
                                 />
                                 {field.unit && (
-                                  <span className="rounded-md bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-600">
+                                  <span className="min-h-[44px] inline-flex items-center rounded-md bg-slate-100 px-3 text-xs font-semibold text-slate-600">
                                     {field.unit}
                                   </span>
                                 )}
@@ -861,7 +867,7 @@ export function Module3DataEntry({
                                     [field.field_id]: e.target.value,
                                   }))
                                 }
-                                className="w-48 rounded-lg border border-slate-300 bg-slate-50 px-3 py-1.5 text-sm focus:border-[#6C2826] focus:bg-white focus:outline-none"
+                                className="min-h-[44px] w-full max-w-[220px] rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-base focus:border-[#6C2826] focus:bg-white focus:outline-none sm:text-sm"
                               />
                             )}
 
@@ -879,13 +885,13 @@ export function Module3DataEntry({
                                 placeholder={
                                   field.placeholder || "Saisir la réponse..."
                                 }
-                                className="w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-1.5 text-xs focus:border-[#6C2826] focus:bg-white focus:outline-none"
+                                className="min-h-[44px] w-full rounded-lg border border-slate-300 bg-slate-50 px-3 py-2 text-base focus:border-[#6C2826] focus:bg-white focus:outline-none sm:text-xs"
                               />
                             )}
 
                             {/* CONDITIONAL SUB-FIELD */}
                             {field.sub_field_label && (
-                              <div className="flex items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/70 px-2.5 py-1.5">
+                              <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-slate-200 bg-slate-50/70 px-2.5 py-2">
                                 <span className="shrink-0 text-[11px] font-medium italic text-slate-600">
                                   ▸ {field.sub_field_label} :
                                 </span>
@@ -899,7 +905,7 @@ export function Module3DataEntry({
                                     }))
                                   }
                                   placeholder="Préciser..."
-                                  className="min-w-[140px] flex-1 rounded border border-slate-200 bg-white px-2 py-1 text-xs focus:border-[#6C2826] focus:outline-none"
+                                  className="min-h-[40px] min-w-[140px] flex-1 rounded border border-slate-200 bg-white px-2.5 py-1.5 text-base focus:border-[#6C2826] focus:outline-none sm:text-xs"
                                 />
                               </div>
                             )}
@@ -922,22 +928,22 @@ export function Module3DataEntry({
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
                 placeholder="Observations particulières lors de la collecte de cette fiche..."
-                className="mt-1.5 w-full rounded-lg border border-slate-300 p-2.5 text-xs focus:border-[#6C2826] focus:outline-none"
+                className="mt-1.5 w-full rounded-lg border border-slate-300 p-3 text-base focus:border-[#6C2826] focus:outline-none sm:p-2.5 sm:text-xs"
               />
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+              <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
                 <button
                   type="button"
                   onClick={startNewPatientForm}
-                  className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                  className="min-h-[44px] w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 sm:w-auto"
                 >
                   Réinitialiser pour un nouveau patient
                 </button>
                 <button
                   type="submit"
                   disabled={busy}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-5 py-2 text-xs font-semibold text-white hover:bg-[#561f1d] disabled:opacity-50"
+                  className="inline-flex min-h-[46px] w-full items-center justify-center gap-1.5 rounded-lg bg-[#6C2826] px-5 py-2.5 text-sm font-semibold text-white hover:bg-[#561f1d] disabled:opacity-50 sm:w-auto sm:text-xs"
                 >
-                  <Save className="h-3.5 w-3.5" />
+                  <Save className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
                   {busy
                     ? "Enregistrement..."
                     : editingRecordId
@@ -1221,47 +1227,27 @@ export function Module3DataEntry({
                 Aucune fiche patient enregistrée pour le moment. Utilisez l'onglet « Saisie des Patients » pour saisir votre premier patient.
               </div>
             ) : (
-              <div className="overflow-x-auto rounded-xl border border-slate-200">
-                <table className="min-w-full divide-y divide-slate-200 text-xs">
-                  <thead className="bg-slate-50">
-                    <tr>
-                      <th className="px-3 py-2 text-left font-bold text-slate-700">
-                        Code
-                      </th>
-                      <th className="px-3 py-2 text-left font-bold text-slate-700">
-                        Site
-                      </th>
-                      <th className="px-3 py-2 text-left font-bold text-slate-700">
-                        Date
-                      </th>
-                      {fields.slice(0, 8).map((f) => (
-                        <th
-                          key={f.field_id}
-                          className="max-w-[160px] truncate px-3 py-2 text-left font-bold text-slate-700"
-                          title={`${f.code}. ${f.label}`}
-                        >
-                          {f.code ? `${f.code} - ` : ""}
-                          {f.label}
-                        </th>
-                      ))}
-                      <th className="px-3 py-2 text-right font-bold text-slate-700">
-                        Action
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 bg-white">
-                    {records.map((rec) => (
-                      <tr key={rec.record_id} className="hover:bg-slate-50">
-                        <td className="whitespace-nowrap px-3 py-2 font-mono font-bold text-[#6C2826]">
+              <>
+                {/* Mobile Patient Cards (< md) */}
+                <div className="space-y-2.5 md:hidden">
+                  {records.map((rec) => (
+                    <div
+                      key={rec.record_id}
+                      className="rounded-xl border border-slate-200 bg-slate-50/50 p-3.5 text-xs"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="rounded bg-[#6C2826]/10 px-2 py-0.5 font-mono font-bold text-[#6C2826]">
                           {rec.patient_code}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-700">
-                          {rec.hospital_site || "—"}
-                        </td>
-                        <td className="whitespace-nowrap px-3 py-2 text-slate-600">
-                          {rec.inclusion_date || "—"}
-                        </td>
-                        {fields.slice(0, 8).map((f) => {
+                        </span>
+                        <span className="text-[11px] text-slate-500">
+                          {rec.inclusion_date || "Sans date"}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 text-[11px] font-medium text-slate-700">
+                        Site : {rec.hospital_site || "—"}
+                      </div>
+                      <div className="mt-2 space-y-1 text-[11px] text-slate-600">
+                        {fields.slice(0, 3).map((f) => {
                           const v = rec.values?.[f.field_id];
                           const txt = Array.isArray(v)
                             ? v.join(", ")
@@ -1269,29 +1255,102 @@ export function Module3DataEntry({
                               ? String(v)
                               : "—";
                           return (
-                            <td
-                              key={f.field_id}
-                              className="max-w-[160px] truncate px-3 py-2 text-slate-700"
-                              title={txt}
-                            >
-                              {txt}
-                            </td>
+                            <div key={f.field_id} className="flex justify-between gap-2">
+                              <span className="truncate text-slate-500">
+                                {f.code ? `${f.code}. ` : ""}
+                                {f.label}
+                              </span>
+                              <span className="shrink-0 font-semibold text-slate-800">
+                                {txt}
+                              </span>
+                            </div>
                           );
                         })}
-                        <td className="whitespace-nowrap px-3 py-2 text-right">
-                          <button
-                            type="button"
-                            onClick={() => loadPatientIntoForm(rec)}
-                            className="font-semibold text-indigo-600 hover:underline"
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => loadPatientIntoForm(rec)}
+                        className="mt-3 min-h-[44px] w-full rounded-lg border border-indigo-200 bg-white text-xs font-semibold text-indigo-700 hover:bg-indigo-50"
+                      >
+                        Ouvrir / Modifier la fiche
+                      </button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Desktop Table (md+) */}
+                <div className="hidden overflow-x-auto rounded-xl border border-slate-200 md:block">
+                  <table className="min-w-full divide-y divide-slate-200 text-xs">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-bold text-slate-700">
+                          Code
+                        </th>
+                        <th className="px-3 py-2 text-left font-bold text-slate-700">
+                          Site
+                        </th>
+                        <th className="px-3 py-2 text-left font-bold text-slate-700">
+                          Date
+                        </th>
+                        {fields.slice(0, 8).map((f) => (
+                          <th
+                            key={f.field_id}
+                            className="max-w-[160px] truncate px-3 py-2 text-left font-bold text-slate-700"
+                            title={`${f.code}. ${f.label}`}
                           >
-                            Ouvrir
-                          </button>
-                        </td>
+                            {f.code ? `${f.code} - ` : ""}
+                            {f.label}
+                          </th>
+                        ))}
+                        <th className="px-3 py-2 text-right font-bold text-slate-700">
+                          Action
+                        </th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 bg-white">
+                      {records.map((rec) => (
+                        <tr key={rec.record_id} className="hover:bg-slate-50">
+                          <td className="whitespace-nowrap px-3 py-2 font-mono font-bold text-[#6C2826]">
+                            {rec.patient_code}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-2 text-slate-700">
+                            {rec.hospital_site || "—"}
+                          </td>
+                          <td className="whitespace-nowrap px-3 py-2 text-slate-600">
+                            {rec.inclusion_date || "—"}
+                          </td>
+                          {fields.slice(0, 8).map((f) => {
+                            const v = rec.values?.[f.field_id];
+                            const txt = Array.isArray(v)
+                              ? v.join(", ")
+                              : v !== undefined && v !== null && String(v).trim() !== ""
+                                ? String(v)
+                                : "—";
+                            return (
+                              <td
+                                key={f.field_id}
+                                className="max-w-[160px] truncate px-3 py-2 text-slate-700"
+                                title={txt}
+                              >
+                                {txt}
+                              </td>
+                            );
+                          })}
+                          <td className="whitespace-nowrap px-3 py-2 text-right">
+                            <button
+                              type="button"
+                              onClick={() => loadPatientIntoForm(rec)}
+                              className="font-semibold text-indigo-600 hover:underline"
+                            >
+                              Ouvrir
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
             )}
           </div>
         </div>

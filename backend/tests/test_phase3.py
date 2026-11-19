@@ -5,10 +5,12 @@ from app.main import app
 from app.services.annexes_generator import build_annexes_pack
 from app.services.docx_template import compile_protocol_docx
 from app.services.storage import project_storage
+from tests._auth_helper import login_as_admin
 
 
 def run_phase3_tests() -> None:
     client = TestClient(app)
+    login_as_admin(client)
 
     # 1. Create a project
     res = client.post(

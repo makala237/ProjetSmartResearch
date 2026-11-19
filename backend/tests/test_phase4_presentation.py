@@ -146,7 +146,10 @@ def test_deterministic_audit_report():
 
 
 def test_api_presentation_endpoints():
+    from tests._auth_helper import login_as_admin
+
     client = TestClient(app)
+    login_as_admin(client)
 
     r_reset = client.post("/api/projects/5221c9f3-65e/presentation/reset-from-protocol")
     assert r_reset.status_code == 200, r_reset.text
@@ -175,8 +178,13 @@ def test_api_presentation_endpoints():
 def test_partial_protocol_welcome_first_and_no_foreign_data():
     import json
     import re
+    from tests._auth_helper import login_as_admin
 
     client = TestClient(app)
+    login_as_admin(client)
+
+    r_reset = client.post("/api/projects/113fa64e-056/presentation/reset-from-protocol")
+    assert r_reset.status_code == 200, r_reset.text
 
     r_get = client.get("/api/projects/113fa64e-056/presentation")
     assert r_get.status_code == 200, r_get.text

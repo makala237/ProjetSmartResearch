@@ -238,7 +238,7 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
     analysis: ImportedProtocolIndexAnalysis = res["data"]
 
     project.entry_mode = EntryMode.EXISTING_PROTOCOL
-    if analysis.detected_title and (not project.cover.title or project.cover.title == project.name):
+    if not project.topic_locked and analysis.detected_title and (not project.cover.title or project.cover.title == project.name):
         project.cover.title = analysis.detected_title
     if analysis.detected_study_type and not project.study_type:
         project.study_type = analysis.detected_study_type

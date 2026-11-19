@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.docx_template import ensure_master_template
+from tests._auth_helper import login_as_admin
 
 
 def run_phase1_smoke_tests() -> None:
@@ -11,6 +12,7 @@ def run_phase1_smoke_tests() -> None:
     print(f"[OK] Master template generated at: {master_path}")
 
     client = TestClient(app)
+    login_as_admin(client)
 
     health = client.get("/api/health")
     assert health.status_code == 200

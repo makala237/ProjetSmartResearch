@@ -262,6 +262,11 @@ export interface PatientRecord {
 
 export interface ProtocolProject {
   project_id: string;
+  owner_user_id?: string | null;
+  topic_locked?: boolean;
+  locked_title?: string;
+  locked_author_name?: string;
+  locked_matricule?: string;
   name: string;
   entry_mode: EntryMode;
   research_idea: string;
@@ -382,4 +387,50 @@ export interface SyncStructuredReport {
   added_variables: number;
   added_literature_rows: number;
   added_budget_items: number;
+}
+
+export interface HumanizeMetrics {
+  sentence_count: number;
+  avg_sentence_words: number;
+  burstiness_sd: number;
+  remaining_cliches: number;
+  em_dash_count: number;
+  invisible_unicode_count: number;
+  human_style_score: number;
+}
+
+export interface HumanizeSectionResult {
+  section_id: string;
+  skipped: boolean;
+  reason?: string;
+  model_used: string;
+  content_markdown: string;
+  content_html?: string;
+  before_metrics: HumanizeMetrics;
+  after_metrics: HumanizeMetrics;
+  cliches_removed: number;
+  citations_preserved: boolean;
+  style_adjustments_summary?: string;
+  remaining_notes?: string[];
+}
+
+export interface HumanizeProtocolReport {
+  sections_humanized: number;
+  total_cliches_removed: number;
+  average_before_score: number;
+  average_human_score: number;
+  citations_preserved: boolean;
+  models_used: string[];
+  model_used: string;
+  author_signature: string;
+  details: Array<{
+    section_id: string;
+    title: string;
+    model_used: string;
+    before_score: number;
+    after_score: number;
+    burstiness_sd: number;
+    cliches_removed: number;
+    citations_preserved: boolean;
+  }>;
 }

@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+import secrets
 from typing import Dict, List
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -19,7 +20,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "SmartResearch FMSB - Assistant Protocole"
-    app_version: str = "0.1.0"
+    app_version: str = "0.2.0"
 
     gemini_api_key: str = ""
 
@@ -33,6 +34,16 @@ class Settings(BaseSettings):
     ncbi_api_key: str = ""
     openalex_api_key: str = ""
     openalex_email: str = ""
+
+    # SaaS Database, Authentication & Bootstrap Admin
+    database_url: str = ""
+    jwt_secret_key: str = ""
+    jwt_access_token_expire_minutes: int = 120
+    jwt_refresh_token_expire_days: int = 14
+    bootstrap_admin_email: str = "admin@smartresearch.local"
+    bootstrap_admin_password: str = "AdminFMSB2026!"
+    bootstrap_admin_name: str = "Administrateur Principal"
+    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173,http://localhost:8001,http://127.0.0.1:8001"
 
     storage_dir: Path = BASE_DIR / "storage"
     templates_dir: Path = BASE_DIR / "templates"
@@ -50,6 +61,38 @@ class Settings(BaseSettings):
             "live_translate": parse(self.gemini_models_live_translate),
             "layout_decision": parse(self.gemini_models_layout_decision),
         }
+
+    def effective_database_url(self) -> str:
+        """Return normalized PostgreSQL URL or fallback local SQLite URL."""
+        raw = (self.database_url or "").strip()
+        if raw:
+            if raw.startswith("postgres://"):
+                return "postgresql+psycopg://" + raw[len("postgres://") :]
+            if raw.startswith("postgresql://") and "+psycopg" not in raw:
+                return "postgresql+psycopg://" + raw[len("postgresql://") :]
+            return raw
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        sqlite_path = (self.storage_dir / "smartresearch.db").resolve().as_posix()
+        return f"sqlite:///{sqlite_path}"
+
+    def effective_jwt_secret(self) -> str:
+        """Return configured JWT secret or lazily persist a local random 64-char secret."""
+        configured = (self.jwt_secret_key or "").strip()
+        if configured:
+            return configured
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        secret_file = self.storage_dir / ".jwt_secret"
+        if secret_file.exists():
+            existing = secret_file.read_text(encoding="utf-8").strip()
+            if len(existing) >= 32:
+                return existing
+        generated = secrets.token_hex(32)
+        secret_file.write_text(generated, encoding="utf-8")
+        return generated
+
+    def cors_origins_list(self) -> List[str]:
+        """Return allowed CORS origins parsed from comma-separated setting."""
+        return [o.strip() for o in (self.cors_origins or "").split(",") if o.strip()]
 
 
 @lru_cache

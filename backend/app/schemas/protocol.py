@@ -354,6 +354,11 @@ class PatientRecord(BaseModel):
 
 class ProtocolProject(BaseModel):
     project_id: str = Field(default_factory=lambda: str(uuid4())[:12])
+    owner_user_id: Optional[str] = None
+    topic_locked: bool = False
+    locked_title: str = ""
+    locked_author_name: str = ""
+    locked_matricule: str = ""
     name: str
     entry_mode: EntryMode = EntryMode.NEW_TOPIC
     research_idea: str = ""

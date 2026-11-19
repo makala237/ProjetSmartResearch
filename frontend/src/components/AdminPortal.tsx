@@ -1,0 +1,1753 @@
+import { useCallback, useEffect, useState } from "react";
+import {
+  Activity,
+  AlertTriangle,
+  ArrowLeft,
+  BarChart3,
+  CheckCircle2,
+  ClipboardCopy,
+  CreditCard,
+  Edit3,
+  KeyRound,
+  Lock,
+  Plus,
+  RefreshCw,
+  Search,
+  Shield,
+  Sparkles,
+  Trash2,
+  UserCheck,
+  UserPlus,
+  Users,
+  UserX,
+  Zap,
+} from "lucide-react";
+import { api } from "../api/client";
+import type {
+  AdminAuditLogOut,
+  AdminDashboardStatsOut,
+  AdminStudentStatsRow,
+  AdminUserDetailOut,
+  LicensePlanOut,
+  UsageEventOut,
+} from "../types/admin";
+
+interface AdminPortalProps {
+  currentAdminId: string;
+  onExitAdmin: () => void;
+}
+
+type AdminTab = "dashboard" | "users" | "plans" | "stats";
+
+const MODULE_META: Array<{ key: string; short: string; label: string }> = [
+  { key: "module1", short: "M1", label: "Rédaction" },
+  { key: "module2", short: "M2", label: "Word/PDF" },
+  { key: "module3", short: "M3", label: "Masque CRF" },
+  { key: "module4", short: "M4", label: "PowerPoint" },
+];
+
+function fmtDate(iso?: string | null): string {
+  if (!iso) return "—";
+  try {
+    return new Date(iso).toLocaleDateString("fr-FR", {
+      day: "2-digit",
+      month: "short",
+      year: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function fmtDateTime(iso?: string | null): string {
+  if (!iso) return "Jamais";
+  try {
+    return new Date(iso).toLocaleString("fr-FR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function statusBadge(status: string): { label: string; cls: string } {
+  switch (status) {
+    case "admin":
+      return { label: "Admin", cls: "bg-indigo-100 text-indigo-800" };
+    case "active":
+      return { label: "Actif", cls: "bg-emerald-100 text-emerald-800" };
+    case "expiring_soon":
+      return { label: "Expire ≤ 7 j", cls: "bg-amber-100 text-amber-800" };
+    case "expired":
+      return { label: "Expiré (LS)", cls: "bg-rose-100 text-rose-800" };
+    case "disabled":
+      return { label: "Suspendu", cls: "bg-slate-200 text-slate-700" };
+    default:
+      return { label: "Aucune licence", cls: "bg-slate-100 text-slate-600" };
+  }
+}
+
+export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
+  const [tab, setTab] = useState<AdminTab>("dashboard");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const [dashboard, setDashboard] = useState<AdminDashboardStatsOut | null>(null);
+  const [plans, setPlans] = useState<LicensePlanOut[]>([]);
+  const [users, setUsers] = useState<AdminStudentStatsRow[]>([]);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [userDetail, setUserDetail] = useState<AdminUserDetailOut | null>(null);
+
+  // User list filters
+  const [userSearch, setUserSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+
+  // Create User form state
+  const [showCreateUser, setShowCreateUser] = useState(false);
+  const [newEmail, setNewEmail] = useState("");
+  const [newFullName, setNewFullName] = useState("");
+  const [newMatricule, setNewMatricule] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const [newRole, setNewRole] = useState<"student" | "admin">("student");
+  const [newPlanId, setNewPlanId] = useState("");
+  const [newAmountFcfa, setNewAmountFcfa] = useState<string>("");
+  const [newPaymentRef, setNewPaymentRef] = useState("");
+  const [newInitTitle, setNewInitTitle] = useState("");
+  const [newTempPassInput, setNewTempPassInput] = useState("");
+
+  // Revealed temp credentials banner (after create or reset-password)
+  const [revealedCreds, setRevealedCreds] = useState<{
+    email: string;
+    password: string;
+    label: string;
+  } | null>(null);
+
+  // Selected user quick forms
+  const [grantPlanId, setGrantPlanId] = useState("");
+  const [grantAmount, setGrantAmount] = useState<string>("");
+  const [grantRef, setGrantRef] = useState("");
+  const [grantNotes, setGrantNotes] = useState("");
+  const [rechargeCredits, setRechargeCredits] = useState<string>("50");
+  const [rechargeNotes, setRechargeNotes] = useState("");
+  const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
+
+  // Protocol identity override form
+  const [ovrTitle, setOvrTitle] = useState("");
+  const [ovrAuthor, setOvrAuthor] = useState("");
+  const [ovrMatricule, setOvrMatricule] = useState("");
+  const [ovrLocked, setOvrLocked] = useState(true);
+  const [ovrReason, setOvrReason] = useState("");
+
+  // Plan CRUD form
+  const [editingPlanId, setEditingPlanId] = useState<string | null>(null);
+  const [planName, setPlanName] = useState("");
+  const [planDesc, setPlanDesc] = useState("");
+  const [planPrice, setPlanPrice] = useState<string>("15000");
+  const [planM1, setPlanM1] = useState<string>("30");
+  const [planM2, setPlanM2] = useState<string>("30");
+  const [planM3, setPlanM3] = useState<string>("180");
+  const [planM4, setPlanM4] = useState<string>("30");
+  const [planAi, setPlanAi] = useState<string>("150");
+  const [planActive, setPlanActive] = useState(true);
+
+  // Student stats & logs
+  const [statsRows, setStatsRows] = useState<AdminStudentStatsRow[]>([]);
+  const [statsSearch, setStatsSearch] = useState("");
+  const [statsSortBy, setStatsSortBy] = useState("last_login");
+  const [usageEvents, setUsageEvents] = useState<UsageEventOut[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AdminAuditLogOut[]>([]);
+
+  const loadAllCore = useCallback(async () => {
+    setError(null);
+    try {
+      const [dashRes, plansRes, usersRes] = await Promise.all([
+        api.adminGetDashboard(),
+        api.adminListPlans(true),
+        api.adminListUsers({
+          role: roleFilter || undefined,
+          search: userSearch || undefined,
+          status: statusFilter || undefined,
+        }),
+      ]);
+      setDashboard(dashRes);
+      setPlans(plansRes);
+      setUsers(usersRes);
+      if (!newPlanId && plansRes.some((p) => p.is_active)) {
+        const firstActive = plansRes.find((p) => p.is_active);
+        if (firstActive) {
+          setNewPlanId(firstActive.id);
+          setNewAmountFcfa(String(firstActive.price_fcfa));
+          setGrantPlanId(firstActive.id);
+          setGrantAmount(String(firstActive.price_fcfa));
+        }
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [roleFilter, userSearch, statusFilter, newPlanId]);
+
+  const loadUserDetail = useCallback(async (uid: string) => {
+    try {
+      const det = await api.adminGetUserDetail(uid);
+      setUserDetail(det);
+      setOvrTitle(det.user.project_title || "");
+      setOvrAuthor(det.user.full_name || "");
+      setOvrMatricule(det.user.matricule || "");
+      setOvrLocked(det.user.topic_locked);
+      setOvrReason("");
+      setConfirmDeleteUserId(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  const loadStatsTab = useCallback(async () => {
+    try {
+      const [stRes, evRes, logRes] = await Promise.all([
+        api.adminGetStudentStats({
+          search: statsSearch || undefined,
+          sort_by: statsSortBy,
+        }),
+        api.adminListUsageEvents({ limit: 60 }),
+        api.adminListAuditLogs(60),
+      ]);
+      setStatsRows(stRes);
+      setUsageEvents(evRes);
+      setAuditLogs(logRes);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [statsSearch, statsSortBy]);
+
+  useEffect(() => {
+    loadAllCore();
+  }, [loadAllCore]);
+
+  useEffect(() => {
+    if (selectedUserId) {
+      loadUserDetail(selectedUserId);
+    }
+  }, [selectedUserId, loadUserDetail]);
+
+  useEffect(() => {
+    if (tab === "stats") {
+      loadStatsTab();
+    }
+  }, [tab, loadStatsTab]);
+
+  async function refreshAll() {
+    setBusy(true);
+    await loadAllCore();
+    if (selectedUserId) await loadUserDetail(selectedUserId);
+    if (tab === "stats") await loadStatsTab();
+    setBusy(false);
+  }
+
+  function copyCredentials(email: string, pw: string) {
+    const txt = `SmartResearch FMSB\nEmail : ${email}\nMot de passe temporaire : ${pw}`;
+    navigator.clipboard?.writeText(txt).then(() => {
+      setNotice("Identifiants copiés dans le presse-papiers.");
+    });
+  }
+
+  async function handleCreateUser(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await api.adminCreateUser({
+        email: newEmail.trim(),
+        full_name: newFullName.trim(),
+        matricule: newMatricule.trim(),
+        phone: newPhone.trim(),
+        role: newRole,
+        temporary_password: newTempPassInput.trim() || undefined,
+        plan_id: newPlanId || undefined,
+        amount_paid_fcfa: newAmountFcfa ? Number(newAmountFcfa) : undefined,
+        payment_reference: newPaymentRef.trim(),
+        initial_protocol_title: newRole === "student" ? newInitTitle.trim() || undefined : undefined,
+      });
+      setRevealedCreds({
+        email: res.user.email,
+        password: res.temporary_password,
+        label: `Compte ${res.user.full_name} créé avec succès`,
+      });
+      setSelectedUserId(res.user.id);
+      setShowCreateUser(false);
+      setNewEmail("");
+      setNewFullName("");
+      setNewMatricule("");
+      setNewPhone("");
+      setNewPaymentRef("");
+      setNewInitTitle("");
+      setNewTempPassInput("");
+      await loadAllCore();
+      await loadUserDetail(res.user.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleToggleActive(u: AdminStudentStatsRow) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.adminUpdateUser(u.id, { is_active: !u.is_active });
+      setNotice(u.is_active ? "Compte suspendu." : "Compte réactivé.");
+      await refreshAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleResetPassword(u: AdminStudentStatsRow) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.adminResetPassword(u.id);
+      setRevealedCreds({
+        email: u.email,
+        password: res.temporary_password,
+        label: `Nouveau mot de passe temporaire pour ${u.full_name}`,
+      });
+      await refreshAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteUser(uid: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.adminDeleteUser(uid);
+      setNotice("Utilisateur supprimé.");
+      setSelectedUserId(null);
+      setUserDetail(null);
+      setConfirmDeleteUserId(null);
+      await loadAllCore();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleGrantPlan(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedUserId || !grantPlanId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.adminGrantPlan(selectedUserId, {
+        plan_id: grantPlanId,
+        amount_paid_fcfa: grantAmount ? Number(grantAmount) : undefined,
+        payment_reference: grantRef.trim(),
+        notes: grantNotes.trim(),
+      });
+      setGrantRef("");
+      setGrantNotes("");
+      setNotice("Licence attribuée / prolongée avec succès.");
+      await refreshAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleAdjustModule(moduleKey: string, opts: { add_days?: number; revoke?: boolean }) {
+    if (!selectedUserId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.adminAdjustEntitlement(selectedUserId, moduleKey, opts);
+      setNotice(`Licence ${moduleKey.toUpperCase()} mise à jour.`);
+      await refreshAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleRechargeAI(creditsDelta: number) {
+    if (!selectedUserId || !creditsDelta) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.adminRechargeAI(selectedUserId, {
+        add_credits: creditsDelta,
+        notes: rechargeNotes.trim(),
+      });
+      setRechargeNotes("");
+      setNotice(`Quota IA crédité (${creditsDelta > 0 ? "+" : ""}${creditsDelta} crédits).`);
+      await refreshAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleOverrideIdentity(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedUserId) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.adminOverrideProjectIdentity(selectedUserId, {
+        title: ovrTitle.trim(),
+        author_name: ovrAuthor.trim(),
+        matricule: ovrMatricule.trim(),
+        topic_locked: ovrLocked,
+        reason: ovrReason.trim() || "Rectification administrative",
+      });
+      setNotice("Identité verrouillée du protocole mise à jour.");
+      await refreshAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSavePlan(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    const body = {
+      name: planName.trim(),
+      description: planDesc.trim(),
+      price_fcfa: Number(planPrice) || 0,
+      module1_days: Number(planM1) || 0,
+      module2_days: Number(planM2) || 0,
+      module3_days: Number(planM3) || 0,
+      module4_days: Number(planM4) || 0,
+      ai_quota_included: Number(planAi) || 0,
+      is_active: planActive,
+    };
+    try {
+      if (editingPlanId) {
+        await api.adminUpdatePlan(editingPlanId, body);
+        setNotice("Plan mis à jour.");
+      } else {
+        await api.adminCreatePlan(body);
+        setNotice("Nouveau plan créé.");
+      }
+      resetPlanForm();
+      await loadAllCore();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function startEditPlan(p: LicensePlanOut) {
+    setEditingPlanId(p.id);
+    setPlanName(p.name);
+    setPlanDesc(p.description);
+    setPlanPrice(String(p.price_fcfa));
+    setPlanM1(String(p.module1_days));
+    setPlanM2(String(p.module2_days));
+    setPlanM3(String(p.module3_days));
+    setPlanM4(String(p.module4_days));
+    setPlanAi(String(p.ai_quota_included));
+    setPlanActive(p.is_active);
+  }
+
+  function resetPlanForm() {
+    setEditingPlanId(null);
+    setPlanName("");
+    setPlanDesc("");
+    setPlanPrice("15000");
+    setPlanM1("30");
+    setPlanM2("30");
+    setPlanM3("180");
+    setPlanM4("30");
+    setPlanAi("150");
+    setPlanActive(true);
+  }
+
+  async function handleDeletePlan(planId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const res = await api.adminDeletePlan(planId);
+      setNotice(
+        res.status === "archived"
+          ? "Plan archivé (déjà utilisé par des licences existantes)."
+          : "Plan supprimé."
+      );
+      await loadAllCore();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* Admin Header Strip */}
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#6C2826] text-white">
+            <Shield className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-base font-bold text-slate-900">
+              Portail Administrateur &amp; Commercialisation
+            </h2>
+            <p className="text-xs text-slate-500">
+              Gestion des étudiants, licences par module, quotas IA et statistiques d'utilisation
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={refreshAll}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
+            Actualiser
+          </button>
+          <button
+            type="button"
+            onClick={onExitAdmin}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-slate-800"
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            Retour au Studio
+          </button>
+        </div>
+      </div>
+
+      {/* Sub-navigation tabs */}
+      <div className="flex flex-nowrap gap-2 overflow-x-auto no-scrollbar pb-1">
+        {(
+          [
+            { id: "dashboard", label: "Tableau de bord KPI", icon: Activity },
+            { id: "users", label: "Utilisateurs & Licences", icon: Users },
+            { id: "plans", label: "Plans & Tarifs", icon: CreditCard },
+            { id: "stats", label: "Statistiques Étudiants & Journaux", icon: BarChart3 },
+          ] as const
+        ).map((t) => {
+          const Icon = t.icon;
+          const active = tab === t.id;
+          return (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => setTab(t.id)}
+              className={`inline-flex min-h-[40px] shrink-0 items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition ${
+                active
+                  ? "bg-[#6C2826] text-white shadow-sm"
+                  : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+              }`}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {error && (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-800">
+          {error}
+        </div>
+      )}
+      {notice && (
+        <div className="flex items-center justify-between rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-xs text-emerald-800">
+          <span className="inline-flex items-center gap-1.5 font-medium">
+            <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+            {notice}
+          </span>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            className="text-[11px] font-semibold underline"
+          >
+            Fermer
+          </button>
+        </div>
+      )}
+
+      {revealedCreds && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-xs text-indigo-950">
+          <div>
+            <div className="font-bold">{revealedCreds.label}</div>
+            <div className="mt-0.5 font-mono">
+              Email : <strong>{revealedCreds.email}</strong> · Mot de passe temporaire :{" "}
+              <strong className="rounded bg-white px-1.5 py-0.5 text-[#6C2826]">
+                {revealedCreds.password}
+              </strong>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => copyCredentials(revealedCreds.email, revealedCreds.password)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 font-semibold text-white hover:bg-indigo-700"
+            >
+              <ClipboardCopy className="h-3.5 w-3.5" />
+              Copier identifiants
+            </button>
+            <button
+              type="button"
+              onClick={() => setRevealedCreds(null)}
+              className="rounded-lg border border-indigo-200 bg-white px-2.5 py-1.5 font-semibold text-indigo-800"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div className="rounded-2xl border border-slate-200 bg-white p-12 text-center text-sm text-slate-500">
+          Chargement des données administrateur...
+        </div>
+      ) : tab === "dashboard" && dashboard ? (
+        <div className="space-y-5">
+          {/* 6 KPI Cards */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              <div className="text-xs font-semibold text-slate-500">Étudiants actifs</div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-emerald-700">
+                  {dashboard.active_students}
+                </span>
+                <span className="text-xs text-slate-500">
+                  / {dashboard.total_students} inscrits
+                </span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              <div className="text-xs font-semibold text-slate-500">Expire sous 7 jours</div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-amber-600">
+                  {dashboard.expiring_soon_students}
+                </span>
+                <span className="text-xs text-slate-500">à relancer</span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              <div className="text-xs font-semibold text-slate-500">Expirés / Suspendus</div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-rose-700">
+                  {dashboard.expired_students}
+                </span>
+                <span className="text-xs text-slate-500">
+                  expirés · {dashboard.disabled_students} suspendus
+                </span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              <div className="text-xs font-semibold text-slate-500">Chiffre d'affaires licences</div>
+              <div className="mt-2 text-2xl font-bold text-[#6C2826]">
+                {dashboard.total_revenue_fcfa.toLocaleString("fr-FR")} FCFA
+              </div>
+              <div className="mt-1 text-xs text-slate-500">
+                Ce mois : {dashboard.month_revenue_fcfa.toLocaleString("fr-FR")} FCFA
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              <div className="text-xs font-semibold text-slate-500">Protocoles &amp; Collecte</div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-slate-900">
+                  {dashboard.total_projects}
+                </span>
+                <span className="text-xs text-slate-500">
+                  protocoles · {dashboard.total_patient_records} fiches patients
+                </span>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              <div className="text-xs font-semibold text-slate-500">Consommation IA &amp; Exports</div>
+              <div className="mt-2 flex items-baseline gap-2">
+                <span className="text-2xl font-bold text-indigo-700">
+                  {dashboard.total_ai_credits_used}
+                </span>
+                <span className="text-xs text-slate-500">
+                  crédits IA ({dashboard.month_ai_credits_used} ce mois) · {dashboard.total_exports} exports
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Alerts + Recent Grants */}
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                <AlertTriangle className="h-4 w-4 text-amber-500" />
+                Licences expirant prochainement (≤ 7 jours)
+              </h3>
+              {dashboard.expiring_soon_list.length === 0 ? (
+                <p className="mt-4 text-xs text-slate-500">
+                  Aucune licence étudiant n'expire dans les 7 prochains jours.
+                </p>
+              ) : (
+                <div className="mt-3 divide-y divide-slate-100">
+                  {dashboard.expiring_soon_list.map((s) => (
+                    <div
+                      key={s.id}
+                      className="flex items-center justify-between gap-2 py-2.5 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-semibold text-slate-900 truncate">{s.full_name}</div>
+                        <div className="text-slate-500 truncate">{s.email}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedUserId(s.id);
+                          setTab("users");
+                        }}
+                        className="shrink-0 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1 font-semibold text-amber-900 hover:bg-amber-100"
+                      >
+                        Renouveler
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              <h3 className="flex items-center gap-2 text-sm font-bold text-slate-900">
+                <CreditCard className="h-4 w-4 text-[#6C2826]" />
+                Dernières attributions de licences
+              </h3>
+              {dashboard.recent_grants.length === 0 ? (
+                <p className="mt-4 text-xs text-slate-500">
+                  Aucune attribution enregistrée pour le moment.
+                </p>
+              ) : (
+                <div className="mt-3 divide-y divide-slate-100">
+                  {dashboard.recent_grants.map((g) => (
+                    <div key={g.id} className="flex items-center justify-between gap-3 py-2.5 text-xs">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-slate-900 truncate">
+                          {g.user_name || g.user_email} · {g.plan_name}
+                        </div>
+                        <div className="text-slate-500">
+                          {fmtDateTime(g.granted_at)}
+                          {g.payment_reference ? ` · Réf: ${g.payment_reference}` : ""}
+                        </div>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-emerald-50 px-2.5 py-0.5 font-bold text-emerald-800">
+                        {g.amount_paid_fcfa.toLocaleString("fr-FR")} FCFA
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : tab === "users" ? (
+        <div className="space-y-4">
+          {/* Toolbar & Filters */}
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+            <div className="flex w-full flex-wrap items-center gap-2.5 sm:w-auto">
+              <div className="relative w-full sm:w-60">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  placeholder="Nom, email, matricule ou titre..."
+                  className="min-h-[38px] w-full rounded-lg border border-slate-300 py-1.5 pl-8 pr-3 text-xs focus:border-[#6C2826] focus:outline-none"
+                />
+              </div>
+              <select
+                value={roleFilter}
+                onChange={(e) => setRoleFilter(e.target.value)}
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700"
+              >
+                <option value="">Tous rôles</option>
+                <option value="student">Étudiants</option>
+                <option value="admin">Administrateurs</option>
+              </select>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700"
+              >
+                <option value="">Tous statuts</option>
+                <option value="active">Actif</option>
+                <option value="expiring_soon">Expire ≤ 7 j</option>
+                <option value="expired">Expiré</option>
+                <option value="none">Aucune licence</option>
+                <option value="disabled">Suspendu</option>
+              </select>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowCreateUser((v) => !v)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#571f1d]"
+            >
+              <UserPlus className="h-3.5 w-3.5" />
+              {showCreateUser ? "Fermer le formulaire" : "Créer un utilisateur"}
+            </button>
+          </div>
+
+          {/* Create User Form */}
+          {showCreateUser && (
+            <form
+              onSubmit={handleCreateUser}
+              className="rounded-2xl border border-indigo-200 bg-white p-5 shadow-sm"
+            >
+              <h3 className="text-sm font-bold text-slate-900">
+                Nouveau compte utilisateur (création manuelle administrateur)
+              </h3>
+              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600">
+                    Email *
+                  </label>
+                  <input
+                    type="email"
+                    required
+                    value={newEmail}
+                    onChange={(e) => setNewEmail(e.target.value)}
+                    placeholder="etudiant@fmsb.cm"
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600">
+                    Nom complet *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={newFullName}
+                    onChange={(e) => setNewFullName(e.target.value)}
+                    placeholder="Ex. Kouayi Ngnamfa Duchelle"
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600">
+                    Matricule
+                  </label>
+                  <input
+                    type="text"
+                    value={newMatricule}
+                    onChange={(e) => setNewMatricule(e.target.value)}
+                    placeholder="20M1493"
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600">
+                    Téléphone
+                  </label>
+                  <input
+                    type="text"
+                    value={newPhone}
+                    onChange={(e) => setNewPhone(e.target.value)}
+                    placeholder="691 38 46 52"
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600">Rôle</label>
+                  <select
+                    value={newRole}
+                    onChange={(e) => setNewRole(e.target.value as "student" | "admin")}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                  >
+                    <option value="student">Étudiant (1 protocole max)</option>
+                    <option value="admin">Administrateur</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600">
+                    Plan de licence initial
+                  </label>
+                  <select
+                    value={newPlanId}
+                    onChange={(e) => {
+                      const pid = e.target.value;
+                      setNewPlanId(pid);
+                      const found = plans.find((p) => p.id === pid);
+                      if (found) setNewAmountFcfa(String(found.price_fcfa));
+                    }}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                  >
+                    <option value="">-- Sans plan initial --</option>
+                    {plans
+                      .filter((p) => p.is_active)
+                      .map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({p.price_fcfa.toLocaleString("fr-FR")} F)
+                        </option>
+                      ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600">
+                    Montant payé (FCFA)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={newAmountFcfa}
+                    onChange={(e) => setNewAmountFcfa(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600">
+                    Référence paiement
+                  </label>
+                  <input
+                    type="text"
+                    value={newPaymentRef}
+                    onChange={(e) => setNewPaymentRef(e.target.value)}
+                    placeholder="Ex. OM-2026-041"
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                  />
+                </div>
+
+                {newRole === "student" && (
+                  <div className="sm:col-span-2">
+                    <label className="block text-[11px] font-semibold text-slate-600">
+                      Titre initial du protocole (optionnel, pré-verrouillé dès la création)
+                    </label>
+                    <input
+                      type="text"
+                      value={newInitTitle}
+                      onChange={(e) => setNewInitTitle(e.target.value)}
+                      placeholder="Ex. Facteurs associés aux troubles du cycle menstruel..."
+                      className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                    />
+                  </div>
+                )}
+
+                <div className="sm:col-span-2">
+                  <label className="block text-[11px] font-semibold text-slate-600">
+                    Mot de passe temporaire (laisser vide = généré automatiquement)
+                  </label>
+                  <input
+                    type="text"
+                    minLength={8}
+                    value={newTempPassInput}
+                    onChange={(e) => setNewTempPassInput(e.target.value)}
+                    placeholder="Ex. FMSB-2026-PASS"
+                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="mt-4 flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateUser(false)}
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700"
+                >
+                  Annuler
+                </button>
+                <button
+                  type="submit"
+                  disabled={busy}
+                  className="rounded-lg bg-[#6C2826] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#571f1d] disabled:opacity-60"
+                >
+                  Créer le compte &amp; générer identifiants
+                </button>
+              </div>
+            </form>
+          )}
+
+          {/* Split Users List + Detail Inspector */}
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+            {/* Users List */}
+            <div className="lg:col-span-5 rounded-2xl border border-slate-200 bg-white p-3 shadow-xs">
+              <div className="mb-2 px-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                {users.length} compte(s) affiché(s)
+              </div>
+              <div className="max-h-[680px] space-y-2 overflow-y-auto pr-1">
+                {users.map((u) => {
+                  const st = statusBadge(u.status_summary);
+                  const isSel = selectedUserId === u.id;
+                  return (
+                    <button
+                      key={u.id}
+                      type="button"
+                      onClick={() => setSelectedUserId(u.id)}
+                      className={`w-full rounded-xl border p-3 text-left transition ${
+                        isSel
+                          ? "border-[#6C2826] bg-rose-50/40 ring-1 ring-[#6C2826]"
+                          : "border-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-bold text-slate-900">
+                            {u.full_name}
+                          </div>
+                          <div className="truncate text-xs text-slate-500">
+                            {u.email}
+                            {u.matricule ? ` · ${u.matricule}` : ""}
+                          </div>
+                        </div>
+                        <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold ${st.cls}`}>
+                          {st.label}
+                        </span>
+                      </div>
+
+                      {u.role === "student" && (
+                        <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px]">
+                          {MODULE_META.map((m) => {
+                            const ent = u.entitlements[m.key];
+                            const active = Boolean(ent?.is_active);
+                            return (
+                              <span
+                                key={m.key}
+                                className={`rounded px-1.5 py-0.5 font-semibold ${
+                                  active
+                                    ? "bg-emerald-50 text-emerald-800"
+                                    : "bg-slate-100 text-slate-500"
+                                }`}
+                              >
+                                {m.short}: {active ? `${ent.days_remaining}j` : "Off"}
+                              </span>
+                            );
+                          })}
+                          <span className="ml-auto font-semibold text-indigo-700">
+                            IA: {u.ai_quota.credits_remaining} cr
+                          </span>
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Detail Inspector */}
+            <div className="lg:col-span-7 space-y-4">
+              {!userDetail ? (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-12 text-center text-xs text-slate-500">
+                  Sélectionnez un utilisateur dans la liste pour gérer ses licences par module, son quota IA et son protocole verrouillé.
+                </div>
+              ) : (
+                <div className="space-y-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+                  {/* Identity & Account Controls */}
+                  <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-4">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-base font-bold text-slate-900">
+                          {userDetail.user.full_name}
+                        </h3>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            statusBadge(userDetail.user.status_summary).cls
+                          }`}
+                        >
+                          {statusBadge(userDetail.user.status_summary).label}
+                        </span>
+                      </div>
+                      <div className="mt-1 text-xs text-slate-600">
+                        {userDetail.user.email}
+                        {userDetail.user.matricule ? ` · Matricule : ${userDetail.user.matricule}` : ""}
+                        {userDetail.user.phone ? ` · Tél : ${userDetail.user.phone}` : ""}
+                      </div>
+                      <div className="mt-1 text-[11px] text-slate-500">
+                        Dernière connexion : {fmtDateTime(userDetail.user.last_login_at)}
+                        {userDetail.user.last_login_ip ? ` (${userDetail.user.last_login_ip})` : ""} ·
+                        Changements d'appareil : <strong>{userDetail.user.session_switch_count}</strong>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => handleResetPassword(userDetail.user)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        <KeyRound className="h-3.5 w-3.5" />
+                        Réinit. MDP
+                      </button>
+                      {userDetail.user.id !== currentAdminId && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => handleToggleActive(userDetail.user)}
+                            className={`inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-semibold ${
+                              userDetail.user.is_active
+                                ? "border border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
+                                : "border border-emerald-300 bg-emerald-50 text-emerald-900 hover:bg-emerald-100"
+                            }`}
+                          >
+                            {userDetail.user.is_active ? (
+                              <>
+                                <UserX className="h-3.5 w-3.5" /> Suspendre
+                              </>
+                            ) : (
+                              <>
+                                <UserCheck className="h-3.5 w-3.5" /> Réactiver
+                              </>
+                            )}
+                          </button>
+
+                          {confirmDeleteUserId === userDetail.user.id ? (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => handleDeleteUser(userDetail.user.id)}
+                              className="inline-flex items-center gap-1 rounded-lg bg-rose-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-rose-800"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" /> Confirmer suppression
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => setConfirmDeleteUserId(userDetail.user.id)}
+                              className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" /> Supprimer
+                            </button>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Per-module Licenses */}
+                  <div>
+                    <h4 className="text-xs font-bold uppercase tracking-wide text-slate-600">
+                      Licences par Module
+                    </h4>
+                    <div className="mt-2 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                      {MODULE_META.map((m) => {
+                        const ent = userDetail.user.entitlements[m.key];
+                        const active = Boolean(ent?.is_active);
+                        return (
+                          <div
+                            key={m.key}
+                            className={`rounded-xl border p-3 ${
+                              active ? "border-emerald-200 bg-emerald-50/30" : "border-slate-200 bg-slate-50/70"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="font-bold text-slate-900">
+                                {m.short} — {m.label}
+                              </span>
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                  active ? "bg-emerald-100 text-emerald-800" : "bg-rose-100 text-rose-800"
+                                }`}
+                              >
+                                {active ? `${ent.days_remaining} j` : "Expiré"}
+                              </span>
+                            </div>
+                            <div className="mt-1 text-[11px] text-slate-500">
+                              Expiration : {fmtDate(ent?.expires_at)}
+                            </div>
+                            {userDetail.user.role === "student" && (
+                              <div className="mt-2 flex flex-wrap gap-1.5">
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => handleAdjustModule(m.key, { add_days: 30 })}
+                                  className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                  +30 j
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={busy}
+                                  onClick={() => handleAdjustModule(m.key, { add_days: 90 })}
+                                  className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                  +90 j
+                                </button>
+                                {active && (
+                                  <button
+                                    type="button"
+                                    disabled={busy}
+                                    onClick={() => handleAdjustModule(m.key, { revoke: true })}
+                                    className="ml-auto rounded border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700 hover:bg-rose-100"
+                                  >
+                                    Expirer
+                                  </button>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Grant Plan + AI Quota Recharge */}
+                  {userDetail.user.role === "student" && (
+                    <div className="grid grid-cols-1 gap-4 border-t border-slate-100 pt-4 sm:grid-cols-2">
+                      <form onSubmit={handleGrantPlan} className="space-y-2 rounded-xl border border-slate-200 p-3.5">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
+                          <Plus className="h-3.5 w-3.5 text-[#6C2826]" />
+                          Attribuer / Prolonger un plan
+                        </div>
+                        <select
+                          value={grantPlanId}
+                          onChange={(e) => {
+                            const pid = e.target.value;
+                            setGrantPlanId(pid);
+                            const found = plans.find((p) => p.id === pid);
+                            if (found) setGrantAmount(String(found.price_fcfa));
+                          }}
+                          className="w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                        >
+                          {plans
+                            .filter((p) => p.is_active)
+                            .map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name} ({p.price_fcfa.toLocaleString("fr-FR")} F)
+                              </option>
+                            ))}
+                        </select>
+                        <div className="grid grid-cols-2 gap-2">
+                          <input
+                            type="number"
+                            min={0}
+                            value={grantAmount}
+                            onChange={(e) => setGrantAmount(e.target.value)}
+                            placeholder="Montant FCFA"
+                            className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
+                          />
+                          <input
+                            type="text"
+                            value={grantRef}
+                            onChange={(e) => setGrantRef(e.target.value)}
+                            placeholder="Réf. paiement"
+                            className="rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
+                          />
+                        </div>
+                        <input
+                          type="text"
+                          value={grantNotes}
+                          onChange={(e) => setGrantNotes(e.target.value)}
+                          placeholder="Notes / motif (optionnel)"
+                          className="w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
+                        />
+                        <button
+                          type="submit"
+                          disabled={busy || !grantPlanId}
+                          className="w-full rounded-lg bg-[#6C2826] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#571f1d]"
+                        >
+                          Appliquer le plan (cumulatif)
+                        </button>
+                      </form>
+
+                      <div className="space-y-2 rounded-xl border border-slate-200 p-3.5">
+                        <div className="flex items-center justify-between text-xs font-bold text-slate-800">
+                          <span className="inline-flex items-center gap-1.5">
+                            <Sparkles className="h-3.5 w-3.5 text-indigo-600" />
+                            Quota Crédits IA
+                          </span>
+                          <span className="text-indigo-700">
+                            {userDetail.user.ai_quota.credits_remaining} /{" "}
+                            {userDetail.user.ai_quota.credits_total} restants
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-slate-500">
+                          Utilisés : {userDetail.user.ai_quota.credits_used} · Appels IA réussis :{" "}
+                          {userDetail.user.ai_calls_count}
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => handleRechargeAI(50)}
+                            className="flex-1 rounded-lg border border-indigo-200 bg-indigo-50 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100"
+                          >
+                            +50 crédits
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => handleRechargeAI(100)}
+                            className="flex-1 rounded-lg border border-indigo-200 bg-indigo-50 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100"
+                          >
+                            +100 crédits
+                          </button>
+                        </div>
+                        <div className="flex gap-2">
+                          <input
+                            type="number"
+                            value={rechargeCredits}
+                            onChange={(e) => setRechargeCredits(e.target.value)}
+                            className="w-24 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
+                          />
+                          <input
+                            type="text"
+                            value={rechargeNotes}
+                            onChange={(e) => setRechargeNotes(e.target.value)}
+                            placeholder="Note recharge"
+                            className="min-w-0 flex-1 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
+                          />
+                        </div>
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onClick={() => handleRechargeAI(Number(rechargeCredits) || 0)}
+                          className="inline-flex w-full items-center justify-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+                        >
+                          <Zap className="h-3.5 w-3.5" />
+                          Appliquer crédits IA
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Locked Protocol Identity Override */}
+                  {userDetail.user.project_id && (
+                    <form
+                      onSubmit={handleOverrideIdentity}
+                      className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
+                          <Lock className="h-3.5 w-3.5 text-amber-700" />
+                          Protocole verrouillé ({userDetail.user.project_id})
+                        </div>
+                        <div className="text-[11px] font-medium text-slate-600">
+                          {userDetail.user.sections_validated_count}/24 sections validées ·{" "}
+                          {userDetail.user.patients_count} fiches patients ·{" "}
+                          {userDetail.user.exports_count} exports
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                        <div className="sm:col-span-2">
+                          <label className="block text-[11px] font-semibold text-slate-700">
+                            Titre officiel verrouillé
+                          </label>
+                          <input
+                            type="text"
+                            value={ovrTitle}
+                            onChange={(e) => setOvrTitle(e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700">
+                            Nom impétrant verrouillé
+                          </label>
+                          <input
+                            type="text"
+                            value={ovrAuthor}
+                            onChange={(e) => setOvrAuthor(e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700">
+                            Matricule verrouillé
+                          </label>
+                          <input
+                            type="text"
+                            value={ovrMatricule}
+                            onChange={(e) => setOvrMatricule(e.target.value)}
+                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
+                          />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <input
+                            id="ovr-locked-check"
+                            type="checkbox"
+                            checked={ovrLocked}
+                            onChange={(e) => setOvrLocked(e.target.checked)}
+                          />
+                          <label htmlFor="ovr-locked-check" className="text-xs font-medium text-slate-700">
+                            Verrou actif (1 utilisateur = 1 protocole)
+                          </label>
+                        </div>
+                        <input
+                          type="text"
+                          value={ovrReason}
+                          onChange={(e) => setOvrReason(e.target.value)}
+                          placeholder="Motif de la rectification admin"
+                          className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
+                        />
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={busy}
+                        className="rounded-lg bg-amber-700 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-amber-800"
+                      >
+                        Enregistrer la rectification administrateur
+                      </button>
+                    </form>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      ) : tab === "plans" ? (
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-12">
+          {/* Create / Edit Plan Form */}
+          <form
+            onSubmit={handleSavePlan}
+            className="lg:col-span-5 space-y-3 rounded-2xl border border-slate-200 bg-white p-5 shadow-xs"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-900">
+                {editingPlanId ? "Modifier le plan de licence" : "Créer un nouveau plan"}
+              </h3>
+              {editingPlanId && (
+                <button
+                  type="button"
+                  onClick={resetPlanForm}
+                  className="text-xs font-semibold text-slate-500 underline"
+                >
+                  Nouveau
+                </button>
+              )}
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600">Nom du plan *</label>
+              <input
+                type="text"
+                required
+                value={planName}
+                onChange={(e) => setPlanName(e.target.value)}
+                placeholder="Ex. Pack Thèse 1M + Collecte 6M"
+                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-slate-600">Description</label>
+              <textarea
+                rows={2}
+                value={planDesc}
+                onChange={(e) => setPlanDesc(e.target.value)}
+                className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-xs"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600">Prix (FCFA)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={planPrice}
+                  onChange={(e) => setPlanPrice(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600">Crédits IA inclus</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={planAi}
+                  onChange={(e) => setPlanAi(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600">Module 1 (jours)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={planM1}
+                  onChange={(e) => setPlanM1(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600">Module 2 (jours)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={planM2}
+                  onChange={(e) => setPlanM2(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600">Module 3 CRF (jours)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={planM3}
+                  onChange={(e) => setPlanM3(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600">Module 4 PPTX (jours)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={planM4}
+                  onChange={(e) => setPlanM4(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                />
+              </div>
+            </div>
+
+            <label className="flex items-center gap-2 text-xs text-slate-700">
+              <input
+                type="checkbox"
+                checked={planActive}
+                onChange={(e) => setPlanActive(e.target.checked)}
+              />
+              Plan actif à la commercialisation
+            </label>
+
+            <button
+              type="submit"
+              disabled={busy}
+              className="w-full rounded-lg bg-[#6C2826] px-4 py-2 text-xs font-semibold text-white hover:bg-[#571f1d]"
+            >
+              {editingPlanId ? "Mettre à jour le plan" : "Créer le plan"}
+            </button>
+          </form>
+
+          {/* Plans Catalog List */}
+          <div className="lg:col-span-7 space-y-3">
+            {plans.map((p) => (
+              <div
+                key={p.id}
+                className={`rounded-2xl border bg-white p-4 shadow-xs ${
+                  p.is_active ? "border-slate-200" : "border-slate-200 opacity-65"
+                }`}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-bold text-slate-900">{p.name}</h4>
+                      {!p.is_active && (
+                        <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">
+                          Archivé
+                        </span>
+                      )}
+                    </div>
+                    {p.description && <p className="mt-1 text-xs text-slate-500">{p.description}</p>}
+                  </div>
+                  <div className="text-right">
+                    <div className="text-base font-bold text-[#6C2826]">
+                      {p.price_fcfa.toLocaleString("fr-FR")} FCFA
+                    </div>
+                    <div className="text-[11px] font-semibold text-indigo-700">
+                      {p.ai_quota_included} crédits IA
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-2.5 text-xs">
+                  <div className="flex flex-wrap gap-2">
+                    <span className="rounded bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
+                      M1: {p.module1_days}j
+                    </span>
+                    <span className="rounded bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
+                      M2: {p.module2_days}j
+                    </span>
+                    <span className="rounded bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
+                      M3: {p.module3_days}j
+                    </span>
+                    <span className="rounded bg-slate-100 px-2 py-0.5 font-medium text-slate-700">
+                      M4: {p.module4_days}j
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => startEditPlan(p)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      <Edit3 className="h-3 w-3" /> Modifier
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleDeletePlan(p.id)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                    >
+                      <Trash2 className="h-3 w-3" /> Supprimer
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        /* Tab 4: Student Analytics & Audit Logs */
+        <div className="space-y-5">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="text-sm font-bold text-slate-900">
+                Statistiques d'utilisation par étudiant ({statsRows.length})
+              </h3>
+              <div className="flex flex-wrap gap-2">
+                <input
+                  type="text"
+                  value={statsSearch}
+                  onChange={(e) => setStatsSearch(e.target.value)}
+                  placeholder="Filtrer étudiant..."
+                  className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                />
+                <select
+                  value={statsSortBy}
+                  onChange={(e) => setStatsSortBy(e.target.value)}
+                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700"
+                >
+                  <option value="last_login">Tri : Dernière connexion</option>
+                  <option value="sections">Tri : Avancement rédaction</option>
+                  <option value="patients">Tri : Fiches patients</option>
+                  <option value="ai_used">Tri : Crédits IA consommés</option>
+                  <option value="exports">Tri : Nombre d'exports</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="mt-4 overflow-x-auto">
+              <table className="min-w-full divide-y divide-slate-200 text-xs">
+                <thead className="bg-slate-50 text-left text-[11px] font-bold uppercase text-slate-600">
+                  <tr>
+                    <th className="px-3 py-2">Étudiant</th>
+                    <th className="px-3 py-2">Protocole</th>
+                    <th className="px-3 py-2">Sections</th>
+                    <th className="px-3 py-2">Patients</th>
+                    <th className="px-3 py-2">Exports</th>
+                    <th className="px-3 py-2">Crédits IA</th>
+                    <th className="px-3 py-2">Appareils</th>
+                    <th className="px-3 py-2">Dernière activité</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {statsRows.map((r) => (
+                    <tr
+                      key={r.id}
+                      onClick={() => {
+                        setSelectedUserId(r.id);
+                        setTab("users");
+                      }}
+                      className="cursor-pointer hover:bg-slate-50"
+                    >
+                      <td className="px-3 py-2.5">
+                        <div className="font-semibold text-slate-900">{r.full_name}</div>
+                        <div className="text-[11px] text-slate-500">{r.email}</div>
+                      </td>
+                      <td className="max-w-[220px] truncate px-3 py-2.5 text-slate-700">
+                        {r.project_title || "Aucun"}
+                      </td>
+                      <td className="px-3 py-2.5 font-semibold text-slate-800">
+                        {r.sections_validated_count}/24
+                      </td>
+                      <td className="px-3 py-2.5 font-semibold text-[#6C2826]">
+                        {r.patients_count}
+                      </td>
+                      <td className="px-3 py-2.5 font-semibold text-emerald-700">
+                        {r.exports_count}
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <span className="font-semibold text-indigo-700">
+                          {r.ai_quota.credits_used}
+                        </span>{" "}
+                        / {r.ai_quota.credits_total}
+                      </td>
+                      <td className="px-3 py-2.5 text-slate-600">{r.session_switch_count}</td>
+                      <td className="px-3 py-2.5 text-[11px] text-slate-500">
+                        {fmtDateTime(r.last_login_at)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              <h4 className="text-xs font-bold uppercase tracking-wide text-slate-700">
+                Derniers événements d'utilisation ({usageEvents.length})
+              </h4>
+              <div className="mt-3 max-h-72 divide-y divide-slate-100 overflow-y-auto text-xs">
+                {usageEvents.map((ev) => (
+                  <div key={ev.id} className="flex items-center justify-between gap-2 py-2">
+                    <div className="min-w-0">
+                      <div className="truncate font-semibold text-slate-800">
+                        {ev.user_email} · {ev.action}
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {ev.module_key}
+                        {ev.model_used ? ` · ${ev.model_used}` : ""} · {fmtDateTime(ev.created_at)}
+                      </div>
+                    </div>
+                    <span className="shrink-0 rounded bg-slate-100 px-2 py-0.5 font-semibold text-slate-700">
+                      -{ev.credits_cost} cr
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+              <h4 className="text-xs font-bold uppercase tracking-wide text-slate-700">
+                Journal d'audit administrateur ({auditLogs.length})
+              </h4>
+              <div className="mt-3 max-h-72 divide-y divide-slate-100 overflow-y-auto text-xs">
+                {auditLogs.map((al) => (
+                  <div key={al.id} className="py-2">
+                    <div className="font-semibold text-slate-800">
+                      {al.action} · par {al.admin_email || "système"}
+                      {al.target_email ? ` → ${al.target_email}` : ""}
+                    </div>
+                    <div className="text-[11px] text-slate-500">{fmtDateTime(al.created_at)}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

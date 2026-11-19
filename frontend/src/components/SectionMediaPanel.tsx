@@ -9,7 +9,7 @@ import {
   Trash2,
   Upload,
 } from "lucide-react";
-import { api } from "../api/client";
+import { api, withAuthToken } from "../api/client";
 import type {
   DiagramConnection,
   DiagramNode,
@@ -654,7 +654,7 @@ export function SectionMediaPanel({
         <div className="space-y-1.5">
           {sectionImages.map((img) => {
             const imgSrc = img.local_path
-              ? `/api/projects/${project.project_id}/images/${img.asset_id}/file`
+              ? withAuthToken(`/api/projects/${project.project_id}/images/${img.asset_id}/file`)
               : img.source_url;
             return (
               <div

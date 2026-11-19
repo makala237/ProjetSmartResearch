@@ -13,6 +13,10 @@ from app.schemas.protocol import (
     StepStatus,
 )
 from app.services.gemini_client import gemini_router
+from app.services.humanizer import (
+    HUMAN_ACADEMIC_STYLE_INSTRUCTIONS,
+    sanitize_llm_french_typography,
+)
 from app.services.rich_formatter import markdown_to_clean_html, strip_ascii_diagrams
 from app.services.section_orchestrator import orchestrate_section_action
 from app.services.working_memory import (
@@ -299,13 +303,14 @@ REGLES ANTI-HALLUCINATION ET ANTI-REDONDANCE STRICTES :
 3. Ne répète JAMAIS une explication, définition ou statistique déjà exposée dans la MEMOIRE TRANSVERSALE ci-dessus.
 4. Si une donnée locale précise (ex. effectif d'un hôpital ou taux local manquant) n'est pas dans les sources, écris explicitement [À compléter par l'investigateur : ...].
 5. Respecte un style scientifique médical sobre en français, prêt pour un protocole FMSB.
+{HUMAN_ACADEMIC_STYLE_INSTRUCTIONS}
 {STRUCTURED_TOOLS_INSTRUCTIONS}
 """
     res = gemini_router.generate_structured(
         role="drafting",
         contents=prompt,
         schema=DraftSectionOutput,
-        temperature=0.25,
+        temperature=0.28,
     )
     dto: DraftSectionOutput = res["data"]
 
@@ -317,6 +322,7 @@ REGLES ANTI-HALLUCINATION ET ANTI-REDONDANCE STRICTES :
         order_to_ref_id[idx] for idx in dto.cited_order_indices if idx in order_to_ref_id
     ]
     clean_md = strip_ascii_diagrams(dto.content_markdown)
+    clean_md, _ = sanitize_llm_french_typography(clean_md)
     clean_html = markdown_to_clean_html(clean_md)
     det_notes = deterministic_section_checks(project, section_id, clean_md)
 
@@ -519,18 +525,20 @@ REFERENCES DISPONIBLES :
 Consignes :
 - Raisonne en priorité sur le texte actuel pour corriger précisément chaque manquement signalé tout en conservant les éléments déjà valides et les citations [n] exactes.
 - N'invente aucune donnée chiffrée ni aucune référence.
+{HUMAN_ACADEMIC_STYLE_INSTRUCTIONS}
 {STRUCTURED_TOOLS_INSTRUCTIONS}
 """
     res = gemini_router.generate_structured(
         role="drafting",
         contents=prompt,
         schema=DraftSectionOutput,
-        temperature=0.2,
+        temperature=0.22,
     )
     dto: DraftSectionOutput = res["data"]
     if spec.constraints.table_policy == "forbidden":
         dto.suggested_tables = []
     clean_md = strip_ascii_diagrams(dto.content_markdown)
+    clean_md, _ = sanitize_llm_french_typography(clean_md)
     clean_html = markdown_to_clean_html(clean_md)
     det_notes = deterministic_section_checks(project, section_id, clean_md)
 
