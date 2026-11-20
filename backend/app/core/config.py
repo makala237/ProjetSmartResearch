@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     gemini_primary_reasoning_model: str = "gemini-3.8-flash"
     gemini_fallback_reasoning_model: str = "gemini-3.5-flash"
     student_daily_gemini38_limit: int = 15
+    ai_user_max_rpm: int = 10
+    ai_user_max_rpd: int = 40
 
     gemini_models_research: str = "gemini-3.8-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite"
     gemini_models_segmentation: str = "gemini-3.8-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite"

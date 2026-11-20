@@ -186,6 +186,42 @@ def assert_ai_quota_available(
                 ),
             },
         )
+
+    settings = get_settings()
+    max_rpm = int(getattr(settings, "ai_user_max_rpm", 10) or 0)
+    max_rpd = int(getattr(settings, "ai_user_max_rpd", 40) or 0)
+    if max_rpm > 0 or max_rpd > 0:
+        now_utc = datetime.now(timezone.utc)
+        day_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        minute_ago = now_utc - timedelta(seconds=60)
+        used_rpm, used_rpd = store.count_user_ai_calls_since(user.id, day_start, minute_ago)
+        if max_rpm > 0 and used_rpm >= max_rpm:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "AI_RATE_LIMIT_RPM",
+                    "limit_rpm": max_rpm,
+                    "used_rpm": used_rpm,
+                    "message": (
+                        f"Limite de fréquence atteinte ({used_rpm}/{max_rpm} requêtes IA par minute). "
+                        "Veuillez patienter quelques secondes avant de relancer."
+                    ),
+                },
+            )
+        if max_rpd > 0 and used_rpd >= max_rpd:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "AI_RATE_LIMIT_RPD",
+                    "limit_rpd": max_rpd,
+                    "used_rpd": used_rpd,
+                    "message": (
+                        f"Plafond journalier atteint ({used_rpd}/{max_rpd} requêtes IA aujourd'hui). "
+                        "Votre quota journalier sera réinitialisé demain."
+                    ),
+                },
+            )
+
     daily_38 = get_student_daily_38_usage(store, user)
     set_ai_routing_policy(
         prefer_fallback_35=daily_38["fallback_active"],

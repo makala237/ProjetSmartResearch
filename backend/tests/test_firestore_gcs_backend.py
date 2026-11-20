@@ -921,6 +921,126 @@ def test_dual_auth_modes() -> None:
         reset_db_state()
 
 
+def _verify_rate_limits_in_store() -> Optional[str]:
+    from datetime import timedelta
+    from fastapi import HTTPException
+    from app.db.database import get_store
+    from app.services.auth_service import create_user_account
+    from app.services.licensing_service import assert_ai_quota_available
+
+    settings = get_settings()
+    orig_rpm = settings.ai_user_max_rpm
+    orig_rpd = settings.ai_user_max_rpd
+    settings.ai_user_max_rpm = 2
+    settings.ai_user_max_rpd = 3
+
+    store = get_store()
+    created_uid: Optional[str] = None
+    try:
+        suffix = uuid4().hex[:6]
+        stu = create_user_account(
+            db=store,
+            email=f"rl.stu.{suffix}",
+            full_name=f"Rate Limit Student {suffix}",
+            password="TempPassword123!",
+            role="student",
+        )
+        created_uid = stu.id
+        now = datetime.now(timezone.utc)
+        store.upsert_entitlement(
+            user_id=stu.id,
+            module_key="module1",
+            starts_at=now - timedelta(days=1),
+            expires_at=now + timedelta(days=30),
+            updated_at=now,
+        )
+        store.add_quota_credits_atomic(user_id=stu.id, add_credits=100, now=now)
+
+        # 2 calls within the last minute -> 3rd call hits RPM (429 AI_RATE_LIMIT_RPM)
+        for _ in range(2):
+            record_usage_and_debit(
+                store,
+                stu,
+                module_key="module1",
+                action="draft_section",
+                credits_cost=2,
+                model_used="gemini-3.8-flash",
+                status="ok",
+            )
+
+        try:
+            assert_ai_quota_available(store, stu, module_key="module1", action="draft_section")
+            raise AssertionError("Expected HTTP 429 AI_RATE_LIMIT_RPM")
+        except HTTPException as exc:
+            assert exc.status_code == 429, exc.detail
+            assert exc.detail["code"] == "AI_RATE_LIMIT_RPM", exc.detail
+
+        # Raise RPM to 10 so RPD=3 is tested next; add 1 more event -> 4th call hits RPD (429 AI_RATE_LIMIT_RPD)
+        settings.ai_user_max_rpm = 10
+        assert_ai_quota_available(store, stu, module_key="module1", action="draft_section")
+        record_usage_and_debit(
+            store,
+            stu,
+            module_key="module1",
+            action="audit_section",
+            credits_cost=1,
+            model_used="gemini-3.8-flash",
+            status="ok",
+        )
+        try:
+            assert_ai_quota_available(store, stu, module_key="module1", action="audit_section")
+            raise AssertionError("Expected HTTP 429 AI_RATE_LIMIT_RPD")
+        except HTTPException as exc:
+            assert exc.status_code == 429, exc.detail
+            assert exc.detail["code"] == "AI_RATE_LIMIT_RPD", exc.detail
+
+        store.delete_user_cascade(stu.id)
+        created_uid = None
+        return None
+    finally:
+        settings.ai_user_max_rpm = orig_rpm
+        settings.ai_user_max_rpd = orig_rpd
+        store.close()
+    return created_uid
+
+
+def test_user_rpm_and_rpd_rate_limits() -> None:
+    """Verify AI_USER_MAX_RPM (429) and AI_USER_MAX_RPD (429) enforcement in Firestore and SQL."""
+    settings = get_settings()
+    orig_db_backend = settings.db_backend
+    orig_fs_db = settings.firestore_database
+
+    fake_fs = FakeFirestoreClient()
+    with tempfile.TemporaryDirectory() as tmp_blob_dir:
+        temp_blobs = LocalBlobStorage(root_dir=Path(tmp_blob_dir))
+        reset_db_state()
+        settings.db_backend = "firestore"
+        settings.firestore_database = "smartresearch-db"
+        set_firestore_client_override(fake_fs)
+        set_blob_storage_override(temp_blobs)
+        reset_blob_storage_cache()
+        try:
+            init_db(force=True)
+            _verify_rate_limits_in_store()
+        finally:
+            settings.db_backend = orig_db_backend
+            settings.firestore_database = orig_fs_db
+            set_firestore_client_override(None)
+            set_blob_storage_override(None)
+            reset_blob_storage_cache()
+            reset_db_state()
+
+    reset_db_state()
+    settings.db_backend = "sql"
+    try:
+        init_db(force=True)
+        _verify_rate_limits_in_store()
+    finally:
+        settings.db_backend = orig_db_backend
+        settings.firestore_database = orig_fs_db
+        reset_db_state()
+
+
 if __name__ == "__main__":
     test_firestore_and_blob_storage_end_to_end()
     print("[OK] test_firestore_and_blob_storage_end_to_end")
@@ -928,4 +1048,6 @@ if __name__ == "__main__":
     print("[OK] test_sql_mode_end_to_end_regression")
     test_dual_auth_modes()
     print("[OK] test_dual_auth_modes")
+    test_user_rpm_and_rpd_rate_limits()
+    print("[OK] test_user_rpm_and_rpd_rate_limits")
     print("ALL DUAL-MODE FIRESTORE + SQL TESTS PASSED")

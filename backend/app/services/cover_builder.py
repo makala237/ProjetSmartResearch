@@ -382,6 +382,7 @@ def _create_inline_box_paragraph(
     fmt: FormattingRules,
     space_before_pt: int = 0,
     space_after_pt: int = 6,
+    center_in_table: bool = False,
 ):
     """Create a centered, single-instance DrawingML bordered box (supports rounded corners & thickness)."""
     color_hex = (fmt.border_color or FMSB_BORDEAUX).lstrip("#").upper()
@@ -411,12 +412,44 @@ def _create_inline_box_paragraph(
     safe_font = escape(font_family or "Times New Roman")
     box_id = _next_box_id()
 
-    p_el = OxmlElement("w:p")
-    anchor_el.addprevious(p_el)
-    p_obj = doc.paragraphs[0].__class__(p_el, parent_container)
-    p_obj.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_obj.paragraph_format.space_before = Pt(space_before_pt)
-    p_obj.paragraph_format.space_after = Pt(space_after_pt)
+    if center_in_table:
+        # Place inline DrawingML shape inside a 1x1 centered borderless table at x=0 of the cell
+        # so LibreOffice Writer never shifts the inner textbox relative to the rounded border.
+        if space_before_pt > 0:
+            spacer_el = OxmlElement("w:p")
+            anchor_el.addprevious(spacer_el)
+            spacer_p = doc.paragraphs[0].__class__(spacer_el, parent_container)
+            spacer_p.paragraph_format.space_before = Pt(space_before_pt)
+            spacer_p.paragraph_format.space_after = Pt(0)
+            spacer_p.paragraph_format.line_spacing = 1.0
+            spacer_r = spacer_p.add_run(" ")
+            spacer_r.font.size = Pt(1)
+
+        box_tbl = doc.add_table(rows=1, cols=1)
+        box_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+        box_tbl.autofit = False
+        _clear_table_borders(box_tbl)
+        cell_w = Cm(width_cm)
+        box_tbl.columns[0].width = cell_w
+        cell = box_tbl.cell(0, 0)
+        cell.width = cell_w
+        _set_cell_margins(cell, top_dxa=0, bottom_dxa=0, left_dxa=0, right_dxa=0)
+        anchor_el.addprevious(box_tbl._tbl)
+
+        p_obj = cell.paragraphs[0]
+        p_obj.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        p_obj.paragraph_format.space_before = Pt(0)
+        p_obj.paragraph_format.space_after = Pt(space_after_pt)
+        p_el = p_obj._p
+        autofit_xml = "<a:noAutofit/>"
+    else:
+        p_el = OxmlElement("w:p")
+        anchor_el.addprevious(p_el)
+        p_obj = doc.paragraphs[0].__class__(p_el, parent_container)
+        p_obj.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_obj.paragraph_format.space_before = Pt(space_before_pt)
+        p_obj.paragraph_format.space_after = Pt(space_after_pt)
+        autofit_xml = "<a:spAutoFit/>"
 
     shape_run_xml = (
         f'<w:r xmlns:w="{W_NS}" xmlns:wp="{WP_NS}" xmlns:a="{A_NS}" xmlns:wps="{WPS_NS}">'
@@ -448,7 +481,7 @@ def _create_inline_box_paragraph(
         f"              </w:txbxContent>"
         f"            </wps:txbx>"
         f'            <wps:bodyPr wrap="square" lIns="144000" tIns="72000" rIns="144000" bIns="72000" anchor="ctr" upright="1">'
-        f"              <a:spAutoFit/>"
+        f"              {autofit_xml}"
         f"            </wps:bodyPr>"
         f"          </wps:wsp>"
         f"        </a:graphicData>"
@@ -634,11 +667,12 @@ def build_fmsb_cover_page(
         parent_container=toc_anchor_p._parent,
         doc=doc,
         text=labels["cover_academic_year"].format(year=acad),
-        width_cm=7.4,
+        width_cm=8.2,
         height_cm=1.05,
         font_family="Times New Roman",
         size_pt=12,
         fmt=fmt,
         space_before_pt=bottom_push_pt,
         space_after_pt=0,
+        center_in_table=True,
     )

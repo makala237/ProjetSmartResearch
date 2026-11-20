@@ -421,6 +421,14 @@ class BaseDataStore(ABC):
     def count_user_gemini38_today(self, user_id: str, day_start: datetime) -> int: ...
 
     @abstractmethod
+    def count_user_ai_calls_since(
+        self,
+        user_id: str,
+        day_start: datetime,
+        minute_ago: datetime,
+    ) -> Tuple[int, int]: ...
+
+    @abstractmethod
     def aggregate_ok_events_by_users(
         self,
         user_ids: List[str],
@@ -1143,6 +1151,34 @@ class SQLDataStore(BaseDataStore):
             .all()
         )
         return sum(1 for ev in rows if (_to_utc(ev.created_at) or now) >= day_start)
+
+    def count_user_ai_calls_since(
+        self,
+        user_id: str,
+        day_start: datetime,
+        minute_ago: datetime,
+    ) -> Tuple[int, int]:
+        now = datetime.now(timezone.utc)
+        non_ai_actions = {"export_docx", "export_pdf", "export_pptx", "export_csv", "patient_upsert"}
+        rows = (
+            self.db.query(UsageEventORM)
+            .filter(
+                UsageEventORM.user_id == user_id,
+                UsageEventORM.status == "ok",
+            )
+            .all()
+        )
+        rpm_count = 0
+        rpd_count = 0
+        for ev in rows:
+            if (ev.action or "") in non_ai_actions:
+                continue
+            ts = _to_utc(ev.created_at) or now
+            if ts >= day_start:
+                rpd_count += 1
+            if ts >= minute_ago:
+                rpm_count += 1
+        return rpm_count, rpd_count
 
     def aggregate_ok_events_by_users(
         self,
@@ -2208,6 +2244,34 @@ class FirestoreDataStore(BaseDataStore):
             if "gemini-3.8" in model:
                 count += 1
         return count
+
+    def count_user_ai_calls_since(
+        self,
+        user_id: str,
+        day_start: datetime,
+        minute_ago: datetime,
+    ) -> Tuple[int, int]:
+        earliest = min(day_start, minute_ago)
+        q = self._col("usage_events")
+        q = self._where(q, "user_id", "==", user_id)
+        q = self._where(q, "status", "==", "ok")
+        q = self._where(q, "created_at", ">=", earliest)
+        rpm_count = 0
+        rpd_count = 0
+        non_ai_actions = {"export_docx", "export_pdf", "export_pptx", "export_csv", "patient_upsert"}
+        for snap in q.stream():
+            data = snap.to_dict() or {}
+            act = str(data.get("action") or "")
+            if act in non_ai_actions:
+                continue
+            ts = _to_utc(data.get("created_at"))
+            if ts is None:
+                continue
+            if ts >= day_start:
+                rpd_count += 1
+            if ts >= minute_ago:
+                rpm_count += 1
+        return rpm_count, rpd_count
 
     def aggregate_ok_events_by_users(
         self,
