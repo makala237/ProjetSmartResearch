@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 
 from PIL import Image as PILImage
 
+from app.data.i18n import get_doc_labels, normalize_lang
 from app.data.pptx_canvas import (
     CAMES_MAX_LINES_PER_SLIDE,
     CAMES_MIN_BODY_PT,
@@ -26,6 +27,7 @@ from app.data.pptx_canvas import (
     TPL_OBJ_SPEC,
     TPL_PLAN,
     TPL_THANKS,
+    get_plan_axes,
 )
 from app.schemas.presentation import LayoutBox, PresentationDeck, Slide, SlideElement
 from app.schemas.protocol import ProtocolProject, SupervisorInfo
@@ -203,22 +205,27 @@ def split_elements_to_fit_slides(
     return pages
 
 
-def _format_supervisors_lines(supervisors: List[SupervisorInfo]) -> str:
+def _format_supervisors_lines(supervisors: List[SupervisorInfo], lang: str = "fr") -> str:
     """Format supervisor blocks consistently with cover_builder.py (Name, Rank, Specialty)."""
     blocks: List[str] = []
     for sup in supervisors:
         lines = sup.to_display_lines()
         if lines:
             blocks.append("\n".join(lines))
-    return "\n\n".join(blocks) if blocks else "À renseigner"
+    return "\n\n".join(blocks) if blocks else get_doc_labels(lang)["cover_to_complete"]
 
 
 def _compute_welcome_boxes(slide: Slide, project: Optional[ProtocolProject]) -> List[LayoutBox]:
+    lang = normalize_lang(getattr(project, "language", "fr") if project else "fr")
     cand = (project.cover.author_name if project else "") or ""
-    subtitle_txt = slide.subtitle or (
-        f"DE L'IMPÉTRANT(E) : {cand.upper()}" if cand else "DE L'IMPÉTRANT(E)"
-    )
-    headline = (slide.title or "BIENVENUE À LA SOUTENANCE DU PROTOCOLE DE RECHERCHE").strip()
+    if lang == "en":
+        default_sub = f"CANDIDATE: {cand.upper()}" if cand else "RESEARCH CANDIDATE"
+        default_headline = "WELCOME TO THE RESEARCH PROTOCOL DEFENSE"
+    else:
+        default_sub = f"DE L'IMPÉTRANT(E) : {cand.upper()}" if cand else "DE L'IMPÉTRANT(E)"
+        default_headline = "BIENVENUE À LA SOUTENANCE DU PROTOCOLE DE RECHERCHE"
+    subtitle_txt = slide.subtitle or default_sub
+    headline = (slide.title or default_headline).strip()
     return [
         LayoutBox(
             box_id="welcome-card",
@@ -242,6 +249,8 @@ def _compute_welcome_boxes(slide: Slide, project: Optional[ProtocolProject]) -> 
 
 def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> List[LayoutBox]:
     """Compute strict bilingual multi-university cover boxes matching cover_builder.py rules."""
+    lang = normalize_lang(getattr(project, "language", "fr") if project else "fr")
+    labels = get_doc_labels(lang)
     cover = project.cover if project else None
 
     raw_dept_fr = (
@@ -317,7 +326,7 @@ def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> Li
 
     title_text = (
         (cover.title if cover and cover.title else slide.title)
-        or "TITRE DU PROTOCOLE DE RECHERCHE"
+        or ("RESEARCH PROTOCOL TITLE" if lang == "en" else "TITRE DU PROTOCOLE DE RECHERCHE")
     ).strip()
 
     # Dynamic title box sizing (16-21 pt bold)
@@ -334,16 +343,21 @@ def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> Li
     title_top = header_strip_h + 0.015
     title_bottom = title_top + dyn_title_h
 
-    degree_label = (cover.degree_label if cover and cover.degree_label else "Doctorat en Médecine Générale").strip()
-    author_name = (cover.author_name if cover and cover.author_name else "À renseigner").strip()
+    degree_label = (
+        cover.degree_label if cover and cover.degree_label
+        else ("Doctor of Medicine" if lang == "en" else "Doctorat en Médecine Générale")
+    ).strip()
+    author_name = (cover.author_name if cover and cover.author_name else labels["cover_to_complete"]).strip()
     matricule = (cover.matricule if cover and cover.matricule else "—").strip()
 
     cand_top = title_bottom + 0.014
     cand_h = 0.128 if has_extra_tiers else 0.132
-    cand_text = (
-        f"Protocole de thèse de {degree_label} rédigé par :\n"
-        f"{author_name}\n"
-        f"Matricule : {matricule}"
+    cand_text = "\n".join(
+        [
+            labels["cover_written_by"].format(degree=degree_label),
+            author_name,
+            labels["cover_reg_no"].format(matricule=matricule),
+        ]
     )
 
     sup_top = cand_top + cand_h + 0.010
@@ -352,22 +366,30 @@ def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> Li
     if cover:
         dir_sups = [cover.director_info] if cover.director_info.has_content() else []
         codir_sups = [c for c in cover.co_directors_info if c.has_content()]
-        dir_body = _format_supervisors_lines(dir_sups)
-        codir_body = _format_supervisors_lines(codir_sups)
+        dir_body = _format_supervisors_lines(dir_sups, lang=lang)
+        codir_body = _format_supervisors_lines(codir_sups, lang=lang)
         codir_font = 10.5 if len(codir_sups) >= 2 else 12.5
         dir_font = 12.5
     else:
         raw_dir = next((el.content for el in slide.elements if el.element_type == "directors"), slide.subtitle or "")
-        parts = raw_dir.split("Co-directeur")
-        dir_body = parts[0].replace("Directeur :", "").replace("Directeur de thèse :", "").strip() or "À renseigner"
+        split_marker = "Co-supervisor" if "Co-supervisor" in raw_dir else "Co-directeur"
+        parts = raw_dir.split(split_marker)
+        dir_body = (
+            parts[0]
+            .replace("Supervisor:", "")
+            .replace("Directeur :", "")
+            .replace("Directeur de thèse :", "")
+            .strip()
+            or labels["cover_to_complete"]
+        )
         codir_body = (
-            parts[1].lstrip("(s) :").strip() if len(parts) > 1 else "À renseigner"
+            parts[1].lstrip("(s) :").strip() if len(parts) > 1 else labels["cover_to_complete"]
         )
         codir_font = 11.5
         dir_font = 12.0
 
     acad_year = (cover.academic_year if cover and cover.academic_year else "2025-2026").strip()
-    year_text = f"Année académique {acad_year}"
+    year_text = labels["cover_academic_year"].format(year=acad_year)
 
     custom_uni_logo = _resolve_cover_logo_path(getattr(cover, "university_logo_path", "")) if cover else None
     custom_fac_logo = _resolve_cover_logo_path(getattr(cover, "faculty_logo_path", "")) if cover else None
@@ -480,7 +502,7 @@ def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> Li
         LayoutBox(
             box_id="cover-director",
             role="cover_director",
-            text="Directeur",
+            text=labels["cover_supervisor"],
             sub_text=dir_body,
             x_pct=0.05,
             y_pct=round(sup_top, 4),
@@ -497,7 +519,7 @@ def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> Li
         LayoutBox(
             box_id="cover-codirector",
             role="cover_codirector",
-            text="Co-directeur(s)",
+            text=labels["cover_cosupervisor"],
             sub_text=codir_body,
             x_pct=0.52,
             y_pct=round(sup_top, 4),
@@ -530,12 +552,14 @@ def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> Li
     ]
 
 
-def _compute_plan_boxes(slide: Slide) -> List[LayoutBox]:
+def _compute_plan_boxes(slide: Slide, project: Optional[ProtocolProject] = None) -> List[LayoutBox]:
+    lang = normalize_lang(getattr(project, "language", "fr") if project else "fr")
+    axes = get_plan_axes(lang)
     boxes: List[LayoutBox] = [
         LayoutBox(
             box_id="plan-flask",
             role="plan_flask_title",
-            text="PLAN\ndu protocole",
+            text="PROTOCOL\nOutline" if lang == "en" else "PLAN\ndu protocole",
             x_pct=0.032,
             y_pct=0.405,
             w_pct=0.130,
@@ -550,7 +574,7 @@ def _compute_plan_boxes(slide: Slide) -> List[LayoutBox]:
     elements = [el for el in slide.elements if el.element_type != "media"]
     for idx, rect in enumerate(PLAN_PILL_RECTS):
         el = elements[idx] if idx < len(elements) else None
-        text_val = el.content if el else PLAN_6_AXES[idx]
+        text_val = el.content if el else axes[idx]
         boxes.append(
             LayoutBox(
                 box_id=f"plan-pill-{idx+1}",
@@ -716,6 +740,7 @@ def _compute_budget_boxes(slide: Slide) -> List[LayoutBox]:
 
 
 def _compute_acknowledgements_boxes(slide: Slide, project: Optional[ProtocolProject]) -> List[LayoutBox]:
+    lang = normalize_lang(getattr(project, "language", "fr") if project else "fr")
     cand = (project.cover.author_name if project else "") or ""
     contact_parts = []
     if project and project.cover.student_email:
@@ -724,30 +749,44 @@ def _compute_acknowledgements_boxes(slide: Slide, project: Optional[ProtocolProj
         contact_parts.append(project.cover.student_phone)
     contact_line = " • ".join(contact_parts)
 
-    fac_lbl = (
-        (project.cover.faculty_fr if project and getattr(project.cover, "faculty_fr", "") else "")
-        or "Faculté de Médecine et des Sciences Biomédicales"
-    ).strip()
-    uni_lbl = (
-        (project.cover.university_fr if project and getattr(project.cover, "university_fr", "") else "")
-        or "Université de Yaoundé I"
-    ).strip()
+    if lang == "en":
+        fac_lbl = (
+            (project.cover.faculty_en if project and getattr(project.cover, "faculty_en", "") else "")
+            or (project.cover.faculty_fr if project and getattr(project.cover, "faculty_fr", "") else "")
+            or "Faculty of Medicine and Biomedical Sciences"
+        ).strip()
+        uni_lbl = (
+            (project.cover.university_en if project and getattr(project.cover, "university_en", "") else "")
+            or (project.cover.university_fr if project and getattr(project.cover, "university_fr", "") else "")
+            or "The University of Yaoundé I"
+        ).strip()
+        default_cand = "Research Candidate"
+    else:
+        fac_lbl = (
+            (project.cover.faculty_fr if project and getattr(project.cover, "faculty_fr", "") else "")
+            or "Faculté de Médecine et des Sciences Biomédicales"
+        ).strip()
+        uni_lbl = (
+            (project.cover.university_fr if project and getattr(project.cover, "university_fr", "") else "")
+            or "Université de Yaoundé I"
+        ).strip()
+        default_cand = "Impétrant(e) FMSB"
 
     medallion_text = (
         slide.elements[0].content
         if slide.elements and slide.elements[0].content.strip()
         else (
             "QUESTIONS & DISCUSSIONS\n\n"
-            f"{cand or 'Impétrant(e) FMSB'}\n"
+            f"{cand or default_cand}\n"
             f"{fac_lbl}\n"
             f"{uni_lbl}"
             + (f"\n{contact_line}" if contact_line else "")
         )
     )
-    en_sub = slide.subtitle or "Thank you for your kind attention!"
+    en_sub = slide.subtitle or ("Merci pour votre aimable attention !" if lang == "en" else "Thank you for your kind attention!")
     # Keep left subtitle clean if someone stored French institution block in subtitle
     if "Université" in en_sub or "Sapientia" in en_sub:
-        en_sub = "Thank you for your kind attention!"
+        en_sub = "Merci pour votre aimable attention !" if lang == "en" else "Thank you for your kind attention!"
 
     return [
         LayoutBox(
@@ -786,20 +825,23 @@ def _compute_acknowledgements_boxes(slide: Slide, project: Optional[ProtocolProj
 def _compute_content_boxes(
     slide: Slide,
     total_slides: int,
+    lang: str = "fr",
 ) -> Tuple[List[LayoutBox], int, List[str]]:
     """Compute independent LayoutBoxes for content slides & check CAMES line/height limits."""
+    norm_lang = normalize_lang(lang)
     warnings: List[str] = []
     boxes: List[LayoutBox] = []
 
     # 1. Header Capsule Title
     cap_w_in = TITLE_CAPSULE_RECT[2] * SLIDE_WIDTH_IN
     cap_h_in = TITLE_CAPSULE_RECT[3] * SLIDE_HEIGHT_IN
-    title_pt = _fit_title_font_pt(slide.title or "Sans titre", cap_w_in, cap_h_in, max_pt=26.0, min_pt=21.0)
+    default_title = "Untitled" if norm_lang == "en" else "Sans titre"
+    title_pt = _fit_title_font_pt(slide.title or default_title, cap_w_in, cap_h_in, max_pt=26.0, min_pt=21.0)
     boxes.append(
         LayoutBox(
             box_id="slide-title",
             role="title",
-            text=slide.title or "Sans titre",
+            text=slide.title or default_title,
             x_pct=TITLE_CAPSULE_RECT[0],
             y_pct=TITLE_CAPSULE_RECT[1],
             w_pct=TITLE_CAPSULE_RECT[2],
@@ -892,7 +934,7 @@ def _compute_content_boxes(
         box_w = (aw - (n - 1) * gap_pct) / n
         for idx, el in enumerate(steps):
             bx = ax + idx * (box_w + gap_pct)
-            step_title = el.title or f"Étape {idx + 1}"
+            step_title = el.title or (f"Step {idx + 1}" if norm_lang == "en" else f"Étape {idx + 1}")
             f_pt = 17.5 if len(el.content) <= 95 else 15.5
             boxes.append(
                 LayoutBox(
@@ -931,7 +973,7 @@ def _compute_content_boxes(
                         box_id=f"stat-card-{idx+1}",
                         role="stat_card",
                         element_id=el.id,
-                        text=el.sub_content or el.title or f"Donnée {idx+1}",
+                        text=el.sub_content or el.title or (f"Metric {idx+1}" if norm_lang == "en" else f"Donnée {idx+1}"),
                         sub_text=el.content,
                         x_pct=round(gx + idx * (cw + gap), 4),
                         y_pct=gy + 0.06,
@@ -958,7 +1000,7 @@ def _compute_content_boxes(
                         box_id=f"stat-card-{idx+1}",
                         role="stat_card",
                         element_id=el.id,
-                        text=el.sub_content or el.title or f"Indicateur {idx+1}",
+                        text=el.sub_content or el.title or (f"Indicator {idx+1}" if norm_lang == "en" else f"Indicateur {idx+1}"),
                         sub_text=el.content,
                         x_pct=round(gx + col * (cw + gap_x), 4),
                         y_pct=round(gy + row * (ch + gap_y), 4),
@@ -986,7 +1028,9 @@ def _compute_content_boxes(
     total_lines = sum(item_lines)
     if total_lines > CAMES_MAX_LINES_PER_SLIDE:
         warnings.append(
-            f"Densité CAMES : {total_lines} lignes estimées (recommandé <= {CAMES_MAX_LINES_PER_SLIDE} lignes à {int(base_pt)} pt)."
+            f"CAMES density: {total_lines} estimated lines (recommended <= {CAMES_MAX_LINES_PER_SLIDE} lines at {int(base_pt)} pt)."
+            if norm_lang == "en"
+            else f"Densité CAMES : {total_lines} lignes estimées (recommandé <= {CAMES_MAX_LINES_PER_SLIDE} lignes à {int(base_pt)} pt)."
         )
         # Gentle fallback to 22 pt if overflowing physical height
         line_h_pct = (base_pt * 1.32 / 72.0) / SLIDE_HEIGHT_IN
@@ -1034,7 +1078,7 @@ def _compute_content_boxes(
                 box_id="split-media-img",
                 role="media",
                 element_id=m.id,
-                text=m.title or "Figure scientifique",
+                text=m.title or ("Scientific Figure" if norm_lang == "en" else "Figure scientifique"),
                 x_pct=BODY_SPLIT_MEDIA_RECT[0],
                 y_pct=BODY_SPLIT_MEDIA_RECT[1],
                 w_pct=BODY_SPLIT_MEDIA_RECT[2],
@@ -1073,6 +1117,7 @@ def compute_slide_layout(
     project: Optional[ProtocolProject] = None,
 ) -> Slide:
     """Populate slide.render_boxes, estimated_lines and cames_warnings using physical 16:9 metrics."""
+    lang = normalize_lang(getattr(project, "language", "fr") if project else "fr")
     stype = slide.slide_type
 
     if stype == "welcome":
@@ -1090,7 +1135,7 @@ def compute_slide_layout(
     elif stype == "plan":
         slide.background_image_path = slide.background_image_path or TPL_PLAN
         slide.layout_mode = "plan_6pills"
-        slide.render_boxes = _compute_plan_boxes(slide)
+        slide.render_boxes = _compute_plan_boxes(slide, project)
         slide.estimated_lines = 6
         slide.cames_warnings = []
     elif stype == "chronogram":
@@ -1102,7 +1147,7 @@ def compute_slide_layout(
             slide.estimated_lines = min(7, len(slide.elements))
             slide.cames_warnings = []
         else:
-            boxes, est_lines, warns = _compute_content_boxes(slide, total_slides=total_slides)
+            boxes, est_lines, warns = _compute_content_boxes(slide, total_slides=total_slides, lang=lang)
             slide.render_boxes = boxes
             slide.estimated_lines = est_lines
             slide.cames_warnings = warns
@@ -1128,7 +1173,7 @@ def compute_slide_layout(
                 slide.background_image_path = TPL_OBJ_SPEC
             else:
                 slide.background_image_path = TPL_METHODOLOGY
-        boxes, est_lines, warns = _compute_content_boxes(slide, total_slides=total_slides)
+        boxes, est_lines, warns = _compute_content_boxes(slide, total_slides=total_slides, lang=lang)
         slide.render_boxes = boxes
         slide.estimated_lines = est_lines
         slide.cames_warnings = warns

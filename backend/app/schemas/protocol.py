@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from enum import Enum
+import re
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -279,10 +280,19 @@ class FormattingRules(BaseModel):
     border_color: str = "#6C2826"
     box_border_width_pt: float = 2.5
     box_corner_radius_pct: int = 18
+    header_footer_rule_color: str = "#CBD5E1"
+    header_footer_rule_width_pt: float = 0.5
 
     @model_validator(mode="after")
     def _sync_border_geometry(self) -> "FormattingRules":
         self.box_border_width_pt = max(0.75, min(8.0, float(self.box_border_width_pt or 2.5)))
+        self.header_footer_rule_width_pt = max(
+            0.25, min(6.0, float(self.header_footer_rule_width_pt or 0.5))
+        )
+        raw_hf_color = (self.header_footer_rule_color or "#CBD5E1").strip()
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", raw_hf_color):
+            raw_hf_color = "#CBD5E1"
+        self.header_footer_rule_color = raw_hf_color.upper()
         raw_corner = self.box_corner_radius_pct
         self.box_corner_radius_pct = max(
             0, min(50, int(18 if raw_corner is None else raw_corner))
@@ -384,6 +394,7 @@ class ProtocolProject(BaseModel):
     locked_title: str = ""
     locked_author_name: str = ""
     locked_matricule: str = ""
+    language: str = "fr"
     name: str
     entry_mode: EntryMode = EntryMode.NEW_TOPIC
     research_idea: str = ""
@@ -413,7 +424,12 @@ class CreateProjectRequest(BaseModel):
     entry_mode: EntryMode = EntryMode.NEW_TOPIC
     research_idea: str = ""
     study_type: str = ""
+    language: str = "fr"
     cover: Optional[CoverMetadata] = None
+
+
+class UpdateLanguageRequest(BaseModel):
+    language: str = "fr"
 
 
 class UpdateSectionRequest(BaseModel):

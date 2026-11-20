@@ -6,6 +6,11 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import (
+    get_language_prompt_directive,
+    get_localized_canvas,
+    normalize_lang,
+)
 from app.data.pptx_canvas import (
     CAMES_IDEAL_WPM,
     CAMES_MAX_DURATION_SEC,
@@ -25,6 +30,8 @@ from app.data.pptx_canvas import (
     TPL_OBJ_SPEC,
     TPL_PLAN,
     TPL_THANKS,
+    get_localized_pptx_blocks,
+    get_plan_axes,
 )
 from app.schemas.presentation import (
     PresentationAuditIssue,
@@ -173,8 +180,8 @@ class PresentationOrchestrator:
     # =========================================================================
     # DETERMINISTIC REAL-PROTOCOL DATA EXTRACTORS
     # =========================================================================
-    def _section_title_for(self, section_id: str) -> str:
-        for spec in FMSB_SECTIONS:
+    def _section_title_for(self, section_id: str, lang: str = "fr") -> str:
+        for spec in get_localized_canvas(lang):
             if spec.id == section_id:
                 return spec.title
         return section_id
@@ -184,11 +191,12 @@ class PresentationOrchestrator:
         project: ProtocolProject,
         section_ids: List[str],
     ) -> str:
+        lang = normalize_lang(getattr(project, "language", "fr"))
         chunks: List[str] = []
         for sid in section_ids:
             sec = project.sections.get(sid)
             if sec and (sec.content_markdown or "").strip():
-                chunks.append(f"## {self._section_title_for(sid)}\n{sec.content_markdown.strip()}")
+                chunks.append(f"## {self._section_title_for(sid, lang=lang)}\n{sec.content_markdown.strip()}")
         return "\n\n".join(chunks)
 
     def _extract_bullets_from_markdown(
@@ -211,7 +219,7 @@ class PresentationOrchestrator:
                 continue
             if in_table and not ln.startswith("|"):
                 in_table = False
-            if ln.startswith("#") or re.match(r"^(CHAPITRE\b|\d+\.\d+(?:\.\d+)*\.?\s+)", ln, re.IGNORECASE):
+            if ln.startswith("#") or re.match(r"^(CHAPITRE\b|CHAPTER\b|\d+\.\d+(?:\.\d+)*\.?\s+)", ln, re.IGNORECASE):
                 continue
 
             # Explicit list item (exclude short numbered section headers without terminal punctuation)
@@ -244,9 +252,15 @@ class PresentationOrchestrator:
 
     def _extract_objectives(self, project: ProtocolProject) -> Tuple[str, List[str]]:
         """Extract exact General Objective and Specific Objectives from chap1_objectifs."""
+        lang = normalize_lang(getattr(project, "language", "fr"))
         sec = project.sections.get("chap1_objectifs")
         raw = (sec.content_markdown if sec else "") or ""
         if not raw.strip():
+            if lang == "en":
+                return (
+                    'Section "General Objective" not yet drafted in the protocol (Module 1).',
+                    ['Section "Specific Objectives" not yet drafted in the protocol (Module 1).'],
+                )
             return (
                 "Section « Objectif général » non encore rédigée dans le protocole (Module 1).",
                 ["Section « Objectifs spécifiques » non encore rédigée dans le protocole (Module 1)."],
@@ -261,10 +275,19 @@ class PresentationOrchestrator:
             if not ln:
                 continue
             low = ln.lower()
-            if "objectif général" in low or "objectif general" in low:
+            if (
+                "objectif général" in low
+                or "objectif general" in low
+                or "general objective" in low
+                or "general aim" in low
+            ):
                 mode = "general"
                 continue
-            if "objectifs spécifiques" in low or "objectifs specifiques" in low:
+            if (
+                "objectifs spécifiques" in low
+                or "objectifs specifiques" in low
+                or "specific objectives" in low
+            ):
                 mode = "specific"
                 continue
             if ln.startswith("#"):
@@ -276,7 +299,7 @@ class PresentationOrchestrator:
             if mode == "general":
                 obj_gen_lines.append(clean_ln)
             elif mode == "specific":
-                item = re.sub(r"^([-*•]|\d+[.)]|OS\s*\d+\s*:?)\s*", "", clean_ln, flags=re.IGNORECASE).strip()
+                item = re.sub(r"^([-*•]|\d+[.)]|(?:OS|SO)\s*\d+\s*:?)\s*", "", clean_ln, flags=re.IGNORECASE).strip()
                 if len(item) >= 10:
                     obj_spec_lines.append(item)
 
@@ -292,14 +315,22 @@ class PresentationOrchestrator:
                 if b != obj_general
             ]
 
+        prefix_lbl = "SO" if lang == "en" else "OS"
+        sep = ": " if lang == "en" else " : "
+        empty_spec = (
+            'No structured specific objectives detected in "Objectives".'
+            if lang == "en"
+            else "Aucun objectif spécifique structuré détecté dans « Objectifs »."
+        )
         formatted_specs = [
-            f"OS {idx} : {txt}" for idx, txt in enumerate(obj_spec_lines, start=1)
-        ] or ["Aucun objectif spécifique structuré détecté dans « Objectifs »."]
+            f"{prefix_lbl} {idx}{sep}{txt}" for idx, txt in enumerate(obj_spec_lines, start=1)
+        ] or [empty_spec]
 
         return obj_general, formatted_specs
 
     def _extract_budget_pills(self, project: ProtocolProject) -> Tuple[str, List[str]]:
         """Compute real total FCFA and <= 10 concise pill labels from project.budget / chap3_budget."""
+        lang = normalize_lang(getattr(project, "language", "fr"))
         items = list(project.budget or [])
 
         # Fallback: parse Markdown table in chap3_budget if structured list empty
@@ -312,7 +343,16 @@ class PresentationOrchestrator:
                 cols = [c.strip() for c in ln.strip().strip("|").split("|")]
                 if len(cols) >= 2:
                     label = _clean_text_for_display(cols[0])
-                    if label.lower() in ("rubrique", "désignation", "libellé", "total", "total général"):
+                    if label.lower() in (
+                        "rubrique",
+                        "désignation",
+                        "libellé",
+                        "total",
+                        "total général",
+                        "item",
+                        "designation",
+                        "grand total",
+                    ):
                         continue
                     # Find numeric value in trailing columns
                     amt = 0.0
@@ -330,13 +370,18 @@ class PresentationOrchestrator:
                         items.append(BudgetItem(designation=label, quantity=1, unit_cost_fcfa=amt, total_fcfa=amt))
 
         if not items:
-            return "À budgétiser", []
+            return ("To be budgeted" if lang == "en" else "À budgétiser"), []
 
         total_amount = sum(
             (b.total_fcfa if (b.total_fcfa and b.total_fcfa > 0) else (b.quantity * b.unit_cost_fcfa))
             for b in items
         )
         total_str = _format_fcfa(total_amount)
+        funding_pill = (
+            "Funding:\nCandidate's own funds"
+            if lang == "en"
+            else "Financement :\nFonds propres du candidat"
+        )
 
         # Sort / preserve order; consolidate extras if > 9 items so financing fits cleanly as 10th pill
         ordered = list(items)
@@ -350,8 +395,9 @@ class PresentationOrchestrator:
                 f"{_shorten_label(b.designation, 30)}\n{_format_fcfa(b.total_fcfa if b.total_fcfa > 0 else b.quantity * b.unit_cost_fcfa)}"
                 for b in kept
             ]
-            pills.append(f"Autres postes ({len(ordered) - 8})\n{_format_fcfa(rest_sum)}")
-            pills.append("Financement :\nFonds propres du candidat")
+            other_lbl = f"Other items ({len(ordered) - 8})" if lang == "en" else f"Autres postes ({len(ordered) - 8})"
+            pills.append(f"{other_lbl}\n{_format_fcfa(rest_sum)}")
+            pills.append(funding_pill)
             return total_str, pills
 
         pills = [
@@ -359,11 +405,12 @@ class PresentationOrchestrator:
             for b in ordered
         ]
         if len(pills) < 10:
-            pills.append("Financement :\nFonds propres du candidat")
+            pills.append(funding_pill)
         return total_str, pills[:10]
 
     def _extract_variables_bullets(self, project: ProtocolProject) -> List[str]:
         """Group real study variables by category; ignore generic CRF seed variables when section is unwritten."""
+        lang = normalize_lang(getattr(project, "language", "fr"))
         sec = project.sections.get("chap1_variables")
         raw = (sec.content_markdown if sec else "") or ""
         var_names = {(v.name or "").strip() for v in (project.variables or []) if (v.name or "").strip()}
@@ -371,8 +418,9 @@ class PresentationOrchestrator:
 
         if project.variables and (raw.strip() or not is_generic_seed_only):
             by_cat: Dict[str, List[str]] = {}
+            default_cat = "Study variables" if lang == "en" else "Variables d'étude"
             for v in project.variables:
-                raw_cat = (v.category or "Variables d'étude").strip()
+                raw_cat = (v.category or default_cat).strip()
                 cat = re.sub(r"^SECTION\s+[A-Z0-9]+\s*:\s*", "", raw_cat, flags=re.IGNORECASE).strip() or raw_cat
                 cat_fmt = cat[:1].upper() + cat[1:].lower() if cat.isupper() else cat
                 by_cat.setdefault(cat_fmt, [])
@@ -382,17 +430,22 @@ class PresentationOrchestrator:
             bullets: List[str] = []
             for cat, names in by_cat.items():
                 preview = ", ".join(names[:4])
-                suffix = f" (+{len(names) - 4} autres)" if len(names) > 4 else ""
-                bullets.append(f"{cat} ({len(names)}) : {preview}{suffix}.")
+                more_lbl = "more" if lang == "en" else "autres"
+                suffix = f" (+{len(names) - 4} {more_lbl})" if len(names) > 4 else ""
+                sep = ": " if lang == "en" else " : "
+                bullets.append(f"{cat} ({len(names)}){sep}{preview}{suffix}.")
             return bullets
 
         extracted = self._extract_bullets_from_markdown(raw, max_items=6)
         return extracted or [
-            "Section « Liste des variables » non encore rédigée dans le protocole (Module 1)."
+            'Section "Study Variables" not yet drafted in the protocol (Module 1).'
+            if lang == "en"
+            else "Section « Liste des variables » non encore rédigée dans le protocole (Module 1)."
         ]
 
     def _extract_procedure_steps(self, project: ProtocolProject) -> List[Tuple[str, str]]:
         """Extract 3-4 sequential workflow steps from chap3_outils_procedure or its diagrams."""
+        lang = normalize_lang(getattr(project, "language", "fr"))
         sec = project.sections.get("chap3_outils_procedure")
         if sec and sec.custom_diagrams:
             dg = sec.custom_diagrams[0]
@@ -407,7 +460,11 @@ class PresentationOrchestrator:
         bullets = self._extract_bullets_from_markdown(raw, max_items=4)
         if not bullets:
             return [
-                ("1. Préparation", "Section « Outils & Procédure » non encore rédigée dans le Module 1."),
+                (
+                    ("1. Preparation", 'Section "Data Collection Tools & Procedures" not yet drafted in Module 1.')
+                    if lang == "en"
+                    else ("1. Préparation", "Section « Outils & Procédure » non encore rédigée dans le Module 1.")
+                ),
             ]
         steps = []
         for idx, b in enumerate(bullets[:4], start=1):
@@ -416,11 +473,13 @@ class PresentationOrchestrator:
                 clean_t = _truncate_words(t, 24)
                 steps.append((f"{idx}. {clean_t}", _truncate_words(rest.strip(), 100)))
             else:
-                steps.append((f"Étape {idx}", _truncate_words(b, 100)))
+                step_lbl = f"Step {idx}" if lang == "en" else f"Étape {idx}"
+                steps.append((step_lbl, _truncate_words(b, 100)))
         return steps
 
     def _extract_chronogram_pills(self, project: ProtocolProject) -> List[str]:
         """Extract up to 7 chronological steps '<Period> : <Activity>' ordered top (latest) to bottom (earliest)."""
+        lang = normalize_lang(getattr(project, "language", "fr"))
         steps: List[Tuple[str, str]] = []
         tg = project.timeline_grid
         if tg and tg.rows:
@@ -438,7 +497,8 @@ class PresentationOrchestrator:
 
             for idx, r in enumerate(tg.rows):
                 if idx not in matched_rows:
-                    p_lbl = ", ".join(r.active_periods or []) or f"Étape {idx + 1}"
+                    fallback_step = f"Step {idx + 1}" if lang == "en" else f"Étape {idx + 1}"
+                    p_lbl = ", ".join(r.active_periods or []) or fallback_step
                     steps.append((_clean_text_for_display(p_lbl), _shorten_label(r.activity, 55)))
 
         if not steps:
@@ -458,34 +518,60 @@ class PresentationOrchestrator:
                         p_lbl, act = b.split(":", 1)
                         steps.append((p_lbl.strip(), _shorten_label(act.strip(), 55)))
                     else:
-                        steps.append((f"Étape {idx + 1}", _shorten_label(b, 55)))
+                        step_lbl = f"Step {idx + 1}" if lang == "en" else f"Étape {idx + 1}"
+                        steps.append((step_lbl, _shorten_label(b, 55)))
 
         if not steps:
-            steps = [
-                ("Mai 2026", "Rédaction du protocole"),
-                ("Juil 2026", "Autorisations & clairance éthique"),
-                ("Oct 2026", "Collecte des données (Phase 1)"),
-                ("Mars 2027", "Collecte des données (Phase 2)"),
-                ("Avril 2027", "Analyse des données"),
-                ("Mai 2027", "Rédaction de thèse & corrections"),
-                ("Juin 2027", "Dépôt & soutenance publique"),
-            ]
+            if lang == "en":
+                steps = [
+                    ("May 2026", "Protocol drafting"),
+                    ("Jul 2026", "Approvals & ethical clearance"),
+                    ("Oct 2026", "Data collection (Phase 1)"),
+                    ("Mar 2027", "Data collection (Phase 2)"),
+                    ("Apr 2027", "Statistical analysis"),
+                    ("May 2027", "Thesis writing & revisions"),
+                    ("Jun 2027", "Submission & public defense"),
+                ]
+            else:
+                steps = [
+                    ("Mai 2026", "Rédaction du protocole"),
+                    ("Juil 2026", "Autorisations & clairance éthique"),
+                    ("Oct 2026", "Collecte des données (Phase 1)"),
+                    ("Mars 2027", "Collecte des données (Phase 2)"),
+                    ("Avril 2027", "Analyse des données"),
+                    ("Mai 2027", "Rédaction de thèse & corrections"),
+                    ("Juin 2027", "Dépôt & soutenance publique"),
+                ]
 
         kept = steps[:7]
-        return [f"{p} : {a}" if p else a for p, a in reversed(kept)]
+        sep = ": " if lang == "en" else " : "
+        return [f"{p}{sep}{a}" if p else a for p, a in reversed(kept)]
 
     def _extract_chronogram_notes(self, project: ProtocolProject) -> str:
+        lang = normalize_lang(getattr(project, "language", "fr"))
         if project.timeline_grid and project.timeline_grid.rows:
-            lines = ["Chronogramme prévisionnel des activités du protocole :"]
+            heading = (
+                "Provisional research activity timeline:"
+                if lang == "en"
+                else "Chronogramme prévisionnel des activités du protocole :"
+            )
+            planned_lbl = "Scheduled" if lang == "en" else "Planifié"
+            lines = [heading]
             for r in project.timeline_grid.rows:
-                periods = ", ".join(r.active_periods) if r.active_periods else "Planifié"
+                periods = ", ".join(r.active_periods) if r.active_periods else planned_lbl
                 lines.append(f"• {r.activity} ({periods})")
             return "\n".join(lines)
         sec = project.sections.get("chap3_chronogramme")
         if sec and (sec.content_markdown or "").strip():
             bullets = self._extract_bullets_from_markdown(sec.content_markdown, max_items=6)
             if bullets:
-                return "Chronogramme des activités :\n" + "\n".join(f"• {b}" for b in bullets)
+                hdr = "Activity timeline:" if lang == "en" else "Chronogramme des activités :"
+                return hdr + "\n" + "\n".join(f"• {b}" for b in bullets)
+        if lang == "en":
+            return (
+                "Provisional activity timeline (Gantt chart):\n"
+                "Visual overview of protocol drafting, approvals, data collection, analysis, and thesis defense."
+            )
         return (
             "Chronogramme prévisionnel des activités (diagramme de Gantt) :\n"
             "Présentation visuelle des phases de rédaction, autorisations, collecte, analyse et soutenance."
@@ -510,10 +596,19 @@ class PresentationOrchestrator:
             valid.sort(key=lambda im: 0 if im.target_section_id in pref_set else 1)
         return valid
 
-    def _build_presenter_notes(self, block_title: str, bullets: List[str]) -> str:
+    def _build_presenter_notes(self, block_title: str, bullets: List[str], lang: str = "fr") -> str:
+        norm_lang = normalize_lang(lang)
         if not bullets:
-            return f"Présentation de la diapositive : {block_title}."
-        intro = f"Pour cette diapositive consacrée à « {block_title} », nous mettons en avant les points suivants :"
+            return (
+                f'Slide overview: "{block_title}".'
+                if norm_lang == "en"
+                else f"Présentation de la diapositive : {block_title}."
+            )
+        intro = (
+            f'On this slide covering "{block_title}", we highlight the following key points:'
+            if norm_lang == "en"
+            else f"Pour cette diapositive consacrée à « {block_title} », nous mettons en avant les points suivants :"
+        )
         pts = "\n".join(f"- {b}" for b in bullets[:4])
         return f"{intro}\n{pts}"
 
@@ -521,15 +616,26 @@ class PresentationOrchestrator:
     # BLOCK BUILDERS (SHARED BY DETERMINISTIC & AI FLOWS)
     # =========================================================================
     def _build_invariant_header_slides(self, project: ProtocolProject) -> List[Slide]:
+        lang = normalize_lang(getattr(project, "language", "fr"))
         cover = project.cover
-        cand_name = (cover.author_name or "Impétrant(e) en Médecine").strip()
+        default_cand = "Medical Candidate" if lang == "en" else "Impétrant(e) en Médecine"
+        cand_name = (cover.author_name or default_cand).strip()
         cand_mat = (cover.matricule or "—").strip()
-        dept_name = (cover.department_fr or "SANTE PUBLIQUE").strip()
-        title_str = (cover.title or project.name or "Titre du protocole de recherche").strip()
-        dir_name = (cover.director or "À renseigner").strip()
-        co_dir_name = ", ".join(cover.co_directors) if cover.co_directors else "À renseigner"
+        if lang == "en":
+            dept_name = (cover.department_en or cover.department_fr or "PUBLIC HEALTH").strip()
+            default_title = "Research Protocol Title"
+            default_missing = "To be specified"
+            default_degree = "Doctor of Medicine"
+        else:
+            dept_name = (cover.department_fr or "SANTE PUBLIQUE").strip()
+            default_title = "Titre du protocole de recherche"
+            default_missing = "À renseigner"
+            default_degree = "Doctorat en Médecine Générale"
+        title_str = (cover.title or project.name or default_title).strip()
+        dir_name = (cover.director or default_missing).strip()
+        co_dir_name = ", ".join(cover.co_directors) if cover.co_directors else default_missing
         acad_year = (cover.academic_year or "2025-2026").strip()
-        degree_lbl = (cover.degree_label or "Doctorat en Médecine Générale").strip()
+        degree_lbl = (cover.degree_label or default_degree).strip()
 
         s1 = Slide(
             id="slide-1",
@@ -537,9 +643,17 @@ class PresentationOrchestrator:
             slide_type="welcome",
             section_key="cover_page",
             source_section_ids=["cover_page"],
-            title="BIENVENUE À LA SOUTENANCE DU PROTOCOLE DE RECHERCHE",
-            subtitle=f"DE L'IMPÉTRANT(E) : {cand_name.upper()}",
-            breadcrumb="ACCUEIL SOUTENANCE",
+            title=(
+                "WELCOME TO THE RESEARCH PROTOCOL DEFENSE"
+                if lang == "en"
+                else "BIENVENUE À LA SOUTENANCE DU PROTOCOLE DE RECHERCHE"
+            ),
+            subtitle=(
+                f"CANDIDATE: {cand_name.upper()}"
+                if lang == "en"
+                else f"DE L'IMPÉTRANT(E) : {cand_name.upper()}"
+            ),
+            breadcrumb="DEFENSE WELCOME" if lang == "en" else "ACCUEIL SOUTENANCE",
             layout_mode="welcome",
             background_image_path=TPL_COVER_BG,
             elements=[
@@ -551,8 +665,15 @@ class PresentationOrchestrator:
                 )
             ],
             presenter_notes=(
-                "Monsieur le Président du Jury, Honorables membres du jury, chers maîtres, chers collègues.\n"
-                f"Soyez les bienvenus à la séance de soutenance de protocole de recherche de {cand_name}."
+                (
+                    "Mr. Chairman of the Jury, Honorable Members of the Jury, dear teachers and colleagues.\n"
+                    f"Welcome to the research protocol defense session of {cand_name}."
+                )
+                if lang == "en"
+                else (
+                    "Monsieur le Président du Jury, Honorables membres du jury, chers maîtres, chers collègues.\n"
+                    f"Soyez les bienvenus à la séance de soutenance de protocole de recherche de {cand_name}."
+                )
             ),
             is_validated=True,
         )
@@ -564,8 +685,12 @@ class PresentationOrchestrator:
             section_key="cover_page",
             source_section_ids=["cover_page"],
             title=title_str,
-            subtitle=f"Directeur : {dir_name}\nCo-directeur(s) : {co_dir_name}",
-            breadcrumb="PAGE DE GARDE OFFICIELLE",
+            subtitle=(
+                f"Supervisor: {dir_name}\nCo-supervisor(s): {co_dir_name}"
+                if lang == "en"
+                else f"Directeur : {dir_name}\nCo-directeur(s) : {co_dir_name}"
+            ),
+            breadcrumb="OFFICIAL COVER PAGE" if lang == "en" else "PAGE DE GARDE OFFICIELLE",
             layout_mode="cover_fmsb",
             background_image_path=TPL_COVER_BG,
             elements=[
@@ -573,43 +698,64 @@ class PresentationOrchestrator:
                 SlideElement(
                     id="el-2-degree",
                     element_type="degree",
-                    content=f"Protocole de thèse de {degree_lbl} rédigé par :",
+                    content=(
+                        f"{degree_lbl} Thesis Protocol prepared by:"
+                        if lang == "en"
+                        else f"Protocole de thèse de {degree_lbl} rédigé par :"
+                    ),
                     order=2,
                 ),
                 SlideElement(
                     id="el-2-author",
                     element_type="author",
-                    content=f"{cand_name}\nMatricule : {cand_mat}",
+                    content=(
+                        f"{cand_name}\nRegistration No.: {cand_mat}"
+                        if lang == "en"
+                        else f"{cand_name}\nMatricule : {cand_mat}"
+                    ),
                     order=3,
                 ),
                 SlideElement(
                     id="el-2-directors",
                     element_type="directors",
-                    content=f"Directeur : {dir_name}\nCo-directeur(s) : {co_dir_name}",
+                    content=(
+                        f"Supervisor: {dir_name}\nCo-supervisor(s): {co_dir_name}"
+                        if lang == "en"
+                        else f"Directeur : {dir_name}\nCo-directeur(s) : {co_dir_name}"
+                    ),
                     order=4,
                 ),
                 SlideElement(
                     id="el-2-year",
                     element_type="year",
-                    content=f"Année académique {acad_year}",
+                    content=f"Academic Year {acad_year}" if lang == "en" else f"Année académique {acad_year}",
                     order=5,
                 ),
             ],
             presenter_notes=(
-                "Monsieur le Président du Jury, Honorables membres du jury.\n"
-                f"J'ai l'honneur de soumettre à votre appréciation notre protocole intitulé : « {title_str} ».\n"
-                f"Ce travail est conduit au sein du Département de {dept_name} sous la direction de {dir_name}."
+                (
+                    "Mr. Chairman of the Jury, Honorable Jury Members.\n"
+                    f'I have the honor to submit for your review our research protocol entitled: "{title_str}".\n'
+                    f"This work is conducted within the Department of {dept_name} under the supervision of {dir_name}."
+                )
+                if lang == "en"
+                else (
+                    "Monsieur le Président du Jury, Honorables membres du jury.\n"
+                    f"J'ai l'honneur de soumettre à votre appréciation notre protocole intitulé : « {title_str} ».\n"
+                    f"Ce travail est conduit au sein du Département de {dept_name} sous la direction de {dir_name}."
+                )
             ),
             is_validated=True,
         )
 
+        axes = get_plan_axes(lang)
         s3 = Slide(
             id="slide-3",
             slide_index=3,
             slide_type="plan",
-            title="PLAN DU DIAPORAMA",
-            subtitle="Sommaire du Protocole de Recherche",
-            breadcrumb="SOMMAIRE EXÉCUTIF",
+            title="PRESENTATION OUTLINE" if lang == "en" else "PLAN DU DIAPORAMA",
+            subtitle="Research Protocol Summary" if lang == "en" else "Sommaire du Protocole de Recherche",
+            breadcrumb="EXECUTIVE OUTLINE" if lang == "en" else "SOMMAIRE EXÉCUTIF",
             layout_mode="plan_6pills",
             background_image_path=TPL_PLAN,
             elements=[
@@ -619,20 +765,20 @@ class PresentationOrchestrator:
                     content=p_txt,
                     order=idx + 1,
                 )
-                for idx, p_txt in enumerate(PLAN_6_AXES)
+                for idx, p_txt in enumerate(axes)
             ],
             presenter_notes=(
-                "Notre présentation s'articule autour de six axes majeurs :\n"
-                + "\n".join(PLAN_6_AXES)
+                ("Our presentation is structured around six main sections:\n" if lang == "en" else "Notre présentation s'articule autour de six axes majeurs :\n")
+                + "\n".join(axes)
             ),
             is_validated=True,
         )
         return [s1, s2, s3]
 
     def _build_invariant_footer_slides(self, project: ProtocolProject) -> List[Slide]:
+        lang = normalize_lang(getattr(project, "language", "fr"))
         cover = project.cover
         total_budget_str, budget_pills = self._extract_budget_pills(project)
-
         chrono_pills = self._extract_chronogram_pills(project)
 
         s_chrono = Slide(
@@ -641,9 +787,9 @@ class PresentationOrchestrator:
             slide_type="chronogram",
             section_key="chap3_chronogramme",
             source_section_ids=["chap3_chronogramme"],
-            title="Chronogramme des activités",
-            subtitle="Diagramme de Gantt prévisionnel",
-            breadcrumb="5. CHRONOGRAMME",
+            title="Activity Timeline" if lang == "en" else "Chronogramme des activités",
+            subtitle="Projected Gantt Chart" if lang == "en" else "Diagramme de Gantt prévisionnel",
+            breadcrumb="5. TIMELINE" if lang == "en" else "5. CHRONOGRAMME",
             layout_mode="chronogram_7pills",
             background_image_path=TPL_CHRONOGRAM,
             elements=[
@@ -666,9 +812,9 @@ class PresentationOrchestrator:
             slide_type="budget",
             section_key="chap3_budget",
             source_section_ids=["chap3_budget"],
-            title="Budget prévisionnel",
+            title="Estimated Budget" if lang == "en" else "Budget prévisionnel",
             subtitle=total_budget_str,
-            breadcrumb="6. BUDGET PRÉVISIONNEL",
+            breadcrumb="6. ESTIMATED BUDGET" if lang == "en" else "6. BUDGET PRÉVISIONNEL",
             layout_mode="radial_budget",
             background_image_path=TPL_BUDGET,
             elements=[
@@ -681,16 +827,27 @@ class PresentationOrchestrator:
                 for idx, pill_txt in enumerate(budget_pills)
             ],
             presenter_notes=(
-                f"Le budget prévisionnel global de l'étude s'élève à {total_budget_str}. "
-                "Il couvre l'ensemble des consommables, autorisations, logistique de collecte et analyses biostatistiques."
+                (
+                    f"The overall estimated budget for this study amounts to {total_budget_str}. "
+                    "It covers consumables, ethical/administrative fees, field logistics, and biostatistical analysis."
+                )
+                if lang == "en"
+                else (
+                    f"Le budget prévisionnel global de l'étude s'élève à {total_budget_str}. "
+                    "Il couvre l'ensemble des consommables, autorisations, logistique de collecte et analyses biostatistiques."
+                )
             ),
             is_validated=True,
         )
 
-        cand = (cover.author_name or "Impétrant(e) FMSB").strip()
+        cand = (cover.author_name or ("Medical Candidate" if lang == "en" else "Impétrant(e) FMSB")).strip()
         contact = " • ".join(x for x in (cover.student_email, cover.student_phone) if x)
-        fac_lbl = (getattr(cover, "faculty_fr", "") or "Faculté de Médecine et des Sciences Biomédicales").strip()
-        uni_lbl = (getattr(cover, "university_fr", "") or "Université de Yaoundé I").strip()
+        if lang == "en":
+            fac_lbl = (getattr(cover, "faculty_en", "") or getattr(cover, "faculty_fr", "") or "Faculty of Medicine and Biomedical Sciences").strip()
+            uni_lbl = (getattr(cover, "university_en", "") or getattr(cover, "university_fr", "") or "The University of Yaoundé I").strip()
+        else:
+            fac_lbl = (getattr(cover, "faculty_fr", "") or "Faculté de Médecine et des Sciences Biomédicales").strip()
+            uni_lbl = (getattr(cover, "university_fr", "") or "Université de Yaoundé I").strip()
         medallion_msg = (
             "QUESTIONS & DISCUSSIONS\n\n"
             f"{cand}\n"
@@ -705,9 +862,9 @@ class PresentationOrchestrator:
             slide_type="acknowledgements",
             section_key="cover_page",
             source_section_ids=["cover_page"],
-            title="Merci pour votre attention !",
-            subtitle="Thank you for your kind attention!",
-            breadcrumb="CLÔTURE SOUTENANCE",
+            title="Thank you for your attention!" if lang == "en" else "Merci pour votre attention !",
+            subtitle="Merci pour votre aimable attention !" if lang == "en" else "Thank you for your kind attention!",
+            breadcrumb="CLOSING" if lang == "en" else "CLÔTURE SOUTENANCE",
             layout_mode="acknowledgements",
             background_image_path=TPL_THANKS,
             elements=[
@@ -719,8 +876,15 @@ class PresentationOrchestrator:
                 )
             ],
             presenter_notes=(
-                "Monsieur le Président du Jury, Honorables membres du jury, chers maîtres.\n"
-                "Je vous remercie vivement de votre bienveillante attention et me tiens à votre disposition pour vos observations et questions."
+                (
+                    "Mr. Chairman of the Jury, Honorable Jury Members, dear teachers.\n"
+                    "Thank you very much for your kind attention. I now welcome your feedback and questions."
+                )
+                if lang == "en"
+                else (
+                    "Monsieur le Président du Jury, Honorables membres du jury, chers maîtres.\n"
+                    "Je vous remercie vivement de votre bienveillante attention et me tiens à votre disposition pour vos observations et questions."
+                )
             ),
             is_validated=True,
         )
@@ -733,6 +897,7 @@ class PresentationOrchestrator:
         start_slide_num: int,
     ) -> List[Slide]:
         """Extract real protocol content for a content block & paginate via physical layout rules."""
+        lang = normalize_lang(getattr(project, "language", "fr"))
         slides_out: List[Slide] = []
 
         if spec.block_id == "objective_general":
@@ -744,7 +909,7 @@ class PresentationOrchestrator:
                     slide_type=spec.slide_type,
                     section_key="chap1_objectifs",
                     source_section_ids=["chap1_objectifs"],
-                    title="Objectif général",
+                    title=spec.title,
                     breadcrumb=spec.breadcrumb,
                     layout_mode="standard",
                     background_image_path=spec.template_path,
@@ -756,7 +921,11 @@ class PresentationOrchestrator:
                             order=1,
                         )
                     ],
-                    presenter_notes=f"L'objectif général de notre étude est le suivant : {obj_gen}",
+                    presenter_notes=(
+                        f"The general objective of our study is: {obj_gen}"
+                        if lang == "en"
+                        else f"L'objectif général de notre étude est le suivant : {obj_gen}"
+                    ),
                     is_validated=True,
                 )
             )
@@ -771,7 +940,7 @@ class PresentationOrchestrator:
             groups = split_elements_to_fit_slides(raw_els, max_lines=CAMES_MAX_LINES_PER_SLIDE, font_pt=float(CAMES_MIN_BODY_PT))
             n_grp = len(groups)
             for gi, grp in enumerate(groups, start=1):
-                t = "Objectifs spécifiques" if n_grp == 1 else f"Objectifs spécifiques ({gi}/{n_grp})"
+                t = spec.title if n_grp == 1 else f"{spec.title} ({gi}/{n_grp})"
                 slides_out.append(
                     Slide(
                         id=f"slide-{spec.block_id}-{gi}",
@@ -784,7 +953,7 @@ class PresentationOrchestrator:
                         layout_mode="standard",
                         background_image_path=spec.template_path,
                         elements=grp,
-                        presenter_notes=self._build_presenter_notes(t, [e.content for e in grp]),
+                        presenter_notes=self._build_presenter_notes(t, [e.content for e in grp], lang=lang),
                         is_validated=True,
                     )
                 )
@@ -815,7 +984,9 @@ class PresentationOrchestrator:
                     background_image_path=spec.template_path,
                     elements=step_els,
                     presenter_notes=self._build_presenter_notes(
-                        spec.title, [f"{e.title} : {e.content}" for e in step_els]
+                        spec.title,
+                        [f"{e.title}: {e.content}" if lang == "en" else f"{e.title} : {e.content}" for e in step_els],
+                        lang=lang,
                     ),
                     is_validated=True,
                 )
@@ -829,8 +1000,12 @@ class PresentationOrchestrator:
             combined_md = self._get_combined_section_markdown(project, spec.source_section_ids)
             bullets = self._extract_bullets_from_markdown(combined_md, max_items=10)
             if not bullets:
-                sec_names = ", ".join(self._section_title_for(s) for s in spec.source_section_ids)
-                bullets = [f"Section(s) « {sec_names} » non encore rédigée(s) dans le Module 1."]
+                sec_names = ", ".join(self._section_title_for(s, lang=lang) for s in spec.source_section_ids)
+                bullets = [
+                    f'Section(s) "{sec_names}" not yet drafted in Module 1.'
+                    if lang == "en"
+                    else f"Section(s) « {sec_names} » non encore rédigée(s) dans le Module 1."
+                ]
 
         raw_els = [
             SlideElement(id=f"el-{spec.block_id}-{i}", element_type="bullet_main", content=b, order=i)
@@ -880,7 +1055,7 @@ class PresentationOrchestrator:
                     background_image_path=spec.template_path,
                     elements=grp,
                     presenter_notes=self._build_presenter_notes(
-                        t, [e.content for e in grp if e.element_type != "media"]
+                        t, [e.content for e in grp if e.element_type != "media"], lang=lang
                     ),
                     is_validated=True,
                 )
@@ -949,20 +1124,27 @@ class PresentationOrchestrator:
     # =========================================================================
     def build_default_deck_from_protocol(self, project: ProtocolProject) -> PresentationDeck:
         """Build the presentation deck directly from REAL project sections, variables, budget & figures."""
+        lang = normalize_lang(getattr(project, "language", "fr"))
+        localized_blocks = get_localized_pptx_blocks(lang)
+        default_title = "FMSB Research Protocol" if lang == "en" else "Protocole de Recherche FMSB"
         deck = PresentationDeck(
             project_id=project.project_id,
-            title=project.cover.title or project.name or "Protocole de Recherche FMSB",
+            title=project.cover.title or project.name or default_title,
             max_slides=None,
             theme_palette="fmsb_burgundy",
             version=CURRENT_DECK_VERSION,
-            decision_notes="Génération déterministe depuis les données réelles du protocole (sans plafond de 15 slides).",
+            decision_notes=(
+                "Deterministic build from live protocol data (no 15-slide limit)."
+                if lang == "en"
+                else "Génération déterministe depuis les données réelles du protocole (sans plafond de 15 slides)."
+            ),
             models_used={"extraction": "deterministic_protocol_parser"},
         )
 
         slides: List[Slide] = []
         slides.extend(self._build_invariant_header_slides(project))
 
-        for spec in PPTX_CANVAS_BLOCKS:
+        for spec in localized_blocks:
             if spec.block_id in ("welcome", "cover", "plan", "chronogram", "budget", "acknowledgements"):
                 continue
             slides.extend(self._build_deterministic_block_slides(project, spec, start_slide_num=len(slides) + 1))
@@ -999,35 +1181,58 @@ class PresentationOrchestrator:
         user_instruction: str = "",
         models_used: Optional[Dict[str, str]] = None,
     ) -> Tuple[List[SlideElement], str, str]:
-        """Stage 1 (Gemini 3.5 Flash Lite) + Stage 2 (Gemini 3.1 Flash Lite) for one block."""
+        """Stage 1 (primary reasoning model) + Stage 2 (audit/tagging) for one block."""
+        lang = normalize_lang(getattr(project, "language", "fr"))
+        lang_directive = get_language_prompt_directive(lang)
         title_ctx = project.cover.title or project.name
-        inst_clause = f"\nConsigne spécifique de l'utilisateur : {user_instruction}\n" if user_instruction else ""
 
-        draft_prompt = (
-            f"PROTOCOLE : {title_ctx}\n"
-            f"BLOC DE SOUTENANCE : {spec.title} ({spec.breadcrumb})\n"
-            f"DIRECTIVES CAMES : {spec.ai_guidance}\n"
-            f"{inst_clause}\n"
-            "TEXTE SOURCE RÉEL DU PROTOCOLE (ne rien inventer en dehors de ce contenu) :\n"
-            f"{source_text[:6500]}\n\n"
-            "Consigne : Résume fidèlement en puces courtes (<= 18 mots par puce, chiffres exacts conservés) "
-            "et rédige un discours oral naturel de présentation devant le jury (75 à 120 mots)."
-        )
+        if lang == "en":
+            inst_clause = f"\nUser specific instruction: {user_instruction}\n" if user_instruction else ""
+            draft_prompt = (
+                f"{lang_directive}\n\n"
+                f"PROTOCOL: {title_ctx}\n"
+                f"DEFENSE BLOCK: {spec.title} ({spec.breadcrumb})\n"
+                f"CAMES GUIDELINES: {spec.ai_guidance}\n"
+                f"{inst_clause}\n"
+                "REAL PROTOCOL SOURCE TEXT (do not invent anything outside this content):\n"
+                f"{source_text[:6500]}\n\n"
+                "Task: Faithfully summarize into short CAMES bullets (<= 18 words each, preserving exact numbers) "
+                "and write a natural oral presenter speech for the jury (75 to 120 words, in academic English)."
+            )
+            draft_sys = (
+                "You are an expert FMSB/CAMES medical scientific rapporteur. "
+                "You summarize only facts present in the source text in concise academic English."
+            )
+        else:
+            inst_clause = f"\nConsigne spécifique de l'utilisateur : {user_instruction}\n" if user_instruction else ""
+            draft_prompt = (
+                f"{lang_directive}\n\n"
+                f"PROTOCOLE : {title_ctx}\n"
+                f"BLOC DE SOUTENANCE : {spec.title} ({spec.breadcrumb})\n"
+                f"DIRECTIVES CAMES : {spec.ai_guidance}\n"
+                f"{inst_clause}\n"
+                "TEXTE SOURCE RÉEL DU PROTOCOLE (ne rien inventer en dehors de ce contenu) :\n"
+                f"{source_text[:6500]}\n\n"
+                "Consigne : Résume fidèlement en puces courtes (<= 18 mots par puce, chiffres exacts conservés) "
+                "et rédige un discours oral naturel de présentation devant le jury (75 à 120 mots)."
+            )
+            draft_sys = (
+                "Tu es un rapporteur scientifique FMSB/CAMES expert en soutenance médicale. "
+                "Tu synthétises uniquement les faits présents dans le texte source, en français académique concis."
+            )
+
         draft_res = self.router.generate_structured(
             role="drafting",
             contents=draft_prompt,
             schema=_DraftedBlockAI,
-            system_instruction=(
-                "Tu es un rapporteur scientifique FMSB/CAMES expert en soutenance médicale. "
-                "Tu synthétises uniquement les faits présents dans le texte source, en français académique concis."
-            ),
+            system_instruction=draft_sys,
             temperature=0.2,
         )
         if models_used is not None:
             models_used["drafting"] = draft_res["model_used"]
         drafted: _DraftedBlockAI = draft_res["data"]
 
-        # Stage 2: Audit & Element Tagging (role="audit" -> Gemini 3.1 Flash Lite)
+        # Stage 2: Audit & Element Tagging
         candidate_items: List[str] = []
         if spec.block_id == "meth_procedure" and drafted.procedure_steps:
             for st in drafted.procedure_steps:
@@ -1040,24 +1245,46 @@ class PresentationOrchestrator:
                 candidate_items.append(f"[BULLET] {b}")
 
         if not candidate_items:
-            raise ValueError(f"Le résumé IA du bloc {spec.block_id} n'a produit aucun élément.")
+            raise ValueError(
+                f"AI summary for block {spec.block_id} produced no elements."
+                if lang == "en"
+                else f"Le résumé IA du bloc {spec.block_id} n'a produit aucun élément."
+            )
 
-        audit_prompt = (
-            f"BLOC : {spec.title}\n"
-            f"TEXTE SOURCE RÉEL :\n{source_text[:4000]}\n\n"
-            "ÉLÉMENTS RÉSUMÉS À AUDITER ET ÉTIQUETER :\n"
-            + "\n".join(f"{i+1}. {c}" for i, c in enumerate(candidate_items))
-            + "\n\nVérifie qu'aucun chiffre, hôpital, test ou critère n'a été inventé. "
-            "Corrige si besoin et étiquette chaque élément : bullet_main, stat_callout, ou procedure_step."
-        )
+        if lang == "en":
+            audit_prompt = (
+                f"{lang_directive}\n\n"
+                f"BLOCK: {spec.title}\n"
+                f"REAL SOURCE TEXT:\n{source_text[:4000]}\n\n"
+                "SUMMARIZED ITEMS TO AUDIT & TAG:\n"
+                + "\n".join(f"{i+1}. {c}" for i, c in enumerate(candidate_items))
+                + "\n\nVerify that no figure, hospital, statistical test, or eligibility criterion was fabricated. "
+                "Correct if needed, keep strictly in English, and tag each item: bullet_main, stat_callout, or procedure_step."
+            )
+            audit_sys = (
+                "You are the FMSB/CAMES quality auditor. Guarantee strict factual fidelity to the protocol "
+                "and tag each element for the slide layout orchestrator."
+            )
+        else:
+            audit_prompt = (
+                f"{lang_directive}\n\n"
+                f"BLOC : {spec.title}\n"
+                f"TEXTE SOURCE RÉEL :\n{source_text[:4000]}\n\n"
+                "ÉLÉMENTS RÉSUMÉS À AUDITER ET ÉTIQUETER :\n"
+                + "\n".join(f"{i+1}. {c}" for i, c in enumerate(candidate_items))
+                + "\n\nVérifie qu'aucun chiffre, hôpital, test ou critère n'a été inventé. "
+                "Corrige si besoin et étiquette chaque élément : bullet_main, stat_callout, ou procedure_step."
+            )
+            audit_sys = (
+                "Tu es l'auditeur qualité FMSB/CAMES. Tu garantis la fidélité factuelle stricte au protocole "
+                "et tu étiquettes chaque élément pour l'orchestrateur de mise en page."
+            )
+
         audit_res = self.router.generate_structured(
             role="audit",
             contents=audit_prompt,
             schema=_AuditedBlockAI,
-            system_instruction=(
-                "Tu es l'auditeur qualité FMSB/CAMES. Tu garantis la fidélité factuelle stricte au protocole "
-                "et tu étiquettes chaque élément pour l'orchestrateur de mise en page."
-            ),
+            system_instruction=audit_sys,
             temperature=0.1,
         )
         if models_used is not None:
@@ -1084,12 +1311,14 @@ class PresentationOrchestrator:
                 )
             )
         notes = drafted.presenter_speech.strip() or self._build_presenter_notes(
-            spec.title, [e.content for e in elements]
+            spec.title, [e.content for e in elements], lang=lang
         )
         return elements, notes, spec.block_id
 
     def generate_full_deck_with_ai(self, project: ProtocolProject) -> PresentationDeck:
         """Orchestrate all 3 Gemini roles across real protocol blocks + Gemini Decision 1 layout."""
+        lang = normalize_lang(getattr(project, "language", "fr"))
+        localized_blocks = get_localized_pptx_blocks(lang)
         models_used: Dict[str, str] = {}
         fallback_notes: List[str] = []
 
@@ -1099,7 +1328,7 @@ class PresentationOrchestrator:
 
         content_specs = [
             b
-            for b in PPTX_CANVAS_BLOCKS
+            for b in localized_blocks
             if b.block_id not in ("welcome", "cover", "plan", "chronogram", "budget", "acknowledgements")
         ]
 
@@ -1119,7 +1348,7 @@ class PresentationOrchestrator:
             else:
                 source_txt = self._get_combined_section_markdown(project, spec.source_section_ids)
 
-            if not source_txt.strip() or "non encore rédigée" in source_txt:
+            if not source_txt.strip() or "non encore rédigée" in source_txt or "not yet drafted" in source_txt:
                 det_slides = self._build_deterministic_block_slides(project, spec, 1)
                 if det_slides:
                     block_drafts[spec.block_id] = (det_slides[0].elements, det_slides[0].presenter_notes)
@@ -1135,7 +1364,7 @@ class PresentationOrchestrator:
                 block_drafts[spec.block_id] = (els, notes)
             except Exception as exc:
                 logger.warning("AI drafting fallback on %s: %s", spec.block_id, exc)
-                fallback_notes.append(f"{spec.block_id}: repli déterministe ({exc})")
+                fallback_notes.append(f"{spec.block_id}: deterministic fallback ({exc})" if lang == "en" else f"{spec.block_id}: repli déterministe ({exc})")
                 det_slides = self._build_deterministic_block_slides(project, spec, 1)
                 merged_els: List[SlideElement] = []
                 for ds in det_slides:
@@ -1147,7 +1376,11 @@ class PresentationOrchestrator:
 
         # Stage 3: Gemini Decision 1 chooses optimal layout mode & figure placement
         directives_map: Dict[str, _LayoutDirectiveAI] = {}
-        overall_decision_notes = "Mise en page CAMES optimisée automatiquement."
+        overall_decision_notes = (
+            "CAMES slide layout optimized automatically."
+            if lang == "en"
+            else "Mise en page CAMES optimisée automatiquement."
+        )
         try:
             queue_summary = [
                 f"- {bid}: {len(els)} éléments (types={[e.element_type for e in els]})"
@@ -1162,6 +1395,7 @@ class PresentationOrchestrator:
                 else ["Aucune figure approuvée disponible."]
             )
             dec_prompt = (
+                f"{get_language_prompt_directive(lang)}\n\n"
                 "Tu es Gemini Decision 1 (arbitre de mise en page PowerPoint CAMES 16:9).\n"
                 "Règles : max 6 lignes par diapositive à 24pt, aucune limite de 15 diapositives.\n"
                 "Choisis pour chaque bloc : standard, split_media (si figure approuvée pertinente), "
@@ -1286,7 +1520,7 @@ class PresentationOrchestrator:
                         background_image_path=spec.template_path,
                         elements=grp,
                         presenter_notes=base_notes if gi == 1 else self._build_presenter_notes(
-                            t, [e.content for e in grp if e.element_type != "media"]
+                            t, [e.content for e in grp if e.element_type != "media"], lang=lang
                         ),
                         is_validated=True,
                     )
@@ -1297,9 +1531,10 @@ class PresentationOrchestrator:
         if fallback_notes:
             overall_decision_notes += " | Notes : " + "; ".join(fallback_notes[:4])
 
+        default_title = "FMSB Research Protocol" if lang == "en" else "Protocole de Recherche FMSB"
         deck = PresentationDeck(
             project_id=project.project_id,
-            title=project.cover.title or project.name or "Protocole de Recherche FMSB",
+            title=project.cover.title or project.name or default_title,
             max_slides=None,
             slides=slides,
             current_slide_index=1,
@@ -1336,10 +1571,14 @@ class PresentationOrchestrator:
         user_instruction: str = "",
         preferred_layout: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Regenerate a single slide via Gemini 3.5 Flash Lite + Gemini 3.1 Flash Lite & update geometry."""
+        """Regenerate a single slide via Gemini reasoning + audit models & update geometry."""
+        lang = normalize_lang(getattr(project, "language", "fr"))
+        localized_blocks = get_localized_pptx_blocks(lang)
         target = next((s for s in deck.slides if s.slide_index == slide_index), None)
         if not target:
-            raise ValueError(f"Diapositive {slide_index} introuvable.")
+            raise ValueError(
+                f"Slide {slide_index} not found." if lang == "en" else f"Diapositive {slide_index} introuvable."
+            )
 
         if target.locked_as_is:
             compute_deck_layout(deck, project=project)
@@ -1355,26 +1594,32 @@ class PresentationOrchestrator:
         source_txt = self._get_combined_section_markdown(project, sec_ids)
         if not source_txt.strip() and target.section_key == "chap1_variables":
             v_bullets = self._extract_variables_bullets(project)
-            if v_bullets and not any("non encore rédigée" in b.lower() for b in v_bullets):
+            if v_bullets and not any(("non encore rédigée" in b.lower() or "not yet drafted" in b.lower()) for b in v_bullets):
                 source_txt = "\n".join(v_bullets)
         if target.slide_type == "chronogram":
             chrono_pills = self._extract_chronogram_pills(project)
             parts: List[str] = []
             if chrono_pills:
-                parts.append("Étapes du chronogramme (Période : Activité) :\n" + "\n".join(chrono_pills))
+                hdr = "Timeline steps (Period: Activity):\n" if lang == "en" else "Étapes du chronogramme (Période : Activité) :\n"
+                parts.append(hdr + "\n".join(chrono_pills))
             if source_txt.strip():
                 parts.append(source_txt)
             source_txt = "\n\n".join(parts)
         if not source_txt.strip() and target.slide_type == "budget":
             b_total, b_pills = self._extract_budget_pills(project)
             if b_pills:
-                source_txt = f"Budget total : {b_total}\n" + "\n".join(b_pills)
+                lbl = "Total budget:" if lang == "en" else "Budget total :"
+                source_txt = f"{lbl} {b_total}\n" + "\n".join(b_pills)
 
         if not source_txt.strip() and not (user_instruction or "").strip():
             compute_deck_layout(deck, project=project)
             return {
                 "status": "missing_source",
-                "message": "Cette section n'est pas encore rédigée dans le Module 1. Rédigez-la d'abord ou donnez une consigne explicite.",
+                "message": (
+                    "This section has not yet been drafted in Module 1. Draft it first or provide an explicit instruction."
+                    if lang == "en"
+                    else "Cette section n'est pas encore rédigée dans le Module 1. Rédigez-la d'abord ou donnez une consigne explicite."
+                ),
                 "slide": target,
                 "deck": deck,
                 "model_used": "none",
@@ -1382,14 +1627,18 @@ class PresentationOrchestrator:
             }
 
         if not source_txt.strip():
-            source_txt = f"Sujet exact du protocole : {project.cover.title or project.name}\nSection visée : {target.title}"
+            source_txt = (
+                f"Exact protocol title: {project.cover.title or project.name}\nTarget slide: {target.title}"
+                if lang == "en"
+                else f"Sujet exact du protocole : {project.cover.title or project.name}\nSection visée : {target.title}"
+            )
 
         matched_spec = next(
-            (b for b in PPTX_CANVAS_BLOCKS if b.slide_type == target.slide_type),
-            PPTX_BLOCK_BY_ID["meth_type_site_duree"],
+            (b for b in localized_blocks if b.slide_type == target.slide_type),
+            next((b for b in localized_blocks if b.block_id == "meth_type_site_duree"), PPTX_BLOCK_BY_ID["meth_type_site_duree"]),
         )
         # Try to refine block match by section_key
-        for b in PPTX_CANVAS_BLOCKS:
+        for b in localized_blocks:
             if target.section_key and target.section_key in b.source_section_ids and b.slide_type == target.slide_type:
                 matched_spec = b
                 break
@@ -1407,15 +1656,16 @@ class PresentationOrchestrator:
         media_els = [e for e in target.elements if e.element_type == "media"]
         if preferred_layout:
             target.layout_mode = preferred_layout
-        elif any(e.element_type == "procedure_step" for e in els) and "schéma" in (user_instruction or "").lower():
+        elif any(e.element_type == "procedure_step" for e in els) and any(w in (user_instruction or "").lower() for w in ("schéma", "schema", "diagram", "flow")):
             target.layout_mode = "procedure_flow"
 
+        sep = ": " if lang == "en" else " : "
         if target.slide_type == "chronogram" and (target.layout_mode in ("chronogram_7pills", "", None)):
             target.elements = [
                 SlideElement(
                     id=el.id,
                     element_type="pill",
-                    content=(f"{el.title} : {el.content}" if el.title and ":" not in el.content else el.content),
+                    content=(f"{el.title}{sep}{el.content}" if el.title and ":" not in el.content else el.content),
                     order=i + 1,
                 )
                 for i, el in enumerate(els[:7])
@@ -1447,24 +1697,39 @@ class PresentationOrchestrator:
         deck: PresentationDeck,
     ) -> PresentationAuditReport:
         """Audit full deck deterministically for CAMES rules + optional AI scientific review."""
+        lang = normalize_lang(getattr(project, "language", "fr"))
         compute_deck_layout(deck, project=project)
         issues: List[PresentationAuditIssue] = []
         score = 100
 
         # 1. Check required slide types
         present_types = {s.slide_type for s in deck.slides}
-        required_types = [
-            ("welcome", "Accueil"),
-            ("cover", "Page de garde officielle"),
-            ("plan", "Plan du diaporama"),
-            ("introduction", "Introduction"),
-            ("objective_general", "Objectif général"),
-            ("objective_specific", "Objectifs spécifiques"),
-            ("methodology", "Méthodologie"),
-            ("chronogram", "Chronogramme"),
-            ("budget", "Budget prévisionnel"),
-            ("acknowledgements", "Remerciements"),
-        ]
+        if lang == "en":
+            required_types = [
+                ("welcome", "Welcome"),
+                ("cover", "Official Cover Page"),
+                ("plan", "Presentation Outline"),
+                ("introduction", "Introduction"),
+                ("objective_general", "General Objective"),
+                ("objective_specific", "Specific Objectives"),
+                ("methodology", "Methodology"),
+                ("chronogram", "Timeline"),
+                ("budget", "Estimated Budget"),
+                ("acknowledgements", "Acknowledgements"),
+            ]
+        else:
+            required_types = [
+                ("welcome", "Accueil"),
+                ("cover", "Page de garde officielle"),
+                ("plan", "Plan du diaporama"),
+                ("introduction", "Introduction"),
+                ("objective_general", "Objectif général"),
+                ("objective_specific", "Objectifs spécifiques"),
+                ("methodology", "Méthodologie"),
+                ("chronogram", "Chronogramme"),
+                ("budget", "Budget prévisionnel"),
+                ("acknowledgements", "Remerciements"),
+            ]
         for req_t, label in required_types:
             if req_t not in present_types:
                 score -= 10
@@ -1473,8 +1738,16 @@ class PresentationOrchestrator:
                         slide_index=1,
                         severity="error",
                         category="missing_content",
-                        message=f"Diapositive obligatoire manquante : {label}.",
-                        suggestion="Utilisez « Réinitialiser » ou ajoutez ce type de diapositive.",
+                        message=(
+                            f"Missing required slide: {label}."
+                            if lang == "en"
+                            else f"Diapositive obligatoire manquante : {label}."
+                        ),
+                        suggestion=(
+                            'Click "Reset from Protocol" or add this slide type.'
+                            if lang == "en"
+                            else "Utilisez « Réinitialiser » ou ajoutez ce type de diapositive."
+                        ),
                     )
                 )
 
@@ -1490,19 +1763,32 @@ class PresentationOrchestrator:
                         severity="warning",
                         category="overflow",
                         message=w_msg,
-                        suggestion="Allégez la diapositive ou régénérez-la en style télégraphique (<= 6 lignes).",
+                        suggestion=(
+                            "Trim text or regenerate in CAMES telegraphic style (<= 6 lines)."
+                            if lang == "en"
+                            else "Allégez la diapositive ou régénérez-la en style télégraphique (<= 6 lignes)."
+                        ),
                     )
                 )
             for el in s.elements:
-                if "non encore rédigée" in (el.content or "").lower():
+                low_el = (el.content or "").lower()
+                if "non encore rédigée" in low_el or "not yet drafted" in low_el:
                     score -= 6
                     issues.append(
                         PresentationAuditIssue(
                             slide_index=s.slide_index,
                             severity="warning",
                             category="missing_content",
-                            message="Cette diapositive contient un marqueur de section non rédigée.",
-                            suggestion="Rédigez d'abord la section dans le Module 1 puis régénérez.",
+                            message=(
+                                "This slide contains an undrafted section placeholder."
+                                if lang == "en"
+                                else "Cette diapositive contient un marqueur de section non rédigée."
+                            ),
+                            suggestion=(
+                                "Draft the source section in Module 1 first, then regenerate."
+                                if lang == "en"
+                                else "Rédigez d'abord la section dans le Module 1 puis régénérez."
+                            ),
                         )
                     )
             if s.slide_type in ("introduction", "objective_general", "objective_specific", "methodology"):
@@ -1515,8 +1801,16 @@ class PresentationOrchestrator:
                                 slide_index=s.slide_index,
                                 severity="warning",
                                 category="font_size",
-                                message=f"Taille de police {bb.font_size_pt} pt < {CAMES_MIN_BODY_PT} pt (norme CAMES).",
-                                suggestion="Réduisez le nombre de mots ou passez en mise en page standard.",
+                                message=(
+                                    f"Font size {bb.font_size_pt} pt < {CAMES_MIN_BODY_PT} pt (CAMES standard)."
+                                    if lang == "en"
+                                    else f"Taille de police {bb.font_size_pt} pt < {CAMES_MIN_BODY_PT} pt (norme CAMES)."
+                                ),
+                                suggestion=(
+                                    "Reduce word count or switch to standard layout."
+                                    if lang == "en"
+                                    else "Réduisez le nombre de mots ou passez en mise en page standard."
+                                ),
                             )
                         )
                         break
@@ -1524,18 +1818,26 @@ class PresentationOrchestrator:
         # 3. Check total budget coherence
         expected_total, _ = self._extract_budget_pills(project)
         budget_slide = next((s for s in deck.slides if s.slide_type == "budget"), None)
-        if budget_slide and expected_total == "À budgétiser":
+        if budget_slide and expected_total in ("À budgétiser", "To be budgeted"):
             issues.append(
                 PresentationAuditIssue(
                     slide_index=budget_slide.slide_index,
                     severity="warning",
                     category="missing_content",
-                    message="Le budget prévisionnel n'est pas encore renseigné dans le protocole (Module 1).",
-                    suggestion="Complétez la section Budget dans le Module 1 puis réinitialisez.",
+                    message=(
+                        "Estimated budget has not been filled in Module 1 yet."
+                        if lang == "en"
+                        else "Le budget prévisionnel n'est pas encore renseigné dans le protocole (Module 1)."
+                    ),
+                    suggestion=(
+                        'Complete the Budget section in Module 1, then click "Reset".'
+                        if lang == "en"
+                        else "Complétez la section Budget dans le Module 1 puis réinitialisez."
+                    ),
                 )
             )
             score -= 4
-        elif budget_slide and expected_total != "À budgétiser":
+        elif budget_slide and expected_total not in ("À budgétiser", "To be budgeted"):
             if (budget_slide.subtitle or "").strip() != expected_total:
                 score -= 8
                 issues.append(
@@ -1543,8 +1845,16 @@ class PresentationOrchestrator:
                         slide_index=budget_slide.slide_index,
                         severity="error",
                         category="budget",
-                        message=f"Total affiché ({budget_slide.subtitle}) différent du budget du protocole ({expected_total}).",
-                        suggestion="Cliquez sur « Réinitialiser » pour resynchroniser le budget réel.",
+                        message=(
+                            f"Displayed total ({budget_slide.subtitle}) differs from protocol budget ({expected_total})."
+                            if lang == "en"
+                            else f"Total affiché ({budget_slide.subtitle}) différent du budget du protocole ({expected_total})."
+                        ),
+                        suggestion=(
+                            'Click "Reset" to resynchronize with the actual budget.'
+                            if lang == "en"
+                            else "Cliquez sur « Réinitialiser » pour resynchroniser le budget réel."
+                        ),
                     )
                 )
 
@@ -1557,8 +1867,16 @@ class PresentationOrchestrator:
                     slide_index=1,
                     severity="info",
                     category="duration",
-                    message=f"Durée orale estimée trop courte : {est_sec // 60} min {est_sec % 60:02d} s (cible CAMES : 10–15 min).",
-                    suggestion="Enrichissez les notes du présentateur ou lancez « Générer tout par IA ».",
+                    message=(
+                        f"Estimated oral duration too short: {est_sec // 60} min {est_sec % 60:02d} s (CAMES target: 10–15 min)."
+                        if lang == "en"
+                        else f"Durée orale estimée trop courte : {est_sec // 60} min {est_sec % 60:02d} s (cible CAMES : 10–15 min)."
+                    ),
+                    suggestion=(
+                        'Expand speaker notes or run "Generate All with AI".'
+                        if lang == "en"
+                        else "Enrichissez les notes du présentateur ou lancez « Générer tout par IA »."
+                    ),
                 )
             )
         elif est_sec > CAMES_MAX_DURATION_SEC:
@@ -1568,15 +1886,26 @@ class PresentationOrchestrator:
                     slide_index=1,
                     severity="warning",
                     category="duration",
-                    message=f"Durée orale estimée élevée : {est_sec // 60} min {est_sec % 60:02d} s (max recommandé : 15 min).",
-                    suggestion="Condensez les notes sur les diapositives secondaires.",
+                    message=(
+                        f"Estimated oral duration high: {est_sec // 60} min {est_sec % 60:02d} s (max recommended: 15 min)."
+                        if lang == "en"
+                        else f"Durée orale estimée élevée : {est_sec // 60} min {est_sec % 60:02d} s (max recommandé : 15 min)."
+                    ),
+                    suggestion=(
+                        "Condense presenter notes on secondary slides."
+                        if lang == "en"
+                        else "Condensez les notes sur les diapositives secondaires."
+                    ),
                 )
             )
 
-        # 5. Best-effort Gemini 3.1 Flash Lite executive review
+        # 5. Best-effort executive AI review
         model_used = "deterministic_cames_auditor"
         summary = (
-            f"Audit CAMES : {len(deck.slides)} diapositives, durée orale estimée {est_sec // 60} min {est_sec % 60:02d} s, "
+            f"CAMES Audit: {len(deck.slides)} slides, estimated oral duration {est_sec // 60} min {est_sec % 60:02d} s, "
+            f"{len(issues)} issue(s) noted."
+            if lang == "en"
+            else f"Audit CAMES : {len(deck.slides)} diapositives, durée orale estimée {est_sec // 60} min {est_sec % 60:02d} s, "
             f"{len(issues)} point(s) d'attention relevé(s)."
         )
         try:
@@ -1588,13 +1917,22 @@ class PresentationOrchestrator:
             ai_res = self.router.generate_structured(
                 role="audit",
                 contents=(
-                    f"Titre protocole : {project.cover.title}\n"
-                    f"Total budget réel : {expected_total}\n"
-                    f"Diaporama actuel ({len(deck.slides)} slides) :\n{slides_brief}\n\n"
-                    "Fais un bilan synthétique (2-3 phrases) de la qualité scientifique et de la clarté pour le jury CAMES."
+                    f"{get_language_prompt_directive(lang)}\n\n"
+                    f"Protocol title: {project.cover.title}\n"
+                    f"Actual budget total: {expected_total}\n"
+                    f"Current deck ({len(deck.slides)} slides):\n{slides_brief}\n\n"
+                    + (
+                        "Provide a concise 2–3 sentence executive assessment of scientific quality and clarity for the CAMES jury in English."
+                        if lang == "en"
+                        else "Fais un bilan synthétique (2-3 phrases) de la qualité scientifique et de la clarté pour le jury CAMES."
+                    )
                 ),
                 schema=_AuditReportAI,
-                system_instruction="Tu es membre d'un jury FMSB/CAMES. Réponse factuelle et concise.",
+                system_instruction=(
+                    "You are an FMSB/CAMES thesis defense jury member. Respond factually and concisely in English."
+                    if lang == "en"
+                    else "Tu es membre d'un jury FMSB/CAMES. Réponse factuelle et concise."
+                ),
                 temperature=0.1,
             )
             model_used = ai_res["model_used"]

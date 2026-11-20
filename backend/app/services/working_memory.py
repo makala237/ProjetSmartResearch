@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.config import get_settings
 from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import normalize_lang
 from app.schemas.protocol import ProtocolProject
 from app.services.gemini_client import gemini_router
 
@@ -170,6 +171,7 @@ def update_section_working_memory(
         section_title=spec.title,
         content_text=content,
         study_title=project.cover.title or project.name,
+        lang=normalize_lang(getattr(project, "language", "fr")),
     )
     new_summary = sum_res["summary"].strip()
     # Overwrite previous summary under the section's heading

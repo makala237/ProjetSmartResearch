@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import get_language_prompt_directive, get_localized_section_spec, normalize_lang
 from app.schemas.protocol import (
     ArticleSegment,
     ImageAsset,
@@ -28,6 +29,7 @@ from app.services.literature import (
     search_openalex,
     search_pubmed,
 )
+from app.services.pipeline_tracker import emit_pipeline_step
 from app.services.vancouver import (
     format_vancouver_citation,
     refresh_vancouver_references,
@@ -81,11 +83,11 @@ class AntigravitySectionQueryPlan(BaseModel):
     )
 
 
-def _get_section_spec(section_id: str):
-    for spec in FMSB_SECTIONS:
-        if spec.id == section_id:
-            return spec
-    return None
+def _get_section_spec(section_id: str, lang: str = "fr"):
+    try:
+        return get_localized_section_spec(section_id, lang)
+    except ValueError:
+        return None
 
 
 def _count_words(text: str) -> int:
@@ -107,25 +109,30 @@ def check_if_existing_text_needs_enrichment(
     user_instruction: Optional[str],
     cross_section_memory: str,
 ) -> Tuple[ExistingTextGapAnalysis, str]:
-    """Step 1 when initial text exists: Gemini Flash evaluates if existing draft suffices
+    """Step 1 when initial text exists: Gemini evaluates if existing draft suffices
     or if new external literature / images missing from content should be requested via Decision 1 -> Antigravity.
     """
-    spec = _get_section_spec(section_id)
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    spec = _get_section_spec(section_id, lang)
     instr = (user_instruction or "").strip()
     cames_reqs = spec.cames_concepts_required if spec else []
     min_refs = spec.constraints.min_references if spec else None
     fig_pol = spec.constraints.figure_policy if spec else "none"
 
-    # Fast deterministic cue check when student explicitly demands external search / figures
+    # Fast deterministic cue check when student explicitly demands external search / figures (FR + EN)
     explicit_search = bool(
         re.search(
-            r"\b(recherch|article|pubm?ed|littérature|bibliographi|référence|sourc|donnée|statistiq|épidémiolog|image|figure|illustration|capture)\b",
+            r"\b(recherch|article|pubm?ed|littérature|literature|bibliograph|référence|reference|sourc|donnée|data|statistiq|épidémiolog|epidemiolog|image|figure|illustration|capture|search|find)\b",
             instr,
             re.IGNORECASE,
         )
     )
     explicit_images = bool(
-        re.search(r"\b(image|figure|photo|illustration|iconograph|radiograph|échograph)\b", instr, re.IGNORECASE)
+        re.search(
+            r"\b(image|figure|photo|illustration|iconograph|radiograph|échograph|diagram|chart|schema)\b",
+            instr,
+            re.IGNORECASE,
+        )
     )
 
     prompt = f"""
@@ -133,6 +140,7 @@ Tu es Gemini Flash (analyseur de brouillon CAMES / FMSB).
 Une action est engagée sur une section qui CONTIENT DÉJÀ DU TEXTE.
 Règle : tu dois raisonner EN PRIORITÉ sur le texte existant ci-dessous. Tu ne demandes de nouvelles informations externes (qui seront transmises à Gemini Decision 1 -> Antigravity) QUE si le contenu actuel manque réellement de concepts CAMES obligatoires, de références minimales ({min_refs or 0} attendues) ou de figures ({fig_pol}) introuvables dans le contenu actuel.
 
+LANGUE DU PROTOCOLE : {'Anglais' if lang == 'en' else 'Français'}
 SECTION CIBLE : {spec.chapter_title + ' — ' + spec.title if spec else section_id}
 ATTENDUS FMSB : {spec.guidance_points if spec else []}
 CONCEPTS CAMES OBLIGATOIRES : {cames_reqs}
@@ -171,7 +179,7 @@ Réponds en JSON structuré (`needs_external_info`, `needs_images`, `missing_foc
                 needs_external_info=explicit_search,
                 needs_images=explicit_images,
                 missing_focus=instr if explicit_search else "",
-                reasoning="Raisonnement prioritaire conservé sur le texte existant.",
+                reasoning="Priority reasoning preserved on existing content." if lang == "en" else "Raisonnement prioritaire conservé sur le texte existant.",
             ),
             "gemini-flash-deterministic-check",
         )
@@ -346,9 +354,17 @@ def execute_antigravity_section_mission(
     3. Automatically add & annotate references in Vancouver format + create section ArticleSegments,
     4. Extract/capture Open Access figures for this section when requested.
     """
-    spec = _get_section_spec(section_id)
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    spec = _get_section_spec(section_id, lang)
     sec_title = f"{spec.chapter_title} — {spec.title}" if spec else section_id
     topic = project.cover.title or project.research_idea or project.name
+
+    emit_pipeline_step(
+        "antigravity_plan",
+        "Formulation des requêtes ciblées pour la section...",
+        "Formulating section-targeted literature queries...",
+        progress_pct=48,
+    )
 
     # 1. Ask Antigravity Agent to synthesize tight section-specific search terms
     ag_note = ""
@@ -390,6 +406,14 @@ def execute_antigravity_section_mission(
         pubmed_q = " ".join(words[:5]) or topic
         openalex_q = pubmed_q
 
+    emit_pipeline_step(
+        "antigravity_search",
+        "Recherche PubMed, Europe PMC & OpenAlex...",
+        "Searching PubMed, Europe PMC & OpenAlex...",
+        detail=pubmed_q[:90],
+        progress_pct=58,
+    )
+
     # 2. Fetch from biomedical platforms (bounded to keep interactive latency snappy)
     collected: List[ReferenceItem] = []
     source_errors: List[str] = []
@@ -408,11 +432,9 @@ def execute_antigravity_section_mission(
     existing_pmids = {r.pmid for r in project.references if r.pmid}
     existing_dois = {r.doi.lower() for r in project.references if r.doi}
     existing_titles = {_normalize_title(r.title) for r in project.references}
-    existing_img_urls = {img.source_url for img in project.images if img.source_url}
 
     added_refs: List[ReferenceItem] = []
     added_segments: List[ArticleSegment] = []
-    added_images: List[ImageAsset] = []
 
     for ref in collected:
         norm_t = _normalize_title(ref.title)
@@ -457,10 +479,15 @@ def execute_antigravity_section_mission(
             added_segments.append(seg)
 
     # 4. Web image search by Antigravity is STRICTLY restricted to `chap2_rappel_connaissances`
-    # Pipeline: Gemini 3.1 analyzes text & identifies image type -> Gemini Decision 1 -> Antigravity
     image_search_report: Optional[Dict[str, Any]] = None
     added_images_count = 0
     if capture_images and section_id == "chap2_rappel_connaissances":
+        emit_pipeline_step(
+            "antigravity_images",
+            "Recherche & capture de figures scientifiques Open Access...",
+            "Searching & capturing Open Access scientific figures...",
+            progress_pct=66,
+        )
         rappel_sec = project.sections.get("chap2_rappel_connaissances")
         rappel_txt = (rappel_sec.content_markdown or "") if rappel_sec else ""
         image_search_report = search_rappel_connaissances_images_with_antigravity(
@@ -497,28 +524,31 @@ def orchestrate_section_action(
     user_instruction: Optional[str] = None,
     force_antigravity: bool = False,
 ) -> Dict[str, Any]:
-    """Master Tri-Engine Orchestrator for any section action (`draft`, `audit`, `fix`, `antigravity`).
-
-    Workflow rule:
-    1. Build progressive cross-section memory from other sections (Gemini Flash memory).
-    2. Check whether initial text exists in the target section (`initial_text_present`).
-    3. If NO initial text -> inform Gemini Decision 1 -> charge Antigravity to research platforms,
-       annotate every article found in Vancouver format, and capture section figures.
-    4. If initial text IS present -> Gemini Flash reasons FIRST on that text to meet goals,
-       and only solicits Gemini Decision 1 -> Antigravity if new external information or figures
-       absent from the content are needed.
-    """
+    """Master Tri-Engine Orchestrator for any section action (`draft`, `audit`, `fix`, `antigravity`)."""
+    lang = normalize_lang(getattr(project, "language", "fr"))
     current_sec = project.sections.get(section_id)
     existing_text = (current_sec.content_markdown or "").strip() if current_sec else ""
     initial_text_present = _count_words(existing_text) >= 15
 
     # Step 1: Cross-section memory
+    emit_pipeline_step(
+        "memory",
+        "Lecture de la mémoire transversale du protocole...",
+        "Reading cross-section working memory...",
+        progress_pct=12,
+    )
     cross_section_memory, memory_sections_count = build_cross_section_memory(project, section_id)
 
     # Step 2: Check initial text & evaluate gap if present
     gap_analysis: Optional[ExistingTextGapAnalysis] = None
     gap_model = ""
     if initial_text_present and not force_antigravity:
+        emit_pipeline_step(
+            "gap_check",
+            "Analyse du brouillon existant & écarts FMSB...",
+            "Evaluating existing draft & FMSB requirements...",
+            progress_pct=25,
+        )
         gap_analysis, gap_model = check_if_existing_text_needs_enrichment(
             project=project,
             section_id=section_id,
@@ -528,6 +558,12 @@ def orchestrate_section_action(
         )
 
     # Step 3: Route via Gemini Decision 1
+    emit_pipeline_step(
+        "decision_route",
+        "Décision d'orchestration documentaire...",
+        "Routing literature & figure needs...",
+        progress_pct=38,
+    )
     routing = route_section_with_gemini_decision_1(
         project=project,
         section_id=section_id,
@@ -553,18 +589,23 @@ def orchestrate_section_action(
             capture_images=bool(routing["call_antigravity_images"]),
         )
 
-    trace = {
-        "action": action,
-        "initial_text_present": initial_text_present,
-        "memory_sections_count": memory_sections_count,
-        "gap_model": gap_model or None,
-        "gap_needs_external_info": bool(gap_analysis.needs_external_info) if gap_analysis else (not initial_text_present),
-        "decision_model": routing["decision_model"],
-        "decision_scores": routing.get("scores", {}),
-        "antigravity_called": antigravity_called,
-        "added_references_count": antigravity_report["added_references_count"] if antigravity_report else 0,
-        "added_images_count": antigravity_report["added_images_count"] if antigravity_report else 0,
-        "routing_summary": (
+    if lang == "en":
+        routing_summary = (
+            f"Cross-section memory ({memory_sections_count} sections). "
+            + (
+                "Existing draft detected: priority reasoning on existing text. "
+                if initial_text_present
+                else "Empty section: literature retrieval triggered. "
+            )
+            + routing["notes"]
+            + (
+                f" Literature agent: +{antigravity_report['added_references_count']} Vancouver ref(s), +{antigravity_report['added_images_count']} figure(s)."
+                if antigravity_report
+                else ""
+            )
+        ).strip()
+    else:
+        routing_summary = (
             f"Mémoire transversale ({memory_sections_count} sections). "
             + (
                 "Texte initial détecté : raisonnement prioritaire sur le contenu. "
@@ -577,7 +618,20 @@ def orchestrate_section_action(
                 if antigravity_report
                 else ""
             )
-        ).strip(),
+        ).strip()
+
+    trace = {
+        "action": action,
+        "initial_text_present": initial_text_present,
+        "memory_sections_count": memory_sections_count,
+        "gap_model": gap_model or None,
+        "gap_needs_external_info": bool(gap_analysis.needs_external_info) if gap_analysis else (not initial_text_present),
+        "decision_model": routing["decision_model"],
+        "decision_scores": routing.get("scores", {}),
+        "antigravity_called": antigravity_called,
+        "added_references_count": antigravity_report["added_references_count"] if antigravity_report else 0,
+        "added_images_count": antigravity_report["added_images_count"] if antigravity_report else 0,
+        "routing_summary": routing_summary,
     }
 
     return {

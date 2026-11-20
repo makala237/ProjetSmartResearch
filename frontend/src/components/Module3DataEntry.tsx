@@ -18,6 +18,7 @@ import {
   UserPlus,
 } from "lucide-react";
 import { api } from "../api/client";
+import { useLanguage } from "../i18n/LanguageContext";
 import type {
   CRFFieldSpec,
   CRFFieldType,
@@ -73,6 +74,7 @@ export function Module3DataEntry({
   onOpenModule2,
   onError,
 }: Module3Props) {
+  const { lang, t } = useLanguage();
   const [subTab, setSubTab] = useState<SubTab>("entry");
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -360,14 +362,15 @@ export function Module3DataEntry({
           <div>
             <div className="inline-flex items-center gap-2 rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-[#6C2826]">
               <ClipboardCheck className="h-3.5 w-3.5" />
-              Annexe 1 (Fiche de Collecte) & Masque de Saisie Clinique
+              {lang === "en"
+                ? "Appendix 1 (Case Report Form) & Clinical Data Capture"
+                : "Annexe 1 (Fiche de Collecte) & Masque de Saisie Clinique"}
             </div>
             <h2 className="mt-2 text-lg font-bold text-slate-900">
-              Module 3 : Conception du Masque de Saisie & Enregistrement des Patients
+              {t("m3.title")}
             </h2>
             <p className="mt-0.5 text-xs text-slate-600">
-              Le masque de saisie est généré et synchronisé directement avec l'Annexe 1
-              (dessins de cases à cocher dichotomiques/multiples et cadres à remplir).
+              {t("m3.subtitle")}
             </p>
           </div>
 
@@ -377,10 +380,14 @@ export function Module3DataEntry({
               disabled={busy}
               onClick={() => handleSyncFromAnnexe1(true)}
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-              title="Ré-analyser le texte d'Annexe 1 et mettre à jour les dessins de cases et cadres"
+              title={
+                lang === "en"
+                  ? "Re-parse Appendix 1 and update drawn checkboxes and fields"
+                  : "Ré-analyser le texte d'Annexe 1 et mettre à jour les dessins de cases et cadres"
+              }
             >
               <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
-              Synchroniser depuis Annexe 1
+              {t("m3.regenerate_crf")}
             </button>
 
             <a
@@ -388,7 +395,7 @@ export function Module3DataEntry({
               className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-700"
             >
               <Download className="h-3.5 w-3.5" />
-              Exporter Base Patients (.csv)
+              {t("m3.export_csv")}
             </a>
 
             <button
@@ -397,7 +404,7 @@ export function Module3DataEntry({
               className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-3 py-2 text-xs font-semibold text-white hover:bg-[#561f1d]"
             >
               <FileText className="h-3.5 w-3.5" />
-              Voir dans Studio Word
+              {lang === "en" ? "Open Word Studio" : "Voir dans Studio Word"}
             </button>
           </div>
         </div>
@@ -406,7 +413,7 @@ export function Module3DataEntry({
         <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="rounded-xl border border-slate-100 bg-slate-50 px-3.5 py-2.5">
             <div className="text-[11px] font-medium text-slate-500">
-              Questions du masque (Annexe 1)
+              {lang === "en" ? "CRF Questions (Appendix 1)" : "Questions du masque (Annexe 1)"}
             </div>
             <div className="mt-0.5 text-lg font-bold text-[#6C2826]">
               {fields.length}
@@ -414,7 +421,7 @@ export function Module3DataEntry({
           </div>
           <div className="rounded-xl border border-slate-100 bg-slate-50 px-3.5 py-2.5">
             <div className="text-[11px] font-medium text-slate-500">
-              Sections cliniques
+              {lang === "en" ? "Clinical sections" : "Sections cliniques"}
             </div>
             <div className="mt-0.5 text-lg font-bold text-slate-900">
               {sectionsGrouped.length}
@@ -422,7 +429,7 @@ export function Module3DataEntry({
           </div>
           <div className="rounded-xl border border-emerald-100 bg-emerald-50/70 px-3.5 py-2.5">
             <div className="text-[11px] font-medium text-emerald-700">
-              Patients enregistrés
+              {lang === "en" ? "Enrolled patients" : "Patients enregistrés"}
             </div>
             <div className="mt-0.5 text-lg font-bold text-emerald-800">
               {records.length}
@@ -430,7 +437,7 @@ export function Module3DataEntry({
           </div>
           <div className="rounded-xl border border-indigo-100 bg-indigo-50/70 px-3.5 py-2.5">
             <div className="text-[11px] font-medium text-indigo-700">
-              Complétude moyenne
+              {lang === "en" ? "Average completion" : "Complétude moyenne"}
             </div>
             <div className="mt-0.5 text-lg font-bold text-indigo-800">
               {avgCompletion}%
@@ -457,7 +464,7 @@ export function Module3DataEntry({
             }`}
           >
             <UserPlus className="h-3.5 w-3.5" />
-            Saisie des Patients ({records.length})
+            {t("m3.patients_tab")} ({records.length})
           </button>
           <button
             type="button"
@@ -469,7 +476,7 @@ export function Module3DataEntry({
             }`}
           >
             <Settings2 className="h-3.5 w-3.5" />
-            Concepteur du Masque &amp; Annexe 1 ({fields.length} champs)
+            {t("m3.crf_tab")} ({fields.length})
           </button>
           <button
             type="button"
@@ -481,7 +488,9 @@ export function Module3DataEntry({
             }`}
           >
             <Database className="h-3.5 w-3.5" />
-            Aperçu Fiche Papier A4 &amp; Base de Données
+            {lang === "en"
+              ? "A4 Paper Form Preview & Database"
+              : "Aperçu Fiche Papier A4 & Base de Données"}
           </button>
         </div>
       </div>
@@ -494,7 +503,7 @@ export function Module3DataEntry({
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-sm font-bold text-slate-900">
-                  Registre des Patients ({records.length})
+                  {t("m3.patients_tab")} ({records.length})
                 </h3>
                 <button
                   type="button"
@@ -502,7 +511,7 @@ export function Module3DataEntry({
                   className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  Nouveau
+                  {t("m3.new_patient")}
                 </button>
               </div>
 
@@ -601,11 +610,17 @@ export function Module3DataEntry({
                 <div>
                   <span className="text-[11px] font-bold uppercase tracking-wider text-[#6C2826]">
                     {editingRecordId
-                      ? `Modification Fiche : ${patientCode}`
-                      : "Nouvelle Fiche Patient (Masque de Saisie)"}
+                      ? lang === "en"
+                        ? `Edit Record: ${patientCode}`
+                        : `Modification Fiche : ${patientCode}`
+                      : lang === "en"
+                        ? "New Patient Record (CRF Data Entry)"
+                        : "Nouvelle Fiche Patient (Masque de Saisie)"}
                   </span>
                   <h3 className="text-base font-bold text-slate-900">
-                    En-tête d'Identification Anonyme
+                    {lang === "en"
+                      ? "Anonymous Identification Header"
+                      : "En-tête d'Identification Anonyme"}
                   </h3>
                 </div>
                 <button
@@ -615,10 +630,14 @@ export function Module3DataEntry({
                 >
                   <Save className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
                   {busy
-                    ? "Enregistrement..."
+                    ? lang === "en"
+                      ? "Saving..."
+                      : "Enregistrement..."
                     : editingRecordId
-                      ? "Mettre à jour la fiche"
-                      : "Enregistrer le patient"}
+                      ? lang === "en"
+                        ? "Update Record"
+                        : "Mettre à jour la fiche"
+                      : t("m3.save_patient")}
                 </button>
               </div>
 

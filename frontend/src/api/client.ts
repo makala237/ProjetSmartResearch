@@ -91,6 +91,10 @@ export function authHeaders(): Record<string, string> {
   return tok ? { Authorization: `Bearer ${tok}` } : {};
 }
 
+export function pipelineHeaders(taskId?: string): Record<string, string> {
+  return taskId ? { "X-Pipeline-Task-Id": taskId } : {};
+}
+
 export function withAuthToken(url: string): string {
   if (
     !url ||
@@ -211,9 +215,9 @@ async function request<T>(url: string, options?: RequestOptions): Promise<T> {
 }
 
 export const api = {
-  getCanvas: () =>
-    request<{ version: string; total_steps: number; sections: CanvasSectionSpec[] }>(
-      "/api/canvas"
+  getCanvas: (lang: "fr" | "en" = "fr") =>
+    request<{ version: string; language?: string; total_steps: number; sections: CanvasSectionSpec[] }>(
+      `/api/canvas?lang=${encodeURIComponent(lang)}`
     ),
 
   getModelsStatus: () => request<ModelsStatus>("/api/models"),
@@ -225,11 +229,23 @@ export const api = {
     entry_mode: EntryMode;
     research_idea: string;
     study_type: string;
+    language?: "fr" | "en";
   }) =>
     request<ProtocolProject>("/api/projects", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+
+  updateProjectLanguage: (projectId: string, language: "fr" | "en") =>
+    request<ProtocolProject>(`/api/projects/${projectId}/language`, {
+      method: "PATCH",
+      body: JSON.stringify({ language }),
+    }),
+
+  getPipelineProgress: (taskId: string) =>
+    request<import("../types/protocol").PipelineProgressSnapshot>(
+      `/api/pipeline/progress/${encodeURIComponent(taskId)}`
+    ),
 
   updateCover: (projectId: string, cover: CoverMetadata) =>
     request<ProtocolProject>(`/api/projects/${projectId}/cover`, {
@@ -313,21 +329,24 @@ export const api = {
       custom_query?: string;
       max_per_source?: number;
       include_web_grounding?: boolean;
-    }
+    },
+    taskId?: string
   ) =>
     request<{ project: ProtocolProject; report: ResearchReport }>(
       `/api/projects/${projectId}/research`,
       {
         method: "POST",
+        headers: pipelineHeaders(taskId),
         body: JSON.stringify(payload),
       }
     ),
 
-  segmentArticles: (projectId: string, limit = 8) =>
+  segmentArticles: (projectId: string, limit = 8, taskId?: string) =>
     request<{ project: ProtocolProject; report: SegmentReport }>(
       `/api/projects/${projectId}/segment`,
       {
         method: "POST",
+        headers: pipelineHeaders(taskId),
         body: JSON.stringify({ limit, only_unsegmented: true }),
       }
     ),
@@ -394,45 +413,65 @@ export const api = {
       method: "DELETE",
     }),
 
-  draftSection: (projectId: string, sectionId: string, instruction?: string) =>
+  draftSection: (
+    projectId: string,
+    sectionId: string,
+    instruction?: string,
+    taskId?: string
+  ) =>
     request<{ project: ProtocolProject; result: DraftResult }>(
       `/api/projects/${projectId}/sections/${sectionId}/draft`,
       {
         method: "POST",
+        headers: pipelineHeaders(taskId),
         body: JSON.stringify({ instruction: instruction || null }),
       }
     ),
 
-  auditSection: (projectId: string, sectionId: string) =>
+  auditSection: (projectId: string, sectionId: string, taskId?: string) =>
     request<{ project: ProtocolProject; result: AuditResult }>(
       `/api/projects/${projectId}/sections/${sectionId}/audit`,
       {
         method: "POST",
+        headers: pipelineHeaders(taskId),
       }
     ),
 
-  fixSection: (projectId: string, sectionId: string) =>
+  fixSection: (projectId: string, sectionId: string, taskId?: string) =>
     request<{ project: ProtocolProject; result: DraftResult }>(
       `/api/projects/${projectId}/sections/${sectionId}/fix`,
       {
         method: "POST",
+        headers: pipelineHeaders(taskId),
       }
     ),
 
-  humanizeSection: (projectId: string, sectionId: string, useAi = true) =>
+  humanizeSection: (
+    projectId: string,
+    sectionId: string,
+    useAi = true,
+    taskId?: string
+  ) =>
     request<{ project: ProtocolProject; result: HumanizeSectionResult }>(
       `/api/projects/${projectId}/sections/${sectionId}/humanize`,
       {
         method: "POST",
+        headers: pipelineHeaders(taskId),
         body: JSON.stringify({ use_ai: useAi }),
       }
     ),
 
-  harmonizeSection: (projectId: string, sectionId: string, alertId?: string) =>
+  harmonizeSection: (
+    projectId: string,
+    sectionId: string,
+    alertId?: string,
+    taskId?: string
+  ) =>
     request<{ project: ProtocolProject; result: HarmonizeSectionResult }>(
       `/api/projects/${projectId}/sections/${sectionId}/harmonize`,
       {
         method: "POST",
+        headers: pipelineHeaders(taskId),
         body: JSON.stringify({ alert_id: alertId || null }),
       }
     ),
@@ -450,7 +489,8 @@ export const api = {
     projectId: string,
     sectionId: string,
     instruction?: string,
-    captureImages = true
+    captureImages = true,
+    taskId?: string
   ) =>
     request<{
       project: ProtocolProject;
@@ -458,6 +498,7 @@ export const api = {
       antigravity_report: Record<string, unknown>;
     }>(`/api/projects/${projectId}/sections/${sectionId}/antigravity`, {
       method: "POST",
+      headers: pipelineHeaders(taskId),
       body: JSON.stringify({
         instruction: instruction || null,
         capture_images: captureImages,
@@ -630,13 +671,17 @@ export const api = {
 
   importProtocol: async (
     projectId: string,
-    file: File
+    file: File,
+    taskId?: string
   ): Promise<{ project: ProtocolProject; report: ImportReport }> => {
     const form = new FormData();
     form.append("file", file);
     const res = await fetch(`/api/projects/${projectId}/import`, {
       method: "POST",
-      headers: authHeaders(),
+      headers: {
+        ...authHeaders(),
+        ...pipelineHeaders(taskId),
+      },
       body: form,
     });
     if (!res.ok) {
@@ -665,7 +710,7 @@ export const api = {
       { method: "POST" }
     ),
 
-  generateToc: (projectId: string) =>
+  generateToc: (projectId: string, taskId?: string) =>
     request<{
       project: ProtocolProject;
       entries_count: number;
@@ -683,10 +728,13 @@ export const api = {
       };
     }>(
       `/api/projects/${projectId}/generate-toc`,
-      { method: "POST" }
+      {
+        method: "POST",
+        headers: pipelineHeaders(taskId),
+      }
     ),
 
-  validateVancouverReferences: (projectId: string) =>
+  validateVancouverReferences: (projectId: string, taskId?: string) =>
     request<{
       project: ProtocolProject;
       references_count: number;
@@ -695,7 +743,10 @@ export const api = {
       decision_summary: string;
     }>(
       `/api/projects/${projectId}/validate-references`,
-      { method: "POST" }
+      {
+        method: "POST",
+        headers: pipelineHeaders(taskId),
+      }
     ),
 
   translateDepartment: (payload: {

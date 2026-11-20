@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Airplay,
   ClipboardCheck,
   FileUp,
   FolderPlus,
+  Globe,
   KeyRound,
   Layers,
   Lightbulb,
@@ -28,6 +29,8 @@ import { Module1Assistant } from "./components/Module1Assistant";
 import { Module2Editor } from "./components/Module2Editor";
 import { Module3DataEntry } from "./components/Module3DataEntry";
 import { Module4Presentation } from "./components/Module4Presentation";
+import { useLanguage } from "./i18n/LanguageContext";
+import type { AppLang } from "./i18n/translations";
 import type { ModuleKey, TokenResponse, UserMeOut } from "./types/auth";
 import type {
   CanvasSectionSpec,
@@ -39,6 +42,7 @@ import type {
 } from "./types/protocol";
 
 export default function App() {
+  const { lang, setLang, t } = useLanguage();
   const [currentUser, setCurrentUser] = useState<UserMeOut | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(() => Boolean(getAccessToken()));
   const [authNotice, setAuthNotice] = useState<string | null>(null);
@@ -63,17 +67,20 @@ export default function App() {
   const [newMode, setNewMode] = useState<EntryMode>("new_topic");
   const [newIdea, setNewIdea] = useState("");
   const [newStudyType, setNewStudyType] = useState("Étude transversale analytique");
+  const [newLang, setNewLang] = useState<AppLang>(lang);
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const lastSyncedProjectIdRef = useRef<string | null>(null);
 
-  const loadWorkspaceData = useCallback(async () => {
+  const loadWorkspaceData = useCallback(async (targetLang?: AppLang) => {
     setLoading(true);
     setError(null);
+    const effectiveLang: AppLang = targetLang ?? lang;
     try {
       const [canvasRes, projectsRes] = await Promise.all([
-        api.getCanvas(),
+        api.getCanvas(effectiveLang),
         api.listProjects(),
       ]);
       setCanvas(canvasRes.sections);
@@ -93,7 +100,49 @@ export default function App() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [lang]);
+
+  useEffect(() => {
+    if (!activeProject) return;
+    if (lastSyncedProjectIdRef.current === activeProject.project_id) return;
+    lastSyncedProjectIdRef.current = activeProject.project_id;
+    const projLang: AppLang = activeProject.language === "en" ? "en" : "fr";
+    if (projLang !== lang) {
+      setLang(projLang);
+      api
+        .getCanvas(projLang)
+        .then((res) => setCanvas(res.sections))
+        .catch(() => {});
+    }
+  }, [activeProject?.project_id, activeProject?.language, lang, setLang]);
+
+  const handleChangeLanguage = useCallback(
+    async (nextLang: AppLang) => {
+      setLang(nextLang);
+      setNewLang(nextLang);
+      try {
+        const res = await api.getCanvas(nextLang);
+        setCanvas(res.sections);
+      } catch {
+        // Ignore transient canvas fetch failure
+      }
+      if (activeProject) {
+        try {
+          const updated = await api.updateProjectLanguage(
+            activeProject.project_id,
+            nextLang
+          );
+          setActiveProject(updated);
+          setProjects((prev) =>
+            prev.map((p) => (p.project_id === updated.project_id ? updated : p))
+          );
+        } catch {
+          // Non-fatal if user has no active write license; UI language & canvas still adapt
+        }
+      }
+    },
+    [activeProject, setLang]
+  );
 
   const refreshMe = useCallback(() => {
     if (!getAccessToken()) return;
@@ -152,7 +201,7 @@ export default function App() {
     if (currentUser && !currentUser.must_change_password) {
       loadWorkspaceData();
     }
-  }, [currentUser?.id, currentUser?.must_change_password, loadWorkspaceData]);
+  }, [currentUser?.id, currentUser?.must_change_password]);
 
   function handleAuthenticated(tokenRes: TokenResponse) {
     setAuthNotice(null);
@@ -176,6 +225,7 @@ export default function App() {
       setCurrentUser(null);
       setProjects([]);
       setActiveProject(null);
+      lastSyncedProjectIdRef.current = null;
       setShowCreateModal(false);
       setShowPasswordModal(false);
       setActiveView("studio");
@@ -214,9 +264,17 @@ export default function App() {
         entry_mode: newMode,
         research_idea: newIdea.trim(),
         study_type: newStudyType.trim(),
+        language: newLang,
       });
       setProjects([created, ...projects]);
       setActiveProject(created);
+      if (newLang !== lang) {
+        setLang(newLang);
+        api
+          .getCanvas(newLang)
+          .then((res) => setCanvas(res.sections))
+          .catch(() => {});
+      }
       setShowCreateModal(false);
       setNewName("");
       setNewIdea("");
@@ -304,13 +362,13 @@ export default function App() {
             soon ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"
           }`}
         >
-          {ent.days_remaining} j
+          {ent.days_remaining} {lang === "en" ? "d" : "j"}
         </span>
       );
     }
     return (
       <span className="inline-flex items-center gap-0.5 rounded-full bg-rose-100 px-1.5 py-0.5 text-[10px] font-bold text-rose-800">
-        <Lock className="h-2.5 w-2.5" /> Lecture seule
+        <Lock className="h-2.5 w-2.5" /> {t("nav.readonly_badge")}
       </span>
     );
   }
@@ -341,7 +399,7 @@ export default function App() {
           alt="Smart Research"
           className="h-24 w-auto animate-pulse object-contain"
         />
-        <span>Vérification de votre session Smart Research...</span>
+        <span>{t("nav.checking_session")}</span>
       </div>
     );
   }
@@ -389,7 +447,7 @@ export default function App() {
                 <span className="text-[#1FA84F]">Research</span>
               </h1>
               <p className="hidden text-[11px] font-medium text-slate-500 sm:block">
-                Votre assistant intelligent de recherche scientifique
+                {t("app.tagline")}
               </p>
             </div>
           </div>
@@ -406,7 +464,7 @@ export default function App() {
               }`}
             >
               <Sparkles className="h-3 w-3" />
-              {isAdmin ? "Admin" : `${currentUser.ai_quota.credits_remaining} cr`}
+              {isAdmin ? t("nav.role_admin") : `${currentUser.ai_quota.credits_remaining} cr`}
             </div>
             <button
               type="button"
@@ -419,7 +477,7 @@ export default function App() {
           </div>
 
           {/* Desktop Controls (md+) */}
-          <div className="hidden flex-wrap items-center gap-2.5 md:flex">
+          <div className="hidden flex-wrap items-center gap-2 md:flex">
             {/* AI Credits Gauge */}
             <div
               className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${
@@ -429,12 +487,35 @@ export default function App() {
                   ? "bg-amber-100 text-amber-900"
                   : "bg-indigo-50 text-indigo-800"
               }`}
-              title="Solde de crédits d'assistance IA"
+              title={t("nav.ai_credits_tooltip")}
             >
               <Sparkles className="h-3.5 w-3.5" />
               {isAdmin
-                ? "IA : Illimité"
-                : `IA : ${currentUser.ai_quota.credits_remaining} / ${currentUser.ai_quota.credits_total} cr`}
+                ? t("nav.ai_unlimited")
+                : t("nav.ai_credits", {
+                    remaining: currentUser.ai_quota.credits_remaining,
+                    total: currentUser.ai_quota.credits_total,
+                  })}
+            </div>
+
+            {/* Default Language Menu */}
+            <div
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs font-medium text-slate-700"
+              title={t("nav.language_label")}
+            >
+              <Globe className="h-3.5 w-3.5 text-[#004A8F]" />
+              <select
+                aria-label="Langue par défaut"
+                data-testid="default-language-select"
+                value={lang}
+                onChange={(e) =>
+                  handleChangeLanguage(e.target.value === "en" ? "en" : "fr")
+                }
+                className="cursor-pointer bg-transparent pr-1 text-xs font-semibold text-slate-800 focus:outline-none"
+              >
+                <option value="fr">FR · Français</option>
+                <option value="en">EN · English</option>
+              </select>
             </div>
 
             {/* Project Selector (Studio mode) */}
@@ -445,7 +526,7 @@ export default function App() {
                   const found = projects.find((p) => p.project_id === e.target.value);
                   if (found) setActiveProject(found);
                 }}
-                className="max-w-[200px] rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700"
+                className="max-w-[180px] rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700"
               >
                 {projects.map((p) => (
                   <option key={p.project_id} value={p.project_id}>
@@ -459,11 +540,14 @@ export default function App() {
             {activeView === "studio" && canCreateProject && (
               <button
                 type="button"
-                onClick={() => setShowCreateModal(true)}
+                onClick={() => {
+                  setNewLang(lang);
+                  setShowCreateModal(true);
+                }}
                 className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#004A8F] to-[#0284C7] px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs transition hover:brightness-105"
               >
                 <FolderPlus className="h-3.5 w-3.5" />
-                Nouveau protocole
+                {t("nav.new_protocol")}
               </button>
             )}
 
@@ -479,13 +563,13 @@ export default function App() {
                 }`}
               >
                 <Shield className="h-3.5 w-3.5" />
-                {activeView === "admin" ? "Studio" : "Portail Admin"}
+                {activeView === "admin" ? t("nav.studio") : t("nav.admin")}
               </button>
             )}
 
             {/* User Badge & Account Actions */}
             <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs">
-              <span className="max-w-[140px] truncate font-semibold text-slate-800">
+              <span className="max-w-[130px] truncate font-semibold text-slate-800">
                 {currentUser.full_name}
               </span>
               <span
@@ -493,7 +577,7 @@ export default function App() {
                   isAdmin ? "bg-indigo-100 text-indigo-800" : "bg-slate-200 text-slate-700"
                 }`}
               >
-                {isAdmin ? "Admin" : "Étudiant"}
+                {isAdmin ? t("nav.role_admin") : t("nav.role_student")}
               </span>
             </div>
 
@@ -501,7 +585,7 @@ export default function App() {
               type="button"
               onClick={() => setShowPasswordModal(true)}
               className="rounded-lg border border-slate-300 bg-white p-1.5 text-slate-600 hover:bg-slate-50 hover:text-slate-900"
-              title="Changer mon mot de passe"
+              title={t("nav.change_password_title")}
             >
               <KeyRound className="h-3.5 w-3.5" />
             </button>
@@ -510,10 +594,10 @@ export default function App() {
               type="button"
               onClick={handleLogout}
               className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-              title="Déconnexion"
+              title={t("nav.logout")}
             >
               <LogOut className="h-3.5 w-3.5" />
-              <span>Déconnexion</span>
+              <span>{t("nav.logout")}</span>
             </button>
           </div>
         </div>
@@ -533,8 +617,26 @@ export default function App() {
                   isAdmin ? "bg-indigo-100 text-indigo-800" : "bg-slate-200 text-slate-700"
                 }`}
               >
-                {isAdmin ? "Admin" : "Étudiant"}
+                {isAdmin ? t("nav.role_admin") : t("nav.role_student")}
               </span>
+            </div>
+
+            <div className="flex items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs">
+              <span className="inline-flex items-center gap-1.5 font-semibold text-slate-700">
+                <Globe className="h-3.5 w-3.5 text-[#004A8F]" />
+                {t("nav.language_label")}
+              </span>
+              <select
+                aria-label={t("nav.language_label")}
+                value={lang}
+                onChange={(e) =>
+                  handleChangeLanguage(e.target.value === "en" ? "en" : "fr")
+                }
+                className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-semibold text-slate-800"
+              >
+                <option value="fr">FR · Français</option>
+                <option value="en">EN · English</option>
+              </select>
             </div>
 
             {!isAdmin && (
@@ -554,7 +656,7 @@ export default function App() {
                             : "font-semibold text-rose-700"
                         }
                       >
-                        {ent?.is_active ? `${ent.days_remaining} j` : "Expiré"}
+                        {ent?.is_active ? `${ent.days_remaining} ${lang === "en" ? "d" : "j"}` : t("nav.expired")}
                       </span>
                     </div>
                   );
@@ -565,7 +667,7 @@ export default function App() {
             {activeView === "studio" && projects.length > 0 && (
               <div>
                 <label className="block text-[11px] font-semibold text-slate-600">
-                  Protocole actif
+                  {t("nav.active_protocol")}
                 </label>
                 <select
                   value={activeProject?.project_id ?? ""}
@@ -590,13 +692,14 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => {
+                    setNewLang(lang);
                     setShowCreateModal(true);
                     setMobileMenuOpen(false);
                   }}
                   className="col-span-2 inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#004A8F] to-[#0284C7] px-3 text-xs font-semibold text-white shadow-xs"
                 >
                   <FolderPlus className="h-4 w-4" />
-                  Nouveau protocole
+                  {t("nav.new_protocol")}
                 </button>
               )}
               {isAdmin && (
@@ -610,7 +713,7 @@ export default function App() {
                   className="col-span-2 inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl bg-[#004A8F] px-3 text-xs font-semibold text-white"
                 >
                   <Shield className="h-4 w-4" />
-                  {activeView === "admin" ? "Ouvrir le Studio" : "Ouvrir Portail Admin"}
+                  {activeView === "admin" ? t("nav.studio_open_mobile") : t("nav.admin_open_mobile")}
                 </button>
               )}
               <button
@@ -622,7 +725,7 @@ export default function App() {
                 className="inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700"
               >
                 <KeyRound className="h-3.5 w-3.5" />
-                Mot de passe
+                {t("nav.password")}
               </button>
               <button
                 type="button"
@@ -630,7 +733,7 @@ export default function App() {
                 className="inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 text-xs font-semibold text-rose-700"
               >
                 <LogOut className="h-3.5 w-3.5" />
-                Déconnexion
+                {t("nav.logout")}
               </button>
             </div>
           </div>
@@ -650,7 +753,7 @@ export default function App() {
                 }`}
               >
                 <Layers className="h-3.5 w-3.5" />
-                Module 1 : Rédaction &amp; Recherche
+                {t("mod1.tab")}
                 {renderModuleBadge("module1")}
               </button>
               <button
@@ -663,7 +766,7 @@ export default function App() {
                 }`}
               >
                 <PenSquare className="h-3.5 w-3.5" />
-                Module 2 : Édition Word / PDF
+                {t("mod2.tab")}
                 {renderModuleBadge("module2")}
               </button>
               <button
@@ -676,7 +779,7 @@ export default function App() {
                 }`}
               >
                 <ClipboardCheck className="h-3.5 w-3.5" />
-                Module 3 : Masque &amp; Patients
+                {t("mod3.tab")}
                 <span className="rounded-full bg-[#0284C7]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#0284C7]">
                   {activeProject.patient_records?.length ?? 0}
                 </span>
@@ -692,7 +795,7 @@ export default function App() {
                 }`}
               >
                 <Airplay className="h-3.5 w-3.5 text-[#004A8F]" />
-                Module 4 : Diaporama PPTX
+                {t("mod4.tab")}
                 <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold text-[#1FA84F]">
                   CAMES
                 </span>
@@ -713,7 +816,7 @@ export default function App() {
               onClick={() => setError(null)}
               className="ml-4 text-xs font-semibold underline"
             >
-              Fermer
+              {t("nav.close")}
             </button>
           </div>
         )}
@@ -726,23 +829,21 @@ export default function App() {
               <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-950">
                 <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
                 <div>
-                  <span className="font-bold">Mode lecture seule sur ce module :</span> votre
-                  licence d'édition pour ce module a expiré (ou n'est pas incluse dans votre offre
-                  actuelle). La consultation et le téléchargement de vos fichiers Word, PDF, CSV et
-                  PowerPoint restent autorisés ; contactez l'administrateur pour renouveler l'accès en écriture ou les appels IA.
+                  <span className="font-bold">{t("nav.read_only_title")}</span>{" "}
+                  {t("nav.read_only_body")}
                 </div>
               </div>
             )}
 
             {loading ? (
               <div className="py-20 text-center text-sm text-slate-500">
-                Chargement du canevas Smart Research...
+                {t("nav.loading_canvas")}
               </div>
             ) : !activeProject || (showCreateModal && canCreateProject) ? (
               <div className="mx-auto max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-bold text-slate-900">
-                    Démarrer un protocole de recherche
+                    {t("create.title")}
                   </h2>
                   {activeProject && (
                     <button
@@ -750,21 +851,18 @@ export default function App() {
                       onClick={() => setShowCreateModal(false)}
                       className="text-xs font-medium text-slate-500 hover:text-slate-800"
                     >
-                      Annuler
+                      {t("nav.cancel")}
                     </button>
                   )}
                 </div>
                 <p className="mt-1 text-sm text-slate-600">
-                  Choisissez votre point de départ. Le protocole suivra strictement le
-                  canevas officiel en {canvas.length} étapes.
+                  {t("create.subtitle", { count: canvas.length })}
                 </p>
 
                 {!isAdmin && (
                   <div className="mt-3 flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-900">
                     <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
-                    <span>
-                      <strong>Règle « 1 utilisateur = 1 protocole » :</strong> ce compte est limité à un seul protocole. Le titre et votre identité seront immédiatement verrouillés dès la création.
-                    </span>
+                    <span>{t("create.lock_notice")}</span>
                   </div>
                 )}
 
@@ -781,10 +879,10 @@ export default function App() {
                     >
                       <Lightbulb className="h-5 w-5 text-indigo-600" />
                       <div className="mt-2 text-sm font-semibold text-slate-900">
-                        Mode A : Nouveau thème / Idée
+                        {t("create.mode_a_title")}
                       </div>
                       <div className="mt-1 text-xs text-slate-600">
-                        Recherche bibliographique guidée puis rédaction section par section.
+                        {t("create.mode_a_desc")}
                       </div>
                     </button>
 
@@ -799,49 +897,66 @@ export default function App() {
                     >
                       <FileUp className="h-5 w-5 text-emerald-600" />
                       <div className="mt-2 text-sm font-semibold text-slate-900">
-                        Mode B : Analyser un brouillon
+                        {t("create.mode_b_title")}
                       </div>
                       <div className="mt-1 text-xs text-slate-600">
-                        Importez un document existant pour vérifier la conformité FMSB.
+                        {t("create.mode_b_desc")}
                       </div>
                     </button>
                   </div>
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-700">
-                      Titre provisoire ou thème du mémoire / thèse *
+                      {t("create.field_title")}
                     </label>
                     <input
                       type="text"
                       required
                       value={newName}
                       onChange={(e) => setNewName(e.target.value)}
-                      placeholder="Ex. Facteurs associés à l'hypertension artérielle..."
+                      placeholder={t("create.field_title_placeholder")}
                       className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
                     />
                   </div>
 
-                  <div>
-                    <label className="block text-xs font-semibold text-slate-700">
-                      Type d'étude pressenti
-                    </label>
-                    <input
-                      type="text"
-                      value={newStudyType}
-                      onChange={(e) => setNewStudyType(e.target.value)}
-                      className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-                    />
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700">
+                        {t("create.field_study_type")}
+                      </label>
+                      <input
+                        type="text"
+                        value={newStudyType}
+                        onChange={(e) => setNewStudyType(e.target.value)}
+                        className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700">
+                        {t("create.field_language")}
+                      </label>
+                      <select
+                        value={newLang}
+                        onChange={(e) =>
+                          setNewLang(e.target.value === "en" ? "en" : "fr")
+                        }
+                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
+                      >
+                        <option value="fr">Français (FR)</option>
+                        <option value="en">English (EN)</option>
+                      </select>
+                    </div>
                   </div>
 
                   <div>
                     <label className="block text-xs font-semibold text-slate-700">
-                      Description de l'idée de recherche / Contexte clinique
+                      {t("create.field_idea")}
                     </label>
                     <textarea
                       rows={3}
                       value={newIdea}
                       onChange={(e) => setNewIdea(e.target.value)}
-                      placeholder="Précisez la population, le lieu (ex. Yaoundé), l'exposition et le critère de jugement..."
+                      placeholder={t("create.field_idea_placeholder")}
                       className="mt-1 w-full rounded-lg border border-slate-300 p-3 text-sm focus:border-indigo-500 focus:outline-none"
                     />
                   </div>
@@ -851,62 +966,68 @@ export default function App() {
                     disabled={saving}
                     className="w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
                   >
-                    {saving ? "Création..." : "Créer le projet de protocole"}
+                    {saving ? t("create.submitting") : t("create.submit")}
                   </button>
                 </form>
               </div>
-            ) : activeModule === "module1" ? (
-              <Module1Assistant
-                project={activeProject}
-                canvas={canvas}
-                selectedSectionId={selectedSectionId}
-                onSelectSection={setSelectedSectionId}
-                onProjectUpdated={(updated) => {
-                  setActiveProject(updated);
-                  setProjects((prev) =>
-                    prev.map((p) => (p.project_id === updated.project_id ? updated : p))
-                  );
-                  refreshMe();
-                }}
-                onSaveSection={handleSaveSection}
-                onSaveCover={handleSaveCover}
-                onError={(msg) => setError(msg || null)}
-                saving={saving}
-                isAdmin={isAdmin}
-              />
-            ) : activeModule === "module2" ? (
-              <Module2Editor
-                project={activeProject}
-                canvas={canvas}
-                onProjectUpdated={(updated) => {
-                  setActiveProject(updated);
-                  setProjects((prev) =>
-                    prev.map((p) => (p.project_id === updated.project_id ? updated : p))
-                  );
-                  refreshMe();
-                }}
-                onSaveFormatting={handleSaveFormatting}
-                onError={(msg) => setError(msg || null)}
-                saving={saving}
-              />
-            ) : activeModule === "module3" ? (
-              <Module3DataEntry
-                project={activeProject}
-                onProjectUpdated={(updated) => {
-                  setActiveProject(updated);
-                  setProjects((prev) =>
-                    prev.map((p) => (p.project_id === updated.project_id ? updated : p))
-                  );
-                  refreshMe();
-                }}
-                onOpenModule2={() => setActiveModule("module2")}
-                onError={(msg) => setError(msg || null)}
-              />
             ) : (
-              <Module4Presentation
-                project={activeProject}
-                onError={(msg) => setError(msg || null)}
-              />
+              <>
+                <Module1Assistant
+                  project={activeProject}
+                  canvas={canvas}
+                  selectedSectionId={selectedSectionId}
+                  onSelectSection={setSelectedSectionId}
+                  onProjectUpdated={(updated) => {
+                    setActiveProject(updated);
+                    setProjects((prev) =>
+                      prev.map((p) => (p.project_id === updated.project_id ? updated : p))
+                    );
+                    refreshMe();
+                  }}
+                  onSaveSection={handleSaveSection}
+                  onSaveCover={handleSaveCover}
+                  onError={(msg) => setError(msg || null)}
+                  saving={saving}
+                  isAdmin={isAdmin}
+                  isVisible={activeModule === "module1"}
+                />
+                {activeModule === "module2" && (
+                  <Module2Editor
+                    project={activeProject}
+                    canvas={canvas}
+                    onProjectUpdated={(updated) => {
+                      setActiveProject(updated);
+                      setProjects((prev) =>
+                        prev.map((p) => (p.project_id === updated.project_id ? updated : p))
+                      );
+                      refreshMe();
+                    }}
+                    onSaveFormatting={handleSaveFormatting}
+                    onError={(msg) => setError(msg || null)}
+                    saving={saving}
+                  />
+                )}
+                {activeModule === "module3" && (
+                  <Module3DataEntry
+                    project={activeProject}
+                    onProjectUpdated={(updated) => {
+                      setActiveProject(updated);
+                      setProjects((prev) =>
+                        prev.map((p) => (p.project_id === updated.project_id ? updated : p))
+                      );
+                      refreshMe();
+                    }}
+                    onOpenModule2={() => setActiveModule("module2")}
+                    onError={(msg) => setError(msg || null)}
+                  />
+                )}
+                {activeModule === "module4" && (
+                  <Module4Presentation
+                    project={activeProject}
+                    onError={(msg) => setError(msg || null)}
+                  />
+                )}
+              </>
             )}
           </>
         )}
@@ -936,7 +1057,7 @@ export default function App() {
               />
             )}
             <Layers className="h-4 w-4" />
-            <span>M1 Rédac</span>
+            <span>{t("mod1.mobile")}</span>
           </button>
 
           <button
@@ -955,7 +1076,7 @@ export default function App() {
               />
             )}
             <PenSquare className="h-4 w-4" />
-            <span>M2 Word</span>
+            <span>{t("mod2.mobile")}</span>
           </button>
 
           <button
@@ -975,7 +1096,7 @@ export default function App() {
             )}
             <ClipboardCheck className="h-4 w-4" />
             <span>
-              M3 Saisie
+              {t("mod3.mobile")}
               {activeProject ? ` (${activeProject.patient_records?.length ?? 0})` : ""}
             </span>
           </button>
@@ -996,7 +1117,7 @@ export default function App() {
               />
             )}
             <Airplay className="h-4 w-4" />
-            <span>M4 Slides</span>
+            <span>{t("mod4.mobile")}</span>
           </button>
 
           {isAdmin && (

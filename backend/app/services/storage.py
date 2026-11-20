@@ -4,6 +4,7 @@ from typing import List, Optional
 
 from app.core.config import get_settings
 from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import get_doc_labels, get_localized_canvas, normalize_lang
 from app.schemas.protocol import (
     CoverMetadata,
     CreateProjectRequest,
@@ -17,10 +18,20 @@ from app.services.rich_formatter import markdown_to_clean_html
 
 def _build_special_section_markdown(project: ProtocolProject, section_id: str) -> str:
     """Build synchronized Markdown content for front/back-matter FMSB sections."""
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    labels = get_doc_labels(lang)
+    localized_canvas = get_localized_canvas(lang)
+
     if section_id == "toc":
-        lines = ["### TABLE DES MATIÈRES (STRUCTURE FMSB)", ""]
+        heading = "### TABLE OF CONTENTS (CAMES / FMSB STRUCTURE)" if lang == "en" else "### TABLE DES MATIÈRES (STRUCTURE FMSB)"
+        note = (
+            "*Note: Exact pagination is dynamically generated in Word (F9) on final export.*"
+            if lang == "en"
+            else "*Note : La pagination exacte est générée automatiquement dans Word (F9) lors de l'export final.*"
+        )
+        lines = [heading, ""]
         current_chap = None
-        for spec in FMSB_SECTIONS:
+        for spec in localized_canvas:
             if spec.id == "cover_page":
                 continue
             if spec.chapter_title != current_chap:
@@ -28,19 +39,23 @@ def _build_special_section_markdown(project: ProtocolProject, section_id: str) -
                 lines.append(f"#### {current_chap}")
             lines.append(f"- {spec.title}")
         lines.append("")
-        lines.append(
-            "*Note : La pagination exacte est générée automatiquement dans Word (F9) lors de l'export final.*"
-        )
+        lines.append(note)
         return "\n".join(lines)
 
     if section_id == "abbreviations":
+        heading = "### LIST OF ABBREVIATIONS, ACRONYMS & SYMBOLS" if lang == "en" else "### LISTE DES ABRÉVIATIONS, ACRONYMES & SIGLES"
         if project.abbreviations:
-            lines = ["### LISTE DES ABRÉVIATIONS, ACRONYMES & SIGLES", ""]
+            lines = [heading, ""]
             for ab in sorted(project.abbreviations, key=lambda x: x.acronym.lower()):
                 lines.append(f"- **{ab.acronym}** : {ab.full_form}")
             return "\n".join(lines)
         return (
-            "### LISTE DES ABRÉVIATIONS, ACRONYMES & SIGLES\n\n"
+            f"{heading}\n\n"
+            "- **FMSB** : Faculty of Medicine and Biomedical Sciences\n"
+            "- **UY1** : The University of Yaoundé I\n"
+            "- **WHO** : World Health Organization"
+            if lang == "en"
+            else f"{heading}\n\n"
             "- **FMSB** : Faculté de Médecine et des Sciences Biomédicales\n"
             "- **UY1** : Université de Yaoundé I\n"
             "- **OMS** : Organisation Mondiale de la Santé"
@@ -53,19 +68,19 @@ def _build_special_section_markdown(project: ProtocolProject, section_id: str) -
         entries: List[str] = []
         idx = 1
         seen_keys: set[str] = set()
-        for spec in FMSB_SECTIONS:
+        for spec in localized_canvas:
             if spec.id in ("cover_page", "toc", "abbreviations", "list_of_tables", "list_of_figures", "preliminaires"):
                 continue
             for tbl in get_effective_section_tables(project, spec.id):
-                t_clean = clean_caption_title(tbl.title, "Tableau") or tbl.title
+                t_clean = clean_caption_title(tbl.title, labels["table_seq"]) or tbl.title
                 k = f"{spec.id}::{t_clean.lower()}"
                 if k in seen_keys:
                     continue
                 seen_keys.add(k)
-                entries.append(f"- **Tableau {idx}** : {t_clean} *({spec.title})*")
+                entries.append(f"- **{labels['table_seq']} {idx}** : {t_clean} *({spec.title})*")
                 idx += 1
         if not entries:
-            return "Aucun tableau personnalisé ou structuré n'est encore enregistré."
+            return labels["no_tables"]
         return "\n".join(entries)
 
     if section_id == "list_of_figures":
@@ -74,37 +89,39 @@ def _build_special_section_markdown(project: ProtocolProject, section_id: str) -
         entries: List[str] = []
         idx = 1
         seen_keys: set[str] = set()
-        for spec in FMSB_SECTIONS:
+        for spec in localized_canvas:
             if spec.id in ("cover_page", "toc", "abbreviations", "list_of_tables", "list_of_figures", "preliminaires"):
                 continue
             for img in project.images:
                 if img.approved and img.target_section_id == spec.id:
-                    t_clean = clean_caption_title(img.title, "Figure") or img.title
+                    t_clean = clean_caption_title(img.title, labels["figure_seq"]) or img.title
                     k = f"{spec.id}::{t_clean.lower()}"
                     if k in seen_keys:
                         continue
                     seen_keys.add(k)
-                    entries.append(f"- **Figure {idx}** : {t_clean} *({spec.title})*")
+                    entries.append(f"- **{labels['figure_seq']} {idx}** : {t_clean} *({spec.title})*")
                     idx += 1
             sec = project.sections.get(spec.id)
             if sec and getattr(sec, "custom_diagrams", None):
                 for dg in sec.custom_diagrams:
                     if not dg.nodes:
                         continue
-                    t_clean = clean_caption_title(dg.title, "Figure") or dg.title
+                    t_clean = clean_caption_title(dg.title, labels["figure_seq"]) or dg.title
                     k = f"{spec.id}::{t_clean.lower()}"
                     if k in seen_keys:
                         continue
                     seen_keys.add(k)
-                    entries.append(f"- **Figure {idx}** : {t_clean} *({spec.title})*")
+                    entries.append(f"- **{labels['figure_seq']} {idx}** : {t_clean} *({spec.title})*")
                     idx += 1
         if not entries:
-            return "Aucune figure ou schéma vectoriel n'est encore inclus."
+            return labels["no_figures"]
         return "\n".join(entries)
 
     if section_id == "references":
+        heading = "### REFERENCES (VANCOUVER STYLE)" if lang == "en" else "### RÉFÉRENCES BIBLIOGRAPHIQUES (VANCOUVER)"
+        empty_msg = "No references recorded yet." if lang == "en" else "Aucune référence enregistrée pour le moment."
         if project.references:
-            lines = ["### RÉFÉRENCES BIBLIOGRAPHIQUES (VANCOUVER)", ""]
+            lines = [heading, ""]
             for i, ref in enumerate(project.references, start=1):
                 cit = (
                     ref.vancouver_citation
@@ -112,11 +129,12 @@ def _build_special_section_markdown(project: ProtocolProject, section_id: str) -
                 )
                 lines.append(f"{i}. {cit}")
             return "\n".join(lines)
-        return "### RÉFÉRENCES BIBLIOGRAPHIQUES (VANCOUVER)\n\nAucune référence enregistrée pour le moment."
+        return f"{heading}\n\n{empty_msg}"
 
     if section_id == "annexes":
         pack = build_annexes_pack(project)
-        lines = ["### ANNEXES DU PROTOCOLE FMSB", ""]
+        heading = "### PROTOCOL APPENDICES" if lang == "en" else "### ANNEXES DU PROTOCOLE FMSB"
+        lines = [heading, ""]
         for ann in pack:
             lines.append(f"#### {ann['title']}")
             for p_txt in ann.get("paragraphs", []):
@@ -305,6 +323,7 @@ class ProjectStorage:
                 locked_author_name=locked_author_name,
                 locked_matricule=locked_matricule,
                 name=payload.name,
+                language=normalize_lang(payload.language),
                 entry_mode=payload.entry_mode,
                 research_idea=payload.research_idea,
                 study_type=payload.study_type,

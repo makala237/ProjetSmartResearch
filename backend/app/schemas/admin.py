@@ -99,6 +99,7 @@ class AdminAdjustEntitlementRequest(BaseModel):
 
 class AdminRechargeAIRequest(BaseModel):
     add_credits: int
+    daily_38_limit: Optional[int] = Field(None, ge=0, le=5000)
     notes: str = ""
 
 

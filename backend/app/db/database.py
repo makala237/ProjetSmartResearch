@@ -2,7 +2,7 @@ import logging
 import threading
 from typing import Any, Dict, Generator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
@@ -154,6 +154,19 @@ def _migrate_legacy_json_to_db(db: Session, default_owner_id: str) -> None:
                 )
 
 
+def _ensure_schema_columns(eng) -> None:
+    """Idempotently add newly introduced columns on existing SQLite / PostgreSQL tables."""
+    try:
+        insp = inspect(eng)
+        if "user_ai_quotas" in insp.get_table_names():
+            cols = {c["name"] for c in insp.get_columns("user_ai_quotas")}
+            if "daily_38_limit" not in cols:
+                with eng.begin() as conn:
+                    conn.execute(text("ALTER TABLE user_ai_quotas ADD COLUMN daily_38_limit INTEGER"))
+    except Exception as exc:
+        logger.warning("Schema column check failed: %s", exc)
+
+
 def init_db(force: bool = False) -> None:
     """Create schema tables if missing, bootstrap admin/plans, and migrate legacy JSONs once."""
     global _initialized
@@ -165,6 +178,7 @@ def init_db(force: bool = False) -> None:
             return
 
         Base.metadata.create_all(bind=engine)
+        _ensure_schema_columns(engine)
         db = SessionLocal()
         try:
             admin = db.query(UserORM).filter(UserORM.role == "admin").first()

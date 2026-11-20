@@ -23,6 +23,7 @@ from app.db.models import (
     utcnow,
 )
 from app.schemas.auth import AIQuotaOut, ModuleEntitlementOut, UserMeOut
+from app.services.licensing_service import get_student_daily_38_usage
 
 MODULE_KEYS = ("module1", "module2", "module3", "module4")
 
@@ -255,18 +256,29 @@ def build_user_me_out(db: Session, user: UserORM) -> UserMeOut:
             days_remaining=days_rem,
         )
 
+    daily_38 = get_student_daily_38_usage(db, user)
     quota_row = db.get(UserAIQuotaORM, user.id)
     if quota_row:
         ai_quota = AIQuotaOut(
             credits_total=quota_row.credits_total,
             credits_used=quota_row.credits_used,
             credits_remaining=max(0, quota_row.credits_total - quota_row.credits_used),
+            daily_38_limit=daily_38["daily_limit"],
+            daily_38_used=daily_38["used_today"],
+            daily_38_remaining=daily_38["remaining_today"],
+            active_reasoning_model=daily_38["active_reasoning_model"],
+            using_35_fallback=daily_38["fallback_active"],
         )
     else:
         ai_quota = AIQuotaOut(
             credits_total=100000 if user.role == "admin" else 0,
             credits_used=0,
             credits_remaining=100000 if user.role == "admin" else 0,
+            daily_38_limit=daily_38["daily_limit"],
+            daily_38_used=daily_38["used_today"],
+            daily_38_remaining=daily_38["remaining_today"],
+            active_reasoning_model=daily_38["active_reasoning_model"],
+            using_35_fallback=daily_38["fallback_active"],
         )
 
     first_proj = (

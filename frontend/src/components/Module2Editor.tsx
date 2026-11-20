@@ -14,6 +14,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { api, authHeaders, withAuthToken } from "../api/client";
+import { useLanguage } from "../i18n/LanguageContext";
 import type {
   CanvasSectionSpec,
   FormattingRules,
@@ -43,8 +44,10 @@ export function Module2Editor({
   onError,
   saving,
 }: Module2Props) {
+  const { lang, t } = useLanguage();
   const [fmt, setFmt] = useState<FormattingRules>(project.formatting);
   const [viewMode, setViewMode] = useState<"preview" | "tables">("preview");
+  const [exportingDocx, setExportingDocx] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [generatingToc, setGeneratingToc] = useState(false);
   const [syncingStructured, setSyncingStructured] = useState(false);
@@ -69,10 +72,26 @@ export function Module2Editor({
   const [savingTimeline, setSavingTimeline] = useState(false);
 
   const syncedTransportProjectRef = useRef<string | null>(null);
+  const fmtDirtyRef = useRef(false);
+  const prevFmtProjectIdRef = useRef(project.project_id);
+
+  const accentColor = fmt.border_color || "#6C2826";
+  const hfRuleColor = (fmt.header_footer_rule_color || "#CBD5E1").trim();
+  const hfRuleWidthPt = fmt.header_footer_rule_width_pt ?? 0.5;
+  const isFormattingDirty =
+    JSON.stringify(fmt) !== JSON.stringify(project.formatting);
+  fmtDirtyRef.current = isFormattingDirty;
 
   useEffect(() => {
-    setFmt(project.formatting);
-  }, [project.formatting]);
+    if (
+      prevFmtProjectIdRef.current !== project.project_id ||
+      !fmtDirtyRef.current
+    ) {
+      prevFmtProjectIdRef.current = project.project_id;
+      setFmt(project.formatting);
+      fmtDirtyRef.current = false;
+    }
+  }, [project.project_id, project.formatting]);
 
   useEffect(() => {
     setTimelineDraft(project.timeline_grid);
@@ -125,12 +144,62 @@ export function Module2Editor({
     }
   };
 
+  const persistPendingFormattingBeforeExport = async () => {
+    if (!isFormattingDirty) return;
+    try {
+      await onSaveFormatting(fmt);
+      fmtDirtyRef.current = false;
+    } catch {
+      // Non-blocking fallback when Module 2 is read-only; formatting is still sent in export body
+    }
+  };
+
+  const handleApplyFormatting = async () => {
+    await onSaveFormatting(fmt);
+    fmtDirtyRef.current = false;
+  };
+
+  const handleDownloadDocx = async () => {
+    setExportingDocx(true);
+    try {
+      await persistPendingFormattingBeforeExport();
+      const res = await fetch(api.exportDocxUrl(project.project_id), {
+        method: "POST",
+        headers: {
+          ...authHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ formatting: fmt }),
+      });
+      if (!res.ok) {
+        const errTxt = await res.text();
+        throw new Error(errTxt || `Erreur HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Protocole_${project.project_id}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: unknown) {
+      onError(e instanceof Error ? e.message : "Échec de l'export DOCX");
+    } finally {
+      setExportingDocx(false);
+    }
+  };
+
   const handleDownloadPdf = async () => {
     setExportingPdf(true);
     try {
+      await persistPendingFormattingBeforeExport();
       const res = await fetch(api.exportPdfUrl(project.project_id), {
         method: "POST",
-        headers: authHeaders(),
+        headers: {
+          ...authHeaders(),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ formatting: fmt }),
       });
       if (!res.ok) {
         const errTxt = await res.text();
@@ -230,18 +299,19 @@ export function Module2Editor({
           <div className="mb-3 flex items-center gap-2">
             <Sliders className="h-4 w-4 text-indigo-600" />
             <h2 className="text-sm font-bold uppercase tracking-wide text-slate-800">
-              Règles déterministes de mise en page
+              {t("m2.formatting_tab")} · {t("m2.title")}
             </h2>
           </div>
           <p className="mb-4 text-xs text-slate-500">
-            Ces paramètres pilotent directement l'algorithme de compilation Word/PDF.
-            Le LLM ne modifie jamais le formatage directement.
+            {lang === "en"
+              ? "These deterministic parameters directly drive Word/PDF compilation. The AI never alters layout rules."
+              : "Ces paramètres pilotent directement l'algorithme de compilation Word/PDF. Le LLM ne modifie jamais le formatage directement."}
           </p>
 
           <div className="space-y-3 text-sm">
             <div>
               <label className="block text-xs font-medium text-slate-600">
-                Police principale
+                {lang === "en" ? "Primary font" : "Police principale"}
               </label>
               <select
                 value={fmt.font_family}
@@ -258,7 +328,7 @@ export function Module2Editor({
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-slate-600">
-                  Taille corps (pt)
+                  {lang === "en" ? "Body size (pt)" : "Taille corps (pt)"}
                 </label>
                 <input
                   type="number"
@@ -273,7 +343,7 @@ export function Module2Editor({
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-600">
-                  Interligne
+                  {lang === "en" ? "Line spacing" : "Interligne"}
                 </label>
                 <select
                   value={fmt.line_spacing}
@@ -292,7 +362,7 @@ export function Module2Editor({
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-medium text-slate-600">
-                  Alignement
+                  {lang === "en" ? "Alignment" : "Alignement"}
                 </label>
                 <select
                   value={fmt.text_align}
@@ -304,13 +374,13 @@ export function Module2Editor({
                   }
                   className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
                 >
-                  <option value="justify">Justifié</option>
-                  <option value="left">Aligné à gauche</option>
+                  <option value="justify">{lang === "en" ? "Justified" : "Justifié"}</option>
+                  <option value="left">{lang === "en" ? "Align left" : "Aligné à gauche"}</option>
                 </select>
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-600">
-                  Marges A4 (cm)
+                  {lang === "en" ? "A4 margins (cm)" : "Marges A4 (cm)"}
                 </label>
                 <input
                   type="number"
@@ -334,7 +404,7 @@ export function Module2Editor({
                     checked={fmt.auto_toc}
                     onChange={(e) => setFmt({ ...fmt, auto_toc: e.target.checked })}
                   />
-                  Table des matières automatique
+                  {lang === "en" ? "Automatic Table of Contents" : "Table des matières automatique"}
                 </label>
                 <button
                   type="button"
@@ -344,14 +414,20 @@ export function Module2Editor({
                 >
                   <RefreshCw className={`h-3 w-3 ${generatingToc ? "animate-spin" : ""}`} />
                   {generatingToc
-                    ? "Actualisation..."
+                    ? lang === "en"
+                      ? "Updating..."
+                      : "Actualisation..."
+                    : lang === "en"
+                    ? "Refresh TOC & Lists"
                     : "Actualiser TDM & Listes FMSB"}
                 </button>
               </div>
 
               {fmt.auto_toc && (
                 <div className="ml-5 flex flex-wrap items-center gap-3 rounded bg-slate-50 p-1.5 text-[11px] text-slate-700 border border-slate-200">
-                  <span className="font-semibold text-slate-800">Format TDM :</span>
+                  <span className="font-semibold text-slate-800">
+                    {lang === "en" ? "TOC Depth:" : "Format TDM :"}
+                  </span>
                   <label className="inline-flex items-center gap-1 cursor-pointer">
                     <input
                       type="radio"
@@ -359,7 +435,11 @@ export function Module2Editor({
                       checked={(fmt.toc_depth ?? 2) === 2}
                       onChange={() => setFmt({ ...fmt, toc_depth: 2 })}
                     />
-                    <span className="font-medium text-[#6C2826]">Sommaire CAMES (1 page — Niveaux 1 & 2)</span>
+                    <span className="font-medium text-[#6C2826]">
+                      {lang === "en"
+                        ? "Executive CAMES (1 page — Levels 1 & 2)"
+                        : "Sommaire CAMES (1 page — Niveaux 1 & 2)"}
+                    </span>
                   </label>
                   <label className="inline-flex items-center gap-1 cursor-pointer">
                     <input
@@ -368,7 +448,7 @@ export function Module2Editor({
                       checked={(fmt.toc_depth ?? 2) === 3}
                       onChange={() => setFmt({ ...fmt, toc_depth: 3 })}
                     />
-                    <span>Analytique (Niveau 3)</span>
+                    <span>{lang === "en" ? "Detailed (Level 3)" : "Analytique (Niveau 3)"}</span>
                   </label>
                 </div>
               )}
@@ -383,7 +463,7 @@ export function Module2Editor({
                     })
                   }
                 />
-                Liste des abréviations & sigles
+                {lang === "en" ? "Abbreviations & acronyms list" : "Liste des abréviations & sigles"}
               </label>
               <label className="flex items-center gap-2">
                 <input
@@ -393,7 +473,7 @@ export function Module2Editor({
                     setFmt({ ...fmt, auto_list_of_tables: e.target.checked })
                   }
                 />
-                Liste des tableaux automatique
+                {lang === "en" ? "Automatic List of Tables" : "Liste des tableaux automatique"}
               </label>
               <label className="flex items-center gap-2">
                 <input
@@ -403,19 +483,23 @@ export function Module2Editor({
                     setFmt({ ...fmt, auto_list_of_figures: e.target.checked })
                   }
                 />
-                Liste des figures automatique
+                {lang === "en" ? "Automatic List of Figures" : "Liste des figures automatique"}
               </label>
 
               <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50/90 p-2.5 text-[11px] text-slate-700">
                 <div className="flex flex-wrap items-center justify-between gap-1 font-semibold text-[#6C2826]">
-                  <span>Contrôle de Pagination A4 &amp; Figures (≥ 12 pt)</span>
+                  <span>
+                    {lang === "en"
+                      ? "A4 Pagination & Figure Control (>= 12 pt)"
+                      : "Contrôle de Pagination A4 & Figures (≥ 12 pt)"}
+                  </span>
                   <span className="rounded bg-[#6C2826]/10 px-1.5 py-0.5 text-[10px]">
-                    A4 Prêt (21 × 29,7 cm)
+                    {lang === "en" ? "A4 Ready (21 × 29.7 cm)" : "A4 Prêt (21 × 29,7 cm)"}
                   </span>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10.5px] text-slate-600">
                   <span>
-                    Zone imprimable A4 :{" "}
+                    {lang === "en" ? "Printable A4 area:" : "Zone imprimable A4 :"}{" "}
                     <strong>
                       {paginationSummary?.usable_width_cm ?? (21.0 - 2 * (fmt.margin_cm || 2.5)).toFixed(1)} ×{" "}
                       {paginationSummary?.usable_height_cm ?? (29.7 - 2 * (fmt.margin_cm || 2.5)).toFixed(1)} cm
@@ -423,17 +507,17 @@ export function Module2Editor({
                   </span>
                   {paginationSummary && (
                     <span>
-                      Pages estimées :{" "}
+                      {lang === "en" ? "Estimated pages:" : "Pages estimées :"}{" "}
                       <strong>
-                        {paginationSummary.total_roman_pages} lim. + {paginationSummary.total_arabic_pages} corps
+                        {paginationSummary.total_roman_pages} rom. + {paginationSummary.total_arabic_pages} body
                       </strong>{" "}
-                      · Figures ≥ 12 pt : <strong>{paginationSummary.figures_checked}</strong> · Numérotation : <strong>Bas de page uniquement</strong>
+                      · Figures ≥ 12 pt : <strong>{paginationSummary.figures_checked}</strong>
                     </span>
                   )}
                 </div>
                 {paginationSummary?.decision_notes && (
                   <p className="mt-1 text-[10px] italic text-slate-500">
-                    {paginationSummary.decision_notes}
+                    {paginationSummary.decision_notes.replace(/gemini[^,.;)]*/gi, "Smart Research")}
                   </p>
                 )}
               </div>
@@ -441,12 +525,12 @@ export function Module2Editor({
 
             <div className="space-y-2 border-t border-slate-200 pt-3">
               <div className="text-xs font-semibold text-slate-700">
-                Style des cadres & bordures du template
+                {lang === "en" ? "Template Frames & Border Styles" : "Style des cadres & bordures du template"}
               </div>
               <div className="grid grid-cols-2 gap-2.5">
                 <div>
                   <label className="block text-[11px] font-medium text-slate-600">
-                    Encadrés chapitres
+                    {lang === "en" ? "Chapter boxes" : "Encadrés chapitres"}
                   </label>
                   <select
                     value={fmt.chapter_box_style ?? "rounded"}
@@ -465,14 +549,14 @@ export function Module2Editor({
                     }}
                     className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
                   >
-                    <option value="rounded">Coins arrondis (PROT K1)</option>
-                    <option value="square">Coins carrés</option>
-                    <option value="minimal">Bordure fine minimale</option>
+                    <option value="rounded">{lang === "en" ? "Rounded corners" : "Coins arrondis (PROT K1)"}</option>
+                    <option value="square">{lang === "en" ? "Square corners" : "Coins carrés"}</option>
+                    <option value="minimal">{lang === "en" ? "Minimal thin border" : "Bordure fine minimale"}</option>
                   </select>
                 </div>
                 <div>
                   <label className="block text-[11px] font-medium text-slate-600">
-                    Bordure page de garde
+                    {lang === "en" ? "Cover border" : "Bordure page de garde"}
                   </label>
                   <select
                     value={fmt.cover_border_style ?? "double"}
@@ -484,29 +568,35 @@ export function Module2Editor({
                     }
                     className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
                   >
-                    <option value="double">Double filet FMSB</option>
-                    <option value="single">Filet simple</option>
-                    <option value="none">Sans bordure</option>
+                    <option value="double">{lang === "en" ? "Double line (FMSB)" : "Double filet FMSB"}</option>
+                    <option value="single">{lang === "en" ? "Single line" : "Filet simple"}</option>
+                    <option value="none">{lang === "en" ? "No border" : "Sans bordure"}</option>
                   </select>
                 </div>
               </div>
               <div className="flex items-center justify-between gap-2">
                 <label className="text-[11px] font-medium text-slate-600">
-                  Couleur des bordures
+                  {lang === "en" ? "Border color" : "Couleur des bordures"}
                 </label>
-                <input
-                  type="color"
-                  value={fmt.border_color ?? "#6C2826"}
-                  onChange={(e) =>
-                    setFmt({ ...fmt, border_color: e.target.value })
-                  }
-                  className="h-7 w-14 cursor-pointer rounded border border-slate-300"
-                />
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-[11px] font-semibold text-slate-700">
+                    {accentColor.toUpperCase()}
+                  </span>
+                  <input
+                    type="color"
+                    aria-label={lang === "en" ? "Border color" : "Couleur des bordures"}
+                    value={accentColor}
+                    onChange={(e) =>
+                      setFmt({ ...fmt, border_color: e.target.value })
+                    }
+                    className="h-7 w-14 cursor-pointer rounded border border-slate-300"
+                  />
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2.5 pt-1">
                 <div>
                   <label className="flex items-center justify-between text-[11px] font-medium text-slate-600">
-                    <span>Épaisseur cadres</span>
+                    <span>{lang === "en" ? "Border width" : "Épaisseur cadres"}</span>
                     <span className="font-semibold text-slate-800">
                       {(fmt.box_border_width_pt ?? 2.5).toFixed(1)} pt
                     </span>
@@ -528,7 +618,7 @@ export function Module2Editor({
                 </div>
                 <div>
                   <label className="flex items-center justify-between text-[11px] font-medium text-slate-600">
-                    <span>Arrondi angles</span>
+                    <span>{lang === "en" ? "Corner radius" : "Arrondi angles"}</span>
                     <span className="font-semibold text-slate-800">
                       {fmt.box_corner_radius_pct ?? 18} %
                     </span>
@@ -556,15 +646,102 @@ export function Module2Editor({
                   />
                 </div>
               </div>
+
+              {/* Header & Footer Separator Line Customization (Pages 2+) */}
+              <div className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-slate-50/70 p-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-semibold text-slate-700">
+                    {lang === "en"
+                      ? "Header & footer separators (pages 2+)"
+                      : "Séparateurs en-tête & pied de page (p. 2+)"}
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="hf-rule-match-border-btn"
+                    onClick={() =>
+                      setFmt({ ...fmt, header_footer_rule_color: accentColor })
+                    }
+                    className="rounded border border-slate-300 bg-white px-2 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100"
+                    title={
+                      lang === "en"
+                        ? "Match document border color"
+                        : "Aligner sur la couleur des bordures"
+                    }
+                  >
+                    {lang === "en" ? "Match borders" : "Idem bordures"}
+                  </button>
+                </div>
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-[11px] font-medium text-slate-600">
+                    {lang === "en" ? "Separator color" : "Couleur des filets"}
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[11px] font-semibold text-slate-700">
+                      {hfRuleColor.toUpperCase()}
+                    </span>
+                    <input
+                      type="color"
+                      data-testid="hf-rule-color-input"
+                      aria-label={
+                        lang === "en"
+                          ? "Header and footer separator color"
+                          : "Couleur des séparateurs en-tête et pied de page"
+                      }
+                      value={hfRuleColor}
+                      onChange={(e) =>
+                        setFmt({ ...fmt, header_footer_rule_color: e.target.value })
+                      }
+                      className="h-7 w-14 cursor-pointer rounded border border-slate-300"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="flex items-center justify-between text-[11px] font-medium text-slate-600">
+                    <span>
+                      {lang === "en" ? "Separator thickness" : "Épaisseur des filets"}
+                    </span>
+                    <span className="font-semibold text-slate-800">
+                      {hfRuleWidthPt.toFixed(2).replace(/\.00$/, ".0")} pt
+                    </span>
+                  </label>
+                  <input
+                    type="range"
+                    data-testid="hf-rule-width-input"
+                    aria-label={
+                      lang === "en"
+                        ? "Header and footer separator thickness"
+                        : "Épaisseur des séparateurs en-tête et pied de page"
+                    }
+                    min={0.5}
+                    max={4}
+                    step={0.25}
+                    value={hfRuleWidthPt}
+                    onChange={(e) =>
+                      setFmt({
+                        ...fmt,
+                        header_footer_rule_width_pt: Number(e.target.value),
+                      })
+                    }
+                    className="mt-1 w-full accent-[#6C2826]"
+                  />
+                </div>
+              </div>
             </div>
 
             <button
               type="button"
               disabled={saving}
-              onClick={() => onSaveFormatting(fmt)}
-              className="mt-3 w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+              onClick={handleApplyFormatting}
+              className="mt-3 flex w-full items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
             >
-              Appliquer les règles de mise en page
+              <span>
+                {lang === "en" ? "Apply Formatting Rules" : "Appliquer les règles de mise en page"}
+              </span>
+              {isFormattingDirty && (
+                <span className="rounded-full bg-amber-400 px-2 py-0.5 text-[10px] font-bold text-slate-950">
+                  {lang === "en" ? "Modified" : "Modifié"}
+                </span>
+              )}
             </button>
           </div>
         </div>
@@ -573,10 +750,12 @@ export function Module2Editor({
         <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-4">
           <div className="flex items-center gap-2 font-bold text-xs uppercase text-indigo-900 mb-2">
             <TableProperties className="h-4 w-4" />
-            Tableaux & Annexes officiels
+            {t("m2.structured_tab")}
           </div>
           <p className="text-xs text-indigo-950/80 mb-3">
-            Variables, Fiche de collecte, Synthèse littérature, Gantt, Budget et lettres administratives.
+            {lang === "en"
+              ? "Study variables, CRF collection form, prior studies synthesis, Gantt timeline, budget, and administrative letters."
+              : "Variables, Fiche de collecte, Synthèse littérature, Gantt, Budget et lettres administratives."}
           </p>
           <button
             type="button"
@@ -584,7 +763,11 @@ export function Module2Editor({
             className="w-full rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-700"
           >
             {viewMode === "preview"
-              ? "Éditer les Tableaux & Annexes FMSB"
+              ? lang === "en"
+                ? "Edit Tables & Appendices"
+                : "Éditer les Tableaux & Annexes FMSB"
+              : lang === "en"
+              ? "Back to Document Preview"
               : "Retour à l'Aperçu du document"}
           </button>
         </div>
@@ -594,26 +777,35 @@ export function Module2Editor({
           <div className="flex items-center gap-2">
             <Feather className="h-4 w-4 text-amber-700" />
             <h3 className="text-sm font-bold text-slate-900">
-              Humanisation Académique &amp; Anti-Détection IA
+              {t("m2.audit_tab")}
             </h3>
           </div>
           <p className="mt-1 text-xs text-slate-600">
-            Réécriture en plume clinique FMSB authentique avant compilation Word/PDF,
-            avec conservation stricte des données et empreinte auteur réelle.
+            {lang === "en"
+              ? "Natural academic prose polishing prior to Word/PDF compilation, preserving 100% of citations and author metadata."
+              : "Réécriture en plume clinique FMSB authentique avant compilation Word/PDF, avec conservation stricte des données et empreinte auteur réelle."}
           </p>
           <ul className="mt-2.5 space-y-1 text-[11px] text-slate-700">
             <li className="flex items-center gap-1.5">
               <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
-              <span>Réécriture naturelle FMSB (Burstiness &amp; Perplexité)</span>
-            </li>
-            <li className="flex items-center gap-1.5">
-              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
-              <span>Conservation 100 % des citations Vancouver [n] et chiffres</span>
+              <span>
+                {lang === "en"
+                  ? "Natural clinical rhythm & phrasing"
+                  : "Réécriture naturelle FMSB (Burstiness & Perplexité)"}
+              </span>
             </li>
             <li className="flex items-center gap-1.5">
               <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
               <span>
-                Signature .docx/.pdf au nom de :{" "}
+                {lang === "en"
+                  ? "100% preservation of Vancouver citations [n] and numeric data"
+                  : "Conservation 100 % des citations Vancouver [n] et chiffres"}
+              </span>
+            </li>
+            <li className="flex items-center gap-1.5">
+              <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+              <span>
+                {lang === "en" ? "Signed .docx/.pdf author:" : "Signature .docx/.pdf au nom de :"}{" "}
                 <strong>{project.cover.author_name || "Impétrant FMSB"}</strong>
               </span>
             </li>
@@ -626,35 +818,40 @@ export function Module2Editor({
           >
             <Feather className={`h-4 w-4 ${humanizingAll ? "animate-pulse" : ""}`} />
             {humanizingAll
-              ? "Humanisation du protocole en cours..."
-              : "Humaniser tout le protocole avant export Word/PDF"}
+              ? lang === "en"
+                ? "Humanizing protocol..."
+                : "Humanisation du protocole en cours..."
+              : t("m2.humanize_all")}
           </button>
 
           {humanizeReport && (
             <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50/90 p-3 text-xs text-emerald-950">
               <div className="flex flex-wrap items-center justify-between gap-1 font-bold">
                 <span>
-                  {humanizeReport.sections_humanized} section(s) humanisée(s)
+                  {humanizeReport.sections_humanized}{" "}
+                  {lang === "en" ? "section(s) humanized" : "section(s) humanisée(s)"}
                 </span>
                 <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[11px] text-white">
-                  Style humain : {humanizeReport.average_human_score} %
+                  {lang === "en" ? "Natural style:" : "Style humain :"} {humanizeReport.average_human_score} %
                 </span>
               </div>
               <div className="mt-1.5 space-y-0.5 text-[11px] text-emerald-900">
                 <div>
-                  Tournures IA purgées :{" "}
-                  <strong>{humanizeReport.total_cliches_removed}</strong> · Score
-                  moyen : {humanizeReport.average_before_score} % →{" "}
+                  {lang === "en" ? "AI clichés removed:" : "Tournures IA purgées :"}{" "}
+                  <strong>{humanizeReport.total_cliches_removed}</strong> ·{" "}
+                  {humanizeReport.average_before_score} % →{" "}
                   <strong>{humanizeReport.average_human_score} %</strong>
                 </div>
                 <div>
-                  Citations Vancouver [n] préservées :{" "}
+                  {lang === "en" ? "Citations [n] preserved:" : "Citations Vancouver [n] préservées :"}{" "}
                   <strong>
-                    {humanizeReport.citations_preserved ? "100 % conformes" : "Vérification requise"}
+                    {humanizeReport.citations_preserved
+                      ? lang === "en" ? "100% intact" : "100 % conformes"
+                      : lang === "en" ? "Check required" : "Vérification requise"}
                   </strong>
                 </div>
                 <div>
-                  Auteur Word/PDF signé :{" "}
+                  {lang === "en" ? "Signed author:" : "Auteur Word/PDF signé :"}{" "}
                   <strong>{humanizeReport.author_signature}</strong>
                 </div>
               </div>
@@ -666,46 +863,27 @@ export function Module2Editor({
         <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-5">
           <h3 className="flex items-center gap-2 text-sm font-bold text-emerald-950">
             <FileCheck2 className="h-4 w-4 text-emerald-700" />
-            Export du protocole
+            {lang === "en" ? "Protocol Export" : "Export du protocole"}
           </h3>
           <p className="mt-1 text-xs text-emerald-900/80">
-            Généré depuis le gabarit maître officiel{" "}
-            <code>2025_Canevas_protocole.docx</code> (page de garde bordeaux,
-            logo UY1/FMSB, marges {fmt.margin_cm} cm).
+            {lang === "en"
+              ? `Compiled from the official master template (${fmt.margin_cm} cm margins).`
+              : `Généré depuis le gabarit maître officiel 2025_Canevas_protocole.docx (marges ${fmt.margin_cm} cm).`}
           </p>
           <div className="mt-4 space-y-2">
-            <a
-              href={api.exportDocxUrl(project.project_id)}
-              onClick={(e) => {
-                e.preventDefault();
-                fetch(api.exportDocxUrl(project.project_id), {
-                  method: "POST",
-                  headers: authHeaders(),
-                })
-                  .then(async (r) => {
-                    if (!r.ok) {
-                      const errTxt = await r.text();
-                      throw new Error(errTxt || `Erreur HTTP ${r.status}`);
-                    }
-                    return r.blob();
-                  })
-                  .then((blob) => {
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    a.download = `Protocole_${project.project_id}.docx`;
-                    a.click();
-                    URL.revokeObjectURL(url);
-                  })
-                  .catch((err) => {
-                    onError(err instanceof Error ? err.message : "Échec de l'export DOCX");
-                  });
-              }}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800"
+            <button
+              type="button"
+              disabled={exportingDocx}
+              onClick={handleDownloadDocx}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-emerald-800 disabled:opacity-60"
             >
               <Download className="h-4 w-4" />
-              Télécharger Word (.docx)
-            </a>
+              {exportingDocx
+                ? lang === "en"
+                  ? "Generating Word (.docx)..."
+                  : "Génération Word (.docx)..."
+                : t("m2.export_docx")}
+            </button>
             <button
               type="button"
               disabled={exportingPdf}
@@ -714,8 +892,10 @@ export function Module2Editor({
             >
               <FileText className="h-4 w-4" />
               {exportingPdf
-                ? "Compilation PDF fidèle en cours..."
-                : "Télécharger PDF prêt à imprimer (.pdf)"}
+                ? lang === "en"
+                  ? "Compiling PDF..."
+                  : "Compilation PDF fidèle en cours..."
+                : t("m2.export_pdf")}
             </button>
           </div>
         </div>
@@ -724,11 +904,12 @@ export function Module2Editor({
         <div className="rounded-xl border border-amber-200 bg-amber-50/50 p-5">
           <h3 className="flex items-center gap-2 text-sm font-bold text-amber-950">
             <ShieldCheck className="h-4 w-4 text-amber-700" />
-            Contrôle Final &amp; Synchronisation FMSB
+            {lang === "en" ? "Final QC & Sync" : "Contrôle Final & Synchronisation FMSB"}
           </h3>
           <p className="mt-1 text-xs text-amber-900/80">
-            Synchronisez les sigles, variables, études et budget depuis les sections
-            rédigées puis vérifiez la cohérence inter-sections avant impression.
+            {lang === "en"
+              ? "Synchronize abbreviations, variables, prior studies, and budget from drafted sections, then run cross-section audit."
+              : "Synchronisez les sigles, variables, études et budget depuis les sections rédigées puis vérifiez la cohérence inter-sections avant impression."}
           </p>
           <div className="mt-3 space-y-2">
             <button
@@ -739,7 +920,11 @@ export function Module2Editor({
             >
               <RefreshCw className={`h-3.5 w-3.5 ${syncingStructured ? "animate-spin" : ""}`} />
               {syncingStructured
-                ? "Synchronisation en cours..."
+                ? lang === "en"
+                  ? "Syncing..."
+                  : "Synchronisation en cours..."
+                : lang === "en"
+                ? "Sync Text -> Structured Tables"
                 : "Synchroniser Texte → Tableaux structurés"}
             </button>
             <button
@@ -749,7 +934,13 @@ export function Module2Editor({
               className="flex w-full items-center justify-center gap-2 rounded-lg bg-amber-700 px-3 py-2 text-xs font-semibold text-white hover:bg-amber-800 disabled:opacity-50"
             >
               <ShieldCheck className="h-3.5 w-3.5" />
-              {auditingGlobal ? "Analyse transversale..." : "Lancer l'Audit Global (Phase 4)"}
+              {auditingGlobal
+                ? lang === "en"
+                  ? "Running global audit..."
+                  : "Analyse transversale..."
+                : lang === "en"
+                ? "Run Global Protocol Audit"
+                : "Lancer l'Audit Global (Phase 4)"}
             </button>
           </div>
 
@@ -938,17 +1129,17 @@ export function Module2Editor({
                     {project.cover.title || project.name}
                   </div>
                   <div className="text-xs">
-                    Protocole de thèse de{" "}
-                    <strong>
-                      {project.cover.degree_label || "Doctorat en Médecine Générale"}
-                    </strong>{" "}
-                    rédigé par :
+                    {t("m2.cover_protocol_of", {
+                      degree:
+                        project.cover.degree_label ||
+                        (lang === "en" ? "Doctor of Medicine (MD)" : "Doctorat en Médecine Générale"),
+                    })}
                   </div>
                   <div className="mt-2 font-bold">
-                    {project.cover.author_name || "Noms & prénoms"}
+                    {project.cover.author_name || (lang === "en" ? "Full Name" : "Noms & prénoms")}
                   </div>
                   <div className="text-xs">
-                    Matricule : {project.cover.matricule || "—"}
+                    {lang === "en" ? "Registration No.:" : "Matricule :"} {project.cover.matricule || "—"}
                   </div>
                 </div>
                 <div
@@ -956,7 +1147,7 @@ export function Module2Editor({
                   style={{ fontFamily: "'Times New Roman', serif" }}
                 >
                   <div>
-                    <div className="mb-1.5 text-xs font-bold">Directeur</div>
+                    <div className="mb-1.5 text-xs font-bold">{t("m2.cover_supervisor")}</div>
                     {project.cover.director_info?.name ||
                     project.cover.director_info?.rank ||
                     project.cover.director_info?.specialty ? (
@@ -979,12 +1170,12 @@ export function Module2Editor({
                       </div>
                     ) : (
                       <div style={{ fontSize: "14pt", fontWeight: "bold" }}>
-                        {project.cover.director || "À renseigner"}
+                        {project.cover.director || (lang === "en" ? "To be filled" : "À renseigner")}
                       </div>
                     )}
                   </div>
                   <div>
-                    <div className="mb-1.5 text-xs font-bold">Co-directeur(s)</div>
+                    <div className="mb-1.5 text-xs font-bold">{t("m2.cover_cosupervisors")}</div>
                     {project.cover.co_directors_info &&
                     project.cover.co_directors_info.length > 0 ? (
                       <div className="space-y-3">
@@ -1017,7 +1208,9 @@ export function Module2Editor({
                         ))}
                       </div>
                     ) : (
-                      <div style={{ fontSize: "12pt" }}>À renseigner</div>
+                      <div style={{ fontSize: "12pt" }}>
+                        {lang === "en" ? "To be filled" : "À renseigner"}
+                      </div>
                     )}
                   </div>
                 </div>
@@ -1031,7 +1224,7 @@ export function Module2Editor({
                       borderRadius: `${fmt.box_corner_radius_pct ?? 18}px`,
                     }}
                   >
-                    Année académique {project.cover.academic_year}
+                    {t("m2.cover_academic_year")} {project.cover.academic_year}
                   </div>
                 </div>
               </div>
@@ -1039,17 +1232,28 @@ export function Module2Editor({
               {/* Validated & Drafted Sections */}
               <div className="mb-4 flex items-center justify-between border-b border-slate-200 pb-2 text-xs font-sans text-slate-500">
                 <span>
-                  Aperçu structuré ({validatedSections.length} sections validées)
+                  {lang === "en"
+                    ? `Structured preview (${validatedSections.length} validated sections)`
+                    : `Aperçu structuré (${validatedSections.length} sections validées)`}
                 </span>
                 <span>
-                  {fmt.font_family} {fmt.body_font_size_pt}pt · Interligne {fmt.line_spacing}
+                  {fmt.font_family} {fmt.body_font_size_pt}pt ·{" "}
+                  {lang === "en" ? "Line spacing" : "Interligne"} {fmt.line_spacing}
                 </span>
               </div>
 
               {/* Preview of Running Header starting Page 2 */}
-              <div className="mb-4 flex items-center justify-between gap-4 border-b border-slate-300 pb-1.5 text-[11px] italic text-slate-500">
+              <div
+                data-testid="preview-running-header"
+                className="mb-4 flex items-center justify-between gap-4 pb-1.5 text-[11px] italic text-slate-500"
+                style={{
+                  borderBottomWidth: `${Math.max(1, Number((hfRuleWidthPt * 1.35).toFixed(2)))}px`,
+                  borderBottomStyle: "solid",
+                  borderBottomColor: hfRuleColor,
+                }}
+              >
                 <span className="font-sans text-[10px] font-semibold not-italic uppercase tracking-wide text-slate-400">
-                  En-tête (pages 2+)
+                  {lang === "en" ? "Header (pages 2+)" : "En-tête (pages 2+)"}
                 </span>
                 <span className="truncate text-right">
                   {project.cover.title || project.name}
@@ -1119,7 +1323,9 @@ export function Module2Editor({
                           </p>
                         ) : (
                           <p className="mt-1 font-sans text-xs italic text-slate-400">
-                            [En attente de rédaction / validation dans le Module 1]
+                            {lang === "en"
+                              ? "[Pending drafting / validation in Module 1]"
+                              : "[En attente de rédaction / validation dans le Module 1]"}
                           </p>
                         )}
 
@@ -1137,7 +1343,11 @@ export function Module2Editor({
                             return (
                               <div className="mt-3">
                                 <div className="mb-1 flex items-center justify-between text-left text-xs font-bold text-slate-800">
-                                  <span>Tableau : Liste opérationnelle des variables d'étude</span>
+                                  <span>
+                                    {lang === "en"
+                                      ? "Table: Operational Study Variables"
+                                      : "Tableau : Liste opérationnelle des variables d'étude"}
+                                  </span>
                                   <button
                                     type="button"
                                     onClick={async () => {
@@ -1153,20 +1363,20 @@ export function Module2Editor({
                                       }
                                     }}
                                     className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-sans text-[11px] font-medium text-rose-600 hover:bg-rose-50"
-                                    title="Supprimer ce tableau"
+                                    title={lang === "en" ? "Delete this table" : "Supprimer ce tableau"}
                                   >
                                     <Trash2 className="h-3 w-3" />
-                                    Retirer
+                                    {lang === "en" ? "Remove" : "Retirer"}
                                   </button>
                                 </div>
                                 <div className="overflow-x-auto rounded border border-slate-200">
                                   <table className="w-full text-left text-xs">
-                                    <thead className="bg-[#6C2826] text-white">
+                                    <thead className="text-white" style={{ backgroundColor: accentColor }}>
                                       <tr>
                                         <th className="p-1.5">Variable</th>
-                                        <th className="p-1.5">Rôle</th>
-                                        <th className="p-1.5">Échelle</th>
-                                        <th className="p-1.5">Modalités</th>
+                                        <th className="p-1.5">{lang === "en" ? "Role" : "Rôle"}</th>
+                                        <th className="p-1.5">{lang === "en" ? "Scale" : "Échelle"}</th>
+                                        <th className="p-1.5">{lang === "en" ? "Categories" : "Modalités"}</th>
                                       </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
@@ -1191,7 +1401,11 @@ export function Module2Editor({
                             return (
                               <div className="mt-3">
                                 <div className="mb-1 flex items-center justify-between text-left text-xs font-bold text-slate-800">
-                                  <span>Tableau : Synthèse des études antérieures</span>
+                                  <span>
+                                    {lang === "en"
+                                      ? "Table: Synthesis of Prior Studies"
+                                      : "Tableau : Synthèse des études antérieures"}
+                                  </span>
                                   <button
                                     type="button"
                                     onClick={async () => {
@@ -1207,20 +1421,20 @@ export function Module2Editor({
                                       }
                                     }}
                                     className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-sans text-[11px] font-medium text-rose-600 hover:bg-rose-50"
-                                    title="Supprimer ce tableau"
+                                    title={lang === "en" ? "Delete this table" : "Supprimer ce tableau"}
                                   >
                                     <Trash2 className="h-3 w-3" />
-                                    Retirer
+                                    {lang === "en" ? "Remove" : "Retirer"}
                                   </button>
                                 </div>
                                 <div className="overflow-x-auto rounded border border-slate-200">
                                   <table className="w-full text-left text-xs">
-                                    <thead className="bg-[#6C2826] text-white">
+                                    <thead className="text-white" style={{ backgroundColor: accentColor }}>
                                       <tr>
-                                        <th className="p-1.5">Auteur(s), Pays</th>
-                                        <th className="p-1.5">Devis</th>
+                                        <th className="p-1.5">{lang === "en" ? "Author(s), Country" : "Auteur(s), Pays"}</th>
+                                        <th className="p-1.5">{lang === "en" ? "Design" : "Devis"}</th>
                                         <th className="p-1.5">Population</th>
-                                        <th className="p-1.5">Résultats principaux</th>
+                                        <th className="p-1.5">{lang === "en" ? "Key Findings" : "Résultats principaux"}</th>
                                       </tr>
                                     </thead>
                                     <tbody className="divide-y divide-slate-100">
@@ -1246,9 +1460,13 @@ export function Module2Editor({
                               <div className="mt-3">
                                 <div className="mb-1.5 flex items-center justify-between text-left text-xs font-bold text-slate-800">
                                   <span>
-                                    Tableau : Chronogramme des activités{" "}
+                                    {lang === "en"
+                                      ? "Table: Activity Timeline"
+                                      : "Tableau : Chronogramme des activités"}{" "}
                                     <span className="font-sans text-[11px] font-normal text-slate-500">
-                                      (dates, activités et jalons éditables)
+                                      {lang === "en"
+                                        ? "(editable dates, activities & milestones)"
+                                        : "(dates, activités et jalons éditables)"}
                                     </span>
                                   </span>
                                   <button
@@ -1266,10 +1484,10 @@ export function Module2Editor({
                                       }
                                     }}
                                     className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-sans text-[11px] font-medium text-rose-600 hover:bg-rose-50"
-                                    title="Supprimer ce tableau"
+                                    title={lang === "en" ? "Delete this table" : "Supprimer ce tableau"}
                                   >
                                     <Trash2 className="h-3 w-3" />
-                                    Retirer
+                                    {lang === "en" ? "Remove" : "Retirer"}
                                   </button>
                                 </div>
                                 <TimelineGridEditor
@@ -1286,7 +1504,11 @@ export function Module2Editor({
                             return (
                               <div className="mt-3">
                                 <div className="mb-1 flex items-center justify-between text-left text-xs font-bold text-slate-800">
-                                  <span>Tableau : Budget prévisionnel de l'étude</span>
+                                  <span>
+                                    {lang === "en"
+                                      ? "Table: Estimated Study Budget"
+                                      : "Tableau : Budget prévisionnel de l'étude"}
+                                  </span>
                                   <button
                                     type="button"
                                     onClick={async () => {
@@ -1302,19 +1524,19 @@ export function Module2Editor({
                                       }
                                     }}
                                     className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-sans text-[11px] font-medium text-rose-600 hover:bg-rose-50"
-                                    title="Supprimer ce tableau"
+                                    title={lang === "en" ? "Delete this table" : "Supprimer ce tableau"}
                                   >
                                     <Trash2 className="h-3 w-3" />
-                                    Retirer
+                                    {lang === "en" ? "Remove" : "Retirer"}
                                   </button>
                                 </div>
                                 <div className="overflow-x-auto rounded border border-slate-200">
                                   <table className="w-full text-left text-xs">
-                                    <thead className="bg-[#6C2826] text-white">
+                                    <thead className="text-white" style={{ backgroundColor: accentColor }}>
                                       <tr>
-                                        <th className="p-1.5">Désignation</th>
-                                        <th className="p-1.5">PU (FCFA)</th>
-                                        <th className="p-1.5">Qté</th>
+                                        <th className="p-1.5">{lang === "en" ? "Item" : "Désignation"}</th>
+                                        <th className="p-1.5">{lang === "en" ? "Unit Cost (FCFA)" : "PU (FCFA)"}</th>
+                                        <th className="p-1.5">{lang === "en" ? "Qty" : "Qté"}</th>
                                         <th className="p-1.5">Total (FCFA)</th>
                                       </tr>
                                     </thead>
@@ -1322,10 +1544,10 @@ export function Module2Editor({
                                       {project.budget.map((b, idx) => (
                                         <tr key={idx}>
                                           <td className="p-1.5">{b.designation}</td>
-                                          <td className="p-1.5">{b.unit_cost_fcfa.toLocaleString("fr-FR")}</td>
+                                          <td className="p-1.5">{b.unit_cost_fcfa.toLocaleString(lang === "en" ? "en-US" : "fr-FR")}</td>
                                           <td className="p-1.5">{b.quantity}</td>
                                           <td className="p-1.5 font-semibold">
-                                            {(b.quantity * b.unit_cost_fcfa).toLocaleString("fr-FR")}
+                                            {(b.quantity * b.unit_cost_fcfa).toLocaleString(lang === "en" ? "en-US" : "fr-FR")}
                                           </td>
                                         </tr>
                                       ))}
@@ -1342,7 +1564,9 @@ export function Module2Editor({
                         {st?.custom_tables?.map((ct) => (
                           <div key={ct.table_id} className="mt-3">
                             <div className="mb-1 flex items-center justify-between text-left text-xs font-bold text-slate-800">
-                              <span>Tableau : {ct.title}</span>
+                              <span>
+                                {lang === "en" ? "Table" : "Tableau"} : {ct.title}
+                              </span>
                               <button
                                 type="button"
                                 onClick={async () => {
@@ -1358,15 +1582,15 @@ export function Module2Editor({
                                   }
                                 }}
                                 className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-sans text-[11px] font-medium text-rose-600 hover:bg-rose-50"
-                                title="Supprimer ce tableau"
+                                title={lang === "en" ? "Delete this table" : "Supprimer ce tableau"}
                               >
                                 <Trash2 className="h-3 w-3" />
-                                Retirer
+                                {lang === "en" ? "Remove" : "Retirer"}
                               </button>
                             </div>
                             <div className="overflow-x-auto rounded border border-slate-200">
                               <table className="w-full text-left text-xs">
-                                <thead className="bg-[#6C2826] text-white">
+                                <thead className="text-white" style={{ backgroundColor: accentColor }}>
                                   <tr>
                                     {ct.headers.map((h, i) => (
                                       <th key={i} className="p-1.5">
@@ -1438,7 +1662,7 @@ export function Module2Editor({
                                     }}
                                     className="text-rose-600 hover:underline font-sans"
                                   >
-                                    Exclure du rendu
+                                    {lang === "en" ? "Exclude from export" : "Exclure du rendu"}
                                   </button>
                                 </div>
                               </div>
@@ -1465,9 +1689,17 @@ export function Module2Editor({
               </div>
 
               {/* Preview of Running Footer starting Page 2 */}
-              <div className="mt-8 flex items-center justify-between gap-4 border-t border-slate-300 pt-2 text-[11px] text-slate-500">
+              <div
+                data-testid="preview-running-footer"
+                className="mt-8 flex items-center justify-between gap-4 pt-2 text-[11px] text-slate-500"
+                style={{
+                  borderTopWidth: `${Math.max(1, Number((hfRuleWidthPt * 1.35).toFixed(2)))}px`,
+                  borderTopStyle: "solid",
+                  borderTopColor: hfRuleColor,
+                }}
+              >
                 <span className="truncate italic">
-                  {project.cover.author_name || "Nom du candidat"}
+                  {project.cover.author_name || (lang === "en" ? "Candidate Name" : "Nom du candidat")}
                 </span>
                 <span className="shrink-0 font-bold text-slate-800">
                   Page i / 1…

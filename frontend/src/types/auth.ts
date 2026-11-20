@@ -12,6 +12,11 @@ export interface AIQuotaOut {
   credits_total: number;
   credits_used: number;
   credits_remaining: number;
+  daily_38_limit?: number;
+  daily_38_used?: number;
+  daily_38_remaining?: number;
+  active_reasoning_model?: string;
+  using_35_fallback?: boolean;
 }
 
 export interface UserMeOut {

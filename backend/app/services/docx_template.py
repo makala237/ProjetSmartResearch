@@ -18,6 +18,7 @@ from PIL import Image as PILImage
 
 from app.core.config import WORKSPACE_DIR, get_settings
 from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import get_chapter_titles, get_doc_labels, get_localized_canvas, normalize_lang
 from app.schemas.protocol import FormattingRules, ProtocolProject, StepStatus
 from app.services.annexes_generator import build_annexes_pack
 from app.services.cover_builder import build_fmsb_cover_page
@@ -29,6 +30,7 @@ from app.services.diagram_renderer import (
 from app.services.humanizer import (
     apply_human_author_metadata_docx,
     sanitize_llm_french_typography,
+    sanitize_llm_typography,
 )
 from app.services.list_builder import (
     build_unified_abbreviations_list,
@@ -51,6 +53,20 @@ SOURCE_CANVAS_DOCX = WORKSPACE_DIR / "2025_Canevas_protocole.docx"
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 FMSB_BORDEAUX = "6C2826"
 FMSB_GANTT_FILL = "8B3A38"
+
+
+def _resolve_accent_hex(fmt: FormattingRules) -> str:
+    """Resolve user-configured accent/border color hex (6 uppercase hex digits)."""
+    raw = (getattr(fmt, "border_color", None) or FMSB_BORDEAUX).strip().lstrip("#").upper()
+    if re.fullmatch(r"[0-9A-F]{6}", raw):
+        return raw
+    return FMSB_BORDEAUX
+
+
+def _resolve_accent_rgb(fmt: FormattingRules) -> RGBColor:
+    """Convert resolved accent/border hex color to python-docx RGBColor."""
+    hex_str = _resolve_accent_hex(fmt)
+    return RGBColor(int(hex_str[0:2], 16), int(hex_str[2:4], 16), int(hex_str[4:6], 16))
 
 
 class _SimpleHTMLRunsParser(HTMLParser):
@@ -368,9 +384,7 @@ def _force_cover_title_size(element: ET.Element, target_pt: int = 18) -> None:
 
 def _apply_template_border_styles(doc: Document, fmt: FormattingRules) -> None:
     """Algorithmically apply border shape, corner radius, thickness, and color across cover & chapters."""
-    color_hex = (fmt.border_color or FMSB_BORDEAUX).lstrip("#").upper()
-    if len(color_hex) != 6:
-        color_hex = FMSB_BORDEAUX
+    color_hex = _resolve_accent_hex(fmt)
 
     border_pt = float(getattr(fmt, "box_border_width_pt", 2.5) or 2.5)
     border_pt = max(0.75, min(8.0, border_pt))
@@ -390,6 +404,8 @@ def _apply_template_border_styles(doc: Document, fmt: FormattingRules) -> None:
             for side in ("top", "left", "bottom", "right"):
                 el = pgBorders.find(qn(f"w:{side}"))
                 if el is not None:
+                    for theme_attr in ("w:themeColor", "w:themeShade", "w:themeTint"):
+                        el.attrib.pop(qn(theme_attr), None)
                     if fmt.cover_border_style == "none":
                         el.set(qn("w:val"), "none")
                         el.set(qn("w:sz"), "0")
@@ -448,18 +464,42 @@ def _apply_template_border_styles(doc: Document, fmt: FormattingRules) -> None:
         )
         ln.insert(0, solidFill)
 
-    for v_shape in list(body.iter(f"{{{V_NS}}}rect")) + list(body.iter(f"{{{V_NS}}}roundrect")):
-        if corner_pct > 0:
-            v_shape.tag = f"{{{V_NS}}}roundrect"
-            v_shape.set("arcsize", arc_vml)
-        else:
-            v_shape.tag = f"{{{V_NS}}}rect"
-            if "arcsize" in v_shape.attrib:
-                del v_shape.attrib["arcsize"]
+        wsp_style = wsp.find(f"{{{WPS_NS}}}style")
+        if wsp_style is not None:
+            lnRef = wsp_style.find(f"{{{A_NS}}}lnRef")
+            if lnRef is not None:
+                for clr_child in list(lnRef):
+                    lnRef.remove(clr_child)
+                lnRef.append(parse_xml(f'<a:srgbClr xmlns:a="{A_NS}" val="{color_hex}"/>'))
+
+    v_candidates = (
+        list(body.iter(f"{{{V_NS}}}rect"))
+        + list(body.iter(f"{{{V_NS}}}roundrect"))
+        + [
+            sh
+            for sh in body.iter(f"{{{V_NS}}}shape")
+            if ("strokecolor" in sh.attrib or sh.find(f"{{{V_NS}}}stroke") is not None)
+        ]
+    )
+    for v_shape in v_candidates:
+        is_box_rect = v_shape.tag in (f"{{{V_NS}}}rect", f"{{{V_NS}}}roundrect")
+        if is_box_rect:
+            if corner_pct > 0:
+                v_shape.tag = f"{{{V_NS}}}roundrect"
+                v_shape.set("arcsize", arc_vml)
+            else:
+                v_shape.tag = f"{{{V_NS}}}rect"
+                if "arcsize" in v_shape.attrib:
+                    del v_shape.attrib["arcsize"]
         effective_vml_pt = min(border_pt, 1.5) if fmt.chapter_box_style == "minimal" else border_pt
         v_shape.set("stroked", "t")
         v_shape.set("strokecolor", f"#{color_hex}")
         v_shape.set("strokeweight", f"{effective_vml_pt:.1f}pt")
+        v_stroke = v_shape.find(f"{{{V_NS}}}stroke")
+        if v_stroke is not None:
+            v_stroke.set("color", f"#{color_hex}")
+            if is_box_rect and corner_pct > 0:
+                v_stroke.set("linestyle", "single")
 
 
 def _center_grand_chapter_box(p_obj, fmt: FormattingRules) -> None:
@@ -524,6 +564,26 @@ def _center_grand_chapter_box(p_obj, fmt: FormattingRules) -> None:
         style = re.sub(r"mso-position-vertical:[^;]+", "mso-position-vertical:center", style)
         style = re.sub(r"mso-position-vertical-relative:[^;]+", "mso-position-vertical-relative:margin", style)
         v_el.set("style", style)
+
+
+def _set_anchor_box_text(p_obj, new_text: str) -> None:
+    """Replace visible text inside a chapter box (DrawingML + VML txbxContent) or heading paragraph."""
+    txbxs = list(p_obj._element.iter(f"{{{W_NS}}}txbxContent"))
+    if txbxs:
+        for txbx in txbxs:
+            ts = list(txbx.iter(f"{{{W_NS}}}t"))
+            if not ts:
+                continue
+            ts[0].text = new_text
+            for extra in ts[1:]:
+                extra.text = ""
+        return
+
+    ts = list(p_obj._element.iter(f"{{{W_NS}}}t"))
+    if ts:
+        ts[0].text = new_text
+        for extra in ts[1:]:
+            extra.text = ""
 
 
 def ensure_master_template() -> Path:
@@ -808,9 +868,10 @@ def _insert_table_after(
     hdr_trPr = tbl.rows[0]._tr.get_or_add_trPr()
     hdr_trPr.append(parse_xml(f'<w:tblHeader {nsdecls("w")}/>'))
     hdr_trPr.append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
+    accent_hex = _resolve_accent_hex(fmt)
     for ci, h_txt in enumerate(safe_headers):
         cell = tbl.rows[0].cells[ci]
-        _set_cell_shading(cell, FMSB_BORDEAUX)
+        _set_cell_shading(cell, accent_hex)
         p = cell.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         p.paragraph_format.space_after = Pt(2)
@@ -1024,13 +1085,17 @@ def _render_crf_form_in_docx(
     anchor_p,
     ann: Dict[str, Any],
     fmt: FormattingRules,
+    lang: str = "fr",
 ):
     """
-    Render Annexe 1 (Fiche de collecte des données) as a graphical clinical form
+    Render Annexe 1 (Data Collection Form / CRF) as a graphical clinical form
     with drawn square checkboxes (for dichotomous / choice fields) and drawn
     bordered rectangular fill-in / segmented boxes (for numbers, dates & text).
     """
+    is_en = normalize_lang(lang) == "en"
     cb_png = get_crf_checkbox_png_bytes(checked=False)
+    accent_hex = _resolve_accent_hex(fmt)
+    accent_rgb = _resolve_accent_rgb(fmt)
     cursor = anchor_p
 
     # 1. Official FMSB CRF Header Box
@@ -1040,10 +1105,10 @@ def _render_crf_form_in_docx(
     hdr_tbl._tbl.tblPr.append(
         parse_xml(
             f'<w:tblBorders {nsdecls("w")}>'
-            '<w:top w:val="single" w:sz="12" w:space="0" w:color="6C2826"/>'
-            '<w:left w:val="single" w:sz="12" w:space="0" w:color="6C2826"/>'
-            '<w:bottom w:val="single" w:sz="12" w:space="0" w:color="6C2826"/>'
-            '<w:right w:val="single" w:sz="12" w:space="0" w:color="6C2826"/>'
+            f'<w:top w:val="single" w:sz="12" w:space="0" w:color="{accent_hex}"/>'
+            f'<w:left w:val="single" w:sz="12" w:space="0" w:color="{accent_hex}"/>'
+            f'<w:bottom w:val="single" w:sz="12" w:space="0" w:color="{accent_hex}"/>'
+            f'<w:right w:val="single" w:sz="12" w:space="0" w:color="{accent_hex}"/>'
             '<w:insideH w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
             '<w:insideV w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
             "</w:tblBorders>"
@@ -1055,20 +1120,26 @@ def _render_crf_form_in_docx(
     # Banner row
     banner_cell = hdr_tbl.rows[0].cells[0].merge(hdr_tbl.rows[0].cells[1])
     banner_cell.width = Cm(16.0)
-    _set_cell_shading(banner_cell, "FDF8F8")
+    _set_cell_shading(banner_cell, "F8FAFC" if accent_hex != FMSB_BORDEAUX else "FDF8F8")
     _set_cell_margins(banner_cell, top=90, bottom=90, left=120, right=120)
     bp = banner_cell.paragraphs[0]
     bp.alignment = WD_ALIGN_PARAGRAPH.CENTER
     bp.paragraph_format.space_before = Pt(0)
     bp.paragraph_format.space_after = Pt(2)
-    r_btitle = bp.add_run("FICHE DE COLLECTE DES DONNÉES — ANONYME ET CONFIDENTIELLE\n")
-    _apply_run_font(r_btitle, fmt, size_pt=10.5, bold=True, color_rgb=RGBColor(108, 40, 38))
+    r_btitle = bp.add_run(
+        "DATA COLLECTION FORM (CRF) — ANONYMOUS & CONFIDENTIAL\n"
+        if is_en
+        else "FICHE DE COLLECTE DES DONNÉES — ANONYME ET CONFIDENTIELLE\n"
+    )
+    _apply_run_font(r_btitle, fmt, size_pt=10.5, bold=True, color_rgb=accent_rgb)
     study_title = str(ann.get("study_title") or "").strip()
     if study_title:
-        r_st = bp.add_run(f"Étude : {study_title}\n")
+        r_st = bp.add_run(f"{'Study' if is_en else 'Étude'} : {study_title}\n")
         _apply_run_font(r_st, fmt, size_pt=9.0, bold=False, color_rgb=RGBColor(30, 41, 59))
     r_inst = bp.add_run(
-        "Consigne : Cocher la case dessinée correspondante (☐) ou inscrire lisiblement la valeur dans le cadre prévu."
+        "Instructions: Check the corresponding box (☐) or write the value legibly inside the designated field."
+        if is_en
+        else "Consigne : Cocher la case dessinée correspondante (☐) ou inscrire lisiblement la valeur dans le cadre prévu."
     )
     _apply_run_font(r_inst, fmt, size_pt=8.5, italic=True, color_rgb=RGBColor(100, 116, 139))
 
@@ -1079,8 +1150,8 @@ def _render_crf_form_in_docx(
     p_code = c_code.paragraphs[0]
     p_code.paragraph_format.space_before = Pt(0)
     p_code.paragraph_format.space_after = Pt(3)
-    rc = p_code.add_run("Code participant :")
-    _apply_run_font(rc, fmt, size_pt=9.5, bold=True, color_rgb=RGBColor(108, 40, 38))
+    rc = p_code.add_run("Participant ID:" if is_en else "Code participant :")
+    _apply_run_font(rc, fmt, size_pt=9.5, bold=True, color_rgb=accent_rgb)
     _append_segmented_boxes_in_cell(doc, c_code, [" ", " ", " ", "-", " ", " ", " "], fmt, box_w_cm=0.45)
 
     c_date = hdr_tbl.rows[1].cells[1]
@@ -1089,9 +1160,10 @@ def _render_crf_form_in_docx(
     p_date = c_date.paragraphs[0]
     p_date.paragraph_format.space_before = Pt(0)
     p_date.paragraph_format.space_after = Pt(3)
-    rd = p_date.add_run("Date de collecte :")
-    _apply_run_font(rd, fmt, size_pt=9.5, bold=True, color_rgb=RGBColor(108, 40, 38))
-    _append_segmented_boxes_in_cell(doc, c_date, ["J", "J", "/", "M", "M", "/", "2", "0", "A", "A"], fmt, box_w_cm=0.42)
+    rd = p_date.add_run("Collection Date:" if is_en else "Date de collecte :")
+    _apply_run_font(rd, fmt, size_pt=9.5, bold=True, color_rgb=accent_rgb)
+    date_segs = ["D", "D", "/", "M", "M", "/", "2", "0", "Y", "Y"] if is_en else ["J", "J", "/", "M", "M", "/", "2", "0", "A", "A"]
+    _append_segmented_boxes_in_cell(doc, c_date, date_segs, fmt, box_w_cm=0.42)
 
     # Row 2: Hospital sites with drawn checkboxes + Autre fill-in
     c_hosp = hdr_tbl.rows[2].cells[0].merge(hdr_tbl.rows[2].cells[1])
@@ -1100,11 +1172,17 @@ def _render_crf_form_in_docx(
     p_hosp = c_hosp.paragraphs[0]
     p_hosp.paragraph_format.space_before = Pt(0)
     p_hosp.paragraph_format.space_after = Pt(2)
-    rh = p_hosp.add_run("Hôpital / Site d'inclusion :   ")
-    _apply_run_font(rh, fmt, size_pt=9.5, bold=True, color_rgb=RGBColor(108, 40, 38))
+    rh = p_hosp.add_run("Hospital / Inclusion Site:   " if is_en else "Hôpital / Site d'inclusion :   ")
+    _apply_run_font(rh, fmt, size_pt=9.5, bold=True, color_rgb=accent_rgb)
     for site in ann.get("hospital_sites") or ["HGOPY", "HCBY", "HGY"]:
         _append_inline_checkbox(p_hosp, str(site), cb_png, fmt, size_pt=9.5)
-    _append_inline_checkbox(p_hosp, "Autre (préciser) : _______________", cb_png, fmt, size_pt=9.5)
+    _append_inline_checkbox(
+        p_hosp,
+        "Other (specify): _______________" if is_en else "Autre (préciser) : _______________",
+        cb_png,
+        fmt,
+        size_pt=9.5,
+    )
 
     # Row 3: Investigator
     c_inv = hdr_tbl.rows[3].cells[0].merge(hdr_tbl.rows[3].cells[1])
@@ -1113,8 +1191,8 @@ def _render_crf_form_in_docx(
     p_inv = c_inv.paragraphs[0]
     p_inv.paragraph_format.space_before = Pt(0)
     p_inv.paragraph_format.space_after = Pt(0)
-    ri1 = p_inv.add_run("Nom de l'enquêteur : ")
-    _apply_run_font(ri1, fmt, size_pt=9.5, bold=True, color_rgb=RGBColor(108, 40, 38))
+    ri1 = p_inv.add_run("Investigator Name: " if is_en else "Nom de l'enquêteur : ")
+    _apply_run_font(ri1, fmt, size_pt=9.5, bold=True, color_rgb=accent_rgb)
     ri2 = p_inv.add_run(str(ann.get("author_label") or ""))
     _apply_run_font(ri2, fmt, size_pt=9.5, color_rgb=RGBColor(30, 41, 59))
 
@@ -1129,7 +1207,7 @@ def _render_crf_form_in_docx(
     grouped_sections: List[Tuple[str, List[Dict[str, Any]]]] = []
     sec_map: Dict[str, List[Dict[str, Any]]] = {}
     for f in ann.get("crf_fields") or []:
-        st = str(f.get("section_title") or "SECTION A : VARIABLES COLLECTÉES")
+        st = str(f.get("section_title") or ("SECTION A: COLLECTED VARIABLES" if is_en else "SECTION A : VARIABLES COLLECTÉES"))
         if st not in sec_map:
             sec_map[st] = []
             grouped_sections.append((st, sec_map[st]))
@@ -1149,7 +1227,7 @@ def _render_crf_form_in_docx(
         hdr_trPr.append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
         sec_cell = hdr_row.cells[0].merge(hdr_row.cells[1])
         sec_cell.width = Cm(16.0)
-        _set_cell_shading(sec_cell, FMSB_BORDEAUX)
+        _set_cell_shading(sec_cell, accent_hex)
         _set_cell_margins(sec_cell, top=75, bottom=75, left=110, right=110)
         sp = sec_cell.paragraphs[0]
         sp.paragraph_format.space_before = Pt(0)
@@ -1174,7 +1252,7 @@ def _render_crf_form_in_docx(
             code = str(field.get("code") or "").strip()
             if code:
                 rc = qp.add_run(f"{code}. ")
-                _apply_run_font(rc, fmt, size_pt=9.5, bold=True, color_rgb=RGBColor(108, 40, 38))
+                _apply_run_font(rc, fmt, size_pt=9.5, bold=True, color_rgb=accent_rgb)
             ql = qp.add_run(str(field.get("label") or ""))
             _apply_run_font(ql, fmt, size_pt=9.5, bold=False, color_rgb=RGBColor(15, 23, 42))
 
@@ -1194,13 +1272,12 @@ def _render_crf_form_in_docx(
             ap.paragraph_format.space_after = Pt(2)
 
             if ftype == "dichotomous":
-                for opt in opts or ["Oui", "Non"]:
+                for opt in opts or (["Yes", "No"] if is_en else ["Oui", "Non"]):
                     _append_inline_checkbox(ap, opt, cb_png, fmt, size_pt=9.5)
                 if sub_lbl:
                     _append_fill_box_in_cell(doc, a_cell, fmt, width_cm=5.2, height_cm=0.50, prefix_label=sub_lbl)
             elif ftype in ("single_choice", "multi_choice"):
                 for opt in opts or ["Option 1", "Option 2"]:
-                    # Put long option lists cleanly line by line or compact inline
                     if len(opts) >= 3 and sum(len(x) for x in opts) > 55:
                         p_opt = ap if (not ap.text and len(ap.runs) == 0) else a_cell.add_paragraph()
                         p_opt.paragraph_format.space_before = Pt(0)
@@ -1212,20 +1289,20 @@ def _render_crf_form_in_docx(
                     _append_fill_box_in_cell(doc, a_cell, fmt, width_cm=5.2, height_cm=0.50, prefix_label=sub_lbl)
             elif ftype == "date":
                 ap.paragraph_format.space_after = Pt(2)
-                r_dt = ap.add_run("Date (JJ / MM / AAAA) :")
+                r_dt = ap.add_run("Date (DD / MM / YYYY):" if is_en else "Date (JJ / MM / AAAA) :")
                 _apply_run_font(r_dt, fmt, size_pt=8.0, italic=True, color_rgb=RGBColor(100, 116, 139))
                 _append_segmented_boxes_in_cell(
-                    doc, a_cell, ["J", "J", "/", "M", "M", "/", "2", "0", "A", "A"], fmt, box_w_cm=0.42
+                    doc, a_cell, date_segs, fmt, box_w_cm=0.42
                 )
             elif ftype == "number":
                 ap.paragraph_format.space_after = Pt(0)
-                r_lbl = ap.add_run("Valeur à inscrire :")
+                r_lbl = ap.add_run("Value:" if is_en else "Valeur à inscrire :")
                 _apply_run_font(r_lbl, fmt, size_pt=8.0, italic=True, color_rgb=RGBColor(100, 116, 139))
                 _append_fill_box_in_cell(doc, a_cell, fmt, width_cm=4.2, height_cm=0.54, unit_label=unit)
                 if sub_lbl:
                     _append_fill_box_in_cell(doc, a_cell, fmt, width_cm=4.6, height_cm=0.48, prefix_label=sub_lbl)
             else:
-                r_lbl = ap.add_run("Réponse :")
+                r_lbl = ap.add_run("Response:" if is_en else "Réponse :")
                 _apply_run_font(r_lbl, fmt, size_pt=8.0, italic=True, color_rgb=RGBColor(100, 116, 139))
                 _append_fill_box_in_cell(doc, a_cell, fmt, width_cm=7.6, height_cm=0.58, unit_label=unit)
                 if sub_lbl:
@@ -1317,15 +1394,25 @@ def _compact_running_title(raw_title: str, max_len: int = 115) -> str:
     return cut.rstrip(" ,;:-") + "…"
 
 
-def _set_paragraph_rule(p, edge: str = "bottom", color_hex: str = "CBD5E1") -> None:
-    """Attach a subtle top/bottom hairline rule to a header or footer paragraph."""
+def _set_paragraph_rule(
+    p,
+    edge: str = "bottom",
+    color_hex: str = "CBD5E1",
+    width_pt: float = 0.5,
+) -> None:
+    """Attach a configurable top/bottom rule to a header or footer paragraph."""
+    clean_color = (color_hex or "CBD5E1").strip().lstrip("#").upper()
+    if not re.fullmatch(r"[0-9A-F]{6}", clean_color):
+        clean_color = "CBD5E1"
+    # Word OOXML w:sz is measured in eighths of a point (1 pt = 8)
+    sz_eighths = max(2, min(48, int(round(float(width_pt or 0.5) * 8))))
     pPr = p._p.get_or_add_pPr()
     for existing in list(pPr.findall(qn("w:pBdr"))):
         pPr.remove(existing)
     pPr.append(
         parse_xml(
             f'<w:pBdr {nsdecls("w")}>'
-            f'  <w:{edge} w:val="single" w:sz="4" w:space="4" w:color="{color_hex}"/>'
+            f'  <w:{edge} w:val="single" w:sz="{sz_eighths}" w:space="4" w:color="{clean_color}"/>'
             f"</w:pBdr>"
         )
     )
@@ -1373,7 +1460,12 @@ def _configure_fmsb_pagination(
         else ""
     )
 
-    # Running Header from Page 2+: Protocol Title aligned right with delicate bottom hairline
+    hf_color = (
+        getattr(fmt, "header_footer_rule_color", None) or "#CBD5E1"
+    ).strip().lstrip("#").upper()
+    hf_width_pt = float(getattr(fmt, "header_footer_rule_width_pt", None) or 0.5)
+
+    # Running Header from Page 2+: Protocol Title aligned right with configurable bottom rule
     header = base_sec.header
     header.is_linked_to_previous = False
     hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
@@ -1392,9 +1484,9 @@ def _configure_fmsb_pagination(
         italic=True,
         color_rgb=RGBColor(71, 85, 105),
     )
-    _set_paragraph_rule(hp, edge="bottom", color_hex="CBD5E1")
+    _set_paragraph_rule(hp, edge="bottom", color_hex=hf_color, width_pt=hf_width_pt)
 
-    # Running Footer from Page 2+: Candidate Name on left + right-aligned PAGE field with top hairline
+    # Running Footer from Page 2+: Candidate Name on left + right-aligned PAGE field with configurable top rule
     footer = base_sec.footer
     footer.is_linked_to_previous = False
     fp = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
@@ -1433,7 +1525,7 @@ def _configure_fmsb_pagination(
             italic=False,
             color_rgb=RGBColor(30, 41, 59),
         )
-    _set_paragraph_rule(fp, edge="top", color_hex="CBD5E1")
+    _set_paragraph_rule(fp, edge="top", color_hex=hf_color, width_pt=hf_width_pt)
 
     sect2_pr = base_sec._sectPr
     if intro_anchor_p is not None:
@@ -1493,6 +1585,10 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
     master_path = ensure_master_template()
     doc = Document(str(master_path))
     fmt = project.formatting
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    chap_titles = get_chapter_titles(lang)
+    labels = get_doc_labels(lang)
+    localized_canvas = get_localized_canvas(lang)
 
     for section in doc.sections:
         section.page_width = Cm(21.0)
@@ -1503,15 +1599,16 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         section.right_margin = Cm(fmt.margin_cm)
 
     cover = project.cover
+    default_placeholder = "To be specified" if lang == "en" else "À renseigner"
     replacements = {
         "{{TITLE}}": cover.title or project.name,
-        "{{DEGREE_LABEL}}": cover.degree_label or "Doctorat en Médecine",
+        "{{DEGREE_LABEL}}": cover.degree_label or ("Doctor of Medicine" if lang == "en" else "Doctorat en Médecine"),
         "{{DEPARTMENT_FR}}": cover.department_fr or "SANTE PUBLIQUE",
         "{{DEPARTMENT_EN}}": cover.department_en or "PUBLIC HEALTH",
-        "{{AUTHOR_NAME}}": cover.author_name or "Noms & Prénoms",
+        "{{AUTHOR_NAME}}": cover.author_name or ("Full Name" if lang == "en" else "Noms & Prénoms"),
         "{{MATRICULE}}": cover.matricule or "—",
-        "{{DIRECTOR}}": cover.director or "À renseigner",
-        "{{CO_DIRECTORS}}": "\n".join(cover.co_directors) if cover.co_directors else "À renseigner",
+        "{{DIRECTOR}}": cover.director or default_placeholder,
+        "{{CO_DIRECTORS}}": "\n".join(cover.co_directors) if cover.co_directors else default_placeholder,
         "{{ACADEMIC_YEAR}}": cover.academic_year or "2025-2026",
     }
 
@@ -1560,6 +1657,21 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         for t in anchors["chapitre_3"]._element.iter(f"{{{W_NS}}}t"):
             if t.text and "II" in t.text and "III" not in t.text:
                 t.text = t.text.replace("II", "III")
+
+    if lang == "en":
+        en_banner_texts = {
+            "toc": labels["anchor_toc"],
+            "abbreviations": labels["anchor_abbreviations"],
+            "introduction": chap_titles["introduction"],
+            "chapitre_1": chap_titles["chapitre_1"],
+            "chapitre_2": chap_titles["chapitre_2"],
+            "chapitre_3": chap_titles["chapitre_3"],
+            "references": chap_titles["references"],
+            "annexes": chap_titles["annexes"],
+        }
+        for b_key, b_txt in en_banner_texts.items():
+            if b_key in anchors:
+                _set_anchor_box_text(anchors[b_key], b_txt)
 
     # Force clean page breaks before front-matter and major chapter boxes, and center grand titles on their own page
     for pb_key in ("toc", "abbreviations", "introduction", "chapitre_1", "chapitre_2", "chapitre_3", "references", "annexes"):
@@ -1617,9 +1729,9 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         raw_html = html_str.strip() if html_str and html_str.strip() else ""
         raw_md = markdown_str.strip() if markdown_str and markdown_str.strip() else ""
         if raw_html:
-            raw_html, _ = sanitize_llm_french_typography(raw_html)
+            raw_html, _ = sanitize_llm_typography(raw_html, lang=lang)
         if raw_md:
-            raw_md, _ = sanitize_llm_french_typography(raw_md)
+            raw_md, _ = sanitize_llm_typography(raw_md, lang=lang)
         has_md_pipe_table = bool(re.search(r"(?m)^\s*\|[\s:\-|]+\|\s*$", raw_md))
 
         if has_md_pipe_table and "<table" not in raw_html.lower():
@@ -1711,13 +1823,19 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             return cursor, inserted_paras
 
         if emit_placeholder:
-            cursor = insert_after(cursor, "[Section en attente de rédaction / validation]", italic=True)
+            placeholder_msg = (
+                "[Section pending drafting / validation]"
+                if lang == "en"
+                else "[Section en attente de rédaction / validation]"
+            )
+            cursor = insert_after(cursor, placeholder_msg, italic=True)
             inserted_paras.append(cursor)
         return cursor, inserted_paras
 
     # Track table & figure numbering sequentially
     table_counter = 1
     figure_counter = 1
+    table_sep = ": " if lang == "en" else " : "
 
     def _normalize_anchor_probe(txt: str) -> str:
         s = re.sub(r"[#*_`•]+", " ", txt or "")
@@ -1760,9 +1878,9 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             c_after = _insert_caption_with_seq(
                 doc,
                 target_c,
-                seq_label="Tableau",
+                seq_label=labels["table_seq"],
                 num_val=table_counter,
-                separator=" : ",
+                separator=table_sep,
                 title_text=ct.title,
                 fmt=fmt,
                 size_pt=11,
@@ -1783,6 +1901,7 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             return cursor_out
         paras = section_paras or []
         diag_dir = get_settings().storage_dir / "tmp_diagrams" / project.project_id
+        fig_seq = labels["figure_seq"]
         for dg in sec_state.custom_diagrams:
             if not dg.nodes:
                 continue
@@ -1794,7 +1913,7 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 advance_main = False
             c_dg = target_c
             png_path = diag_dir / f"{dg.diagram_id}.png"
-            clean_dg_title = clean_caption_title(dg.title, "Figure") or dg.title
+            clean_dg_title = clean_caption_title(dg.title, fig_seq) or dg.title
             try:
                 render_diagram_png(dg, png_path)
                 fig_sz = compute_minimum_legible_figure_size_cm(
@@ -1810,9 +1929,14 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 run_dg.add_picture(str(png_path), width=Cm(float(fig_sz["width_cm"])))
                 c_dg = p_dg
             except Exception:
+                diag_fallback = (
+                    f"[Diagram {fig_seq} {figure_counter}: {clean_dg_title}]"
+                    if lang == "en"
+                    else f"[Schéma Figure {figure_counter} : {clean_dg_title}]"
+                )
                 c_dg = insert_after(
                     c_dg,
-                    f"[Schéma Figure {figure_counter} : {clean_dg_title}]",
+                    diag_fallback,
                     italic=True,
                     size_pt=10,
                     align_override=WD_ALIGN_PARAGRAPH.CENTER,
@@ -1821,7 +1945,7 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             c_dg = _insert_caption_with_seq(
                 doc,
                 c_dg,
-                seq_label="Figure",
+                seq_label=fig_seq,
                 num_val=figure_counter,
                 separator=". ",
                 title_text=clean_dg_title,
@@ -1855,12 +1979,12 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             )
         elif toc_sec and (toc_sec.content_html.strip() or toc_sec.content_markdown.strip()):
             clean_toc_md = re.sub(
-                r"(?im)^#{1,6}\s+table\s+des\s+mati[èe]res[^\n]*\n*",
+                r"(?im)^#{1,6}\s+(?:table\s+des\s+mati[èe]res|table\s+of\s+contents)[^\n]*\n*",
                 "",
                 toc_sec.content_markdown or "",
             ).strip()
             clean_toc_html = re.sub(
-                r"(?is)<h[1-4][^>]*>\s*(?:<strong>)?\s*table\s+des\s+mati[èe]res.*?</h[1-4]>",
+                r"(?is)<h[1-4][^>]*>\s*(?:<strong>)?\s*(?:table\s+des\s+mati[èe]res|table\s+of\s+contents).*?</h[1-4]>",
                 "",
                 toc_sec.content_html or "",
             ).strip()
@@ -1884,33 +2008,49 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             cursor = _insert_table_after(
                 doc,
                 cursor,
-                ["Sigle / Acronyme", "Signification complète"],
+                labels["abbr_headers"].split("|"),
                 rows,
                 fmt,
             )
         else:
             cursor = insert_after(
                 cursor,
-                "Aucune abréviation enregistrée.",
+                labels["no_abbreviations"],
                 italic=True,
                 align_override=WD_ALIGN_PARAGRAPH.LEFT,
             )
 
         if fmt.auto_list_of_tables:
-            cursor = insert_after(cursor, "LISTE DES TABLEAUX", bold=True, size_pt=14, align_override=WD_ALIGN_PARAGRAPH.LEFT)
+            cursor = insert_after(
+                cursor,
+                labels["list_of_tables_title"],
+                bold=True,
+                size_pt=14,
+                align_override=WD_ALIGN_PARAGRAPH.LEFT,
+            )
             cursor.paragraph_format.page_break_before = True
             _set_paragraph_outline(cursor, 0)
-            cursor = insert_word_automatic_caption_list(doc, cursor, "Tableau", table_entries, fmt)
+            cursor = insert_word_automatic_caption_list(
+                doc, cursor, labels["table_seq"], table_entries, fmt, lang=lang
+            )
 
         if fmt.auto_list_of_figures:
-            cursor = insert_after(cursor, "LISTE DES FIGURES", bold=True, size_pt=14, align_override=WD_ALIGN_PARAGRAPH.LEFT)
+            cursor = insert_after(
+                cursor,
+                labels["list_of_figures_title"],
+                bold=True,
+                size_pt=14,
+                align_override=WD_ALIGN_PARAGRAPH.LEFT,
+            )
             cursor.paragraph_format.page_break_before = True
             _set_paragraph_outline(cursor, 0)
-            cursor = insert_word_automatic_caption_list(doc, cursor, "Figure", figure_entries, fmt)
+            cursor = insert_word_automatic_caption_list(
+                doc, cursor, labels["figure_seq"], figure_entries, fmt, lang=lang
+            )
 
     # Chapters
     sections_by_chapter: Dict[str, List] = {}
-    for spec in FMSB_SECTIONS:
+    for spec in localized_canvas:
         if spec.chapter_id in ("preliminaires", "references", "annexes"):
             continue
         sections_by_chapter.setdefault(spec.chapter_id, []).append(spec)
@@ -1923,7 +2063,7 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
     for chapter_id, specs in sections_by_chapter.items():
         if chapter_id not in anchors:
             continue
-        ch_toc_label = FMSB_CHAPTER_TITLES.get(chapter_id, chapter_id.upper())
+        ch_toc_label = chap_titles.get(chapter_id, chapter_id.upper())
         _set_paragraph_outline(anchors[chapter_id], 0, invisible_toc_label=ch_toc_label)
         # Keep the framed grand chapter title alone on its own full page
         cursor = insert_page_break_after(anchors[chapter_id])
@@ -1967,10 +2107,14 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 cursor = _insert_caption_with_seq(
                     doc,
                     cursor,
-                    seq_label="Tableau",
+                    seq_label=labels["table_seq"],
                     num_val=table_counter,
-                    separator=" : ",
-                    title_text="Liste opérationnelle des variables d'étude",
+                    separator=table_sep,
+                    title_text=(
+                        "Operational list of study variables"
+                        if lang == "en"
+                        else "Liste opérationnelle des variables d'étude"
+                    ),
                     fmt=fmt,
                     size_pt=11,
                     bold=True,
@@ -1981,10 +2125,15 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     [v.name, v.role, v.definition or "—", v.measurement_scale or "—", v.collection_tool or "—"]
                     for v in project.variables
                 ]
+                var_headers = (
+                    ["Variable", "Role", "Definition", "Scale", "Tool"]
+                    if lang == "en"
+                    else ["Variable", "Rôle", "Définition", "Échelle", "Outil"]
+                )
                 cursor = _insert_table_after(
                     doc,
                     cursor,
-                    ["Variable", "Rôle", "Définition", "Échelle", "Outil"],
+                    var_headers,
                     var_rows,
                     fmt,
                 )
@@ -1993,10 +2142,14 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 cursor = _insert_caption_with_seq(
                     doc,
                     cursor,
-                    seq_label="Tableau",
+                    seq_label=labels["table_seq"],
                     num_val=table_counter,
-                    separator=" : ",
-                    title_text="Synthèse des études antérieures",
+                    separator=table_sep,
+                    title_text=(
+                        "Summary of previous studies"
+                        if lang == "en"
+                        else "Synthèse des études antérieures"
+                    ),
                     fmt=fmt,
                     size_pt=11,
                     bold=True,
@@ -2007,10 +2160,15 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     [s.authors_country_year, s.study_design, s.population, s.main_results, s.limits or "—"]
                     for s in project.literature_synthesis
                 ]
+                syn_headers = (
+                    ["Author(s), Country (Year)", "Design", "Population", "Main results", "Limitations"]
+                    if lang == "en"
+                    else ["Auteur(s), Pays (Année)", "Devis", "Population", "Résultats principaux", "Limites"]
+                )
                 cursor = _insert_table_after(
                     doc,
                     cursor,
-                    ["Auteur(s), Pays (Année)", "Devis", "Population", "Résultats principaux", "Limites"],
+                    syn_headers,
                     syn_rows,
                     fmt,
                 )
@@ -2019,10 +2177,10 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 cursor = _insert_caption_with_seq(
                     doc,
                     cursor,
-                    seq_label="Tableau",
+                    seq_label=labels["table_seq"],
                     num_val=table_counter,
-                    separator=" : ",
-                    title_text="Chronogramme des activités",
+                    separator=table_sep,
+                    title_text="Activity timeline" if lang == "en" else "Chronogramme des activités",
                     fmt=fmt,
                     size_pt=11,
                     bold=True,
@@ -2030,16 +2188,18 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 )
                 table_counter += 1
                 periods = project.timeline_grid.periods
-                headers = ["Activité"] + periods
+                headers = [labels["chrono_header_activity"] if lang == "en" else "Activité"] + periods
                 gantt_rows: List[List[str]] = []
                 colored: Dict[Tuple[int, int], str] = {}
+                accent_hex = _resolve_accent_hex(fmt)
+                gantt_fill = FMSB_GANTT_FILL if accent_hex == FMSB_BORDEAUX else accent_hex
                 for ri, row in enumerate(project.timeline_grid.rows):
                     vals = [row.activity]
                     active_set = set(row.active_periods)
                     for pi, per in enumerate(periods, start=1):
                         if per in active_set:
                             vals.append("■")
-                            colored[(ri, pi)] = FMSB_GANTT_FILL
+                            colored[(ri, pi)] = gantt_fill
                         else:
                             vals.append("")
                     gantt_rows.append(vals)
@@ -2049,10 +2209,10 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 cursor = _insert_caption_with_seq(
                     doc,
                     cursor,
-                    seq_label="Tableau",
+                    seq_label=labels["table_seq"],
                     num_val=table_counter,
-                    separator=" : ",
-                    title_text="Budget prévisionnel de l'étude",
+                    separator=table_sep,
+                    title_text="Estimated study budget" if lang == "en" else "Budget prévisionnel de l'étude",
                     fmt=fmt,
                     size_pt=11,
                     bold=True,
@@ -2072,11 +2232,16 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                             f"{int(line_total):,}".replace(",", " "),
                         ]
                     )
-                budget_rows.append(["TOTAL GÉNÉRAL", "", "", f"{int(grand_total):,} FCFA".replace(",", " ")])
+                budget_rows.append([labels["budget_total_label"], "", "", f"{int(grand_total):,} FCFA".replace(",", " ")])
+                budget_headers = (
+                    ["Item", "Unit price (FCFA)", "Quantity", "Total price (FCFA)"]
+                    if lang == "en"
+                    else ["Désignation", "Prix unitaire (FCFA)", "Quantité", "Prix total (FCFA)"]
+                )
                 cursor = _insert_table_after(
                     doc,
                     cursor,
-                    ["Désignation", "Prix unitaire (FCFA)", "Quantité", "Prix total (FCFA)"],
+                    budget_headers,
                     budget_rows,
                     fmt,
                     colored_cells={(len(budget_rows) - 1, c): "EFE6E6" for c in range(4)},
@@ -2138,20 +2303,25 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                         img_inserted = False
 
                 if not img_inserted:
+                    img_placeholder = (
+                        f"[{labels['figure_seq']} {figure_counter} placeholder: {img.title} — Source: {img.source_url or 'Local'}]"
+                        if lang == "en"
+                        else f"[Emplacement Figure {figure_counter} : {img.title} — Source : {img.source_url or 'Locale'}]"
+                    )
                     c_img = insert_after(
                         c_img,
-                        f"[Emplacement Figure {figure_counter} : {img.title} — Source : {img.source_url or 'Locale'}]",
+                        img_placeholder,
                         italic=True,
                         size_pt=10,
                         align_override=WD_ALIGN_PARAGRAPH.CENTER,
                     )
                     c_img.paragraph_format.keep_with_next = True
 
-                clean_img_title = clean_caption_title(img.title, "Figure") or img.title
+                clean_img_title = clean_caption_title(img.title, labels["figure_seq"]) or img.title
                 c_img = _insert_caption_with_seq(
                     doc,
                     c_img,
-                    seq_label="Figure",
+                    seq_label=labels["figure_seq"],
                     num_val=figure_counter,
                     separator=". ",
                     title_text=clean_img_title,
@@ -2182,12 +2352,17 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         _set_paragraph_outline(
             anchors["references"],
             0,
-            invisible_toc_label=FMSB_CHAPTER_TITLES["references"],
+            invisible_toc_label=chap_titles["references"],
         )
         cursor = insert_page_break_after(anchors["references"])
+        ref_heading = (
+            "Bibliography (Vancouver Style)"
+            if lang == "en"
+            else "Bibliographie (Système Vancouver)"
+        )
         cursor = insert_after(
             cursor,
-            "Bibliographie (Système Vancouver)",
+            ref_heading,
             bold=True,
             size_pt=fmt.body_font_size_pt + 1,
             align_override=WD_ALIGN_PARAGRAPH.LEFT,
@@ -2221,10 +2396,21 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 cursor,
                 ref_sec.content_html,
                 ref_sec.content_markdown,
-                skip_duplicate_headings=["Bibliographie (Système Vancouver)", "REFERENCES", "Références"],
+                skip_duplicate_headings=[
+                    "Bibliographie (Système Vancouver)",
+                    "Bibliography (Vancouver Style)",
+                    "REFERENCES",
+                    "Références",
+                    "References",
+                ],
             )
         elif not (ref_sec and getattr(ref_sec, "custom_tables", None)):
-            insert_after(cursor, "Aucune référence bibliographique enregistrée.", italic=True, align_override=WD_ALIGN_PARAGRAPH.LEFT)
+            empty_ref_msg = (
+                "No bibliographic references recorded."
+                if lang == "en"
+                else "Aucune référence bibliographique enregistrée."
+            )
+            insert_after(cursor, empty_ref_msg, italic=True, align_override=WD_ALIGN_PARAGRAPH.LEFT)
         cursor = render_custom_tables(ref_sec, cursor, ref_paras)
 
     # FMSB Annexes Pack (grand title alone on its page; each Annexe starts on a new page)
@@ -2232,23 +2418,34 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         _set_paragraph_outline(
             anchors["annexes"],
             0,
-            invisible_toc_label=FMSB_CHAPTER_TITLES["annexes"],
+            invisible_toc_label=chap_titles["annexes"],
         )
         cursor = insert_page_break_after(anchors["annexes"])
         ann_sec = project.sections.get("annexes")
         annexes = build_annexes_pack(project)
         left_prefixes = (
             "à monsieur",
+            "to the",
             "objet :",
+            "subject:",
+            "subject :",
             "pièces jointes",
+            "attachments:",
+            "attachments :",
             "fait à",
+            "done at",
             "signature",
             "nom :",
             "noms :",
+            "name:",
+            "names:",
             "téléphone",
+            "phone",
             "email",
             "investigateur",
+            "investigator",
             "directeur",
+            "supervisor",
             "1.",
             "2.",
             "3.",
@@ -2264,7 +2461,7 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 cursor.paragraph_format.page_break_before = True
             _set_paragraph_outline(cursor, 1)
             if ann.get("kind") == "data_collection":
-                cursor = _render_crf_form_in_docx(doc, cursor, ann, fmt)
+                cursor = _render_crf_form_in_docx(doc, cursor, ann, fmt, lang=lang)
             else:
                 for p_txt in ann["paragraphs"]:
                     stripped = p_txt.strip()

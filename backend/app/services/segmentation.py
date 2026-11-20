@@ -1,4 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import contextvars
 import logging
 import xml.etree.ElementTree as ET
 from typing import Dict, List, Literal, Optional
@@ -6,8 +7,10 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import get_localized_canvas, normalize_lang
 from app.schemas.protocol import ArticleSegment, ProtocolProject, ReferenceItem
 from app.services.gemini_client import gemini_router
+from app.services.pipeline_tracker import emit_pipeline_step
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +70,8 @@ def _fetch_open_access_chunks(pmcid: str, max_chunks: int = 8) -> List[str]:
 
 
 def segment_article(project: ProtocolProject, ref: ReferenceItem) -> Dict[str, object]:
-    """Fast hybrid segmentation: Python splits article into indexed chunks; gemini-3.1-flash-lite classifies."""
+    """Fast hybrid segmentation: Python splits article into indexed chunks; Gemini classifies."""
+    lang = normalize_lang(getattr(project, "language", "fr"))
     chunks: List[str] = []
     if ref.abstract.strip():
         chunks.append(f"[Abstract] {ref.abstract.strip()[:1600]}")
@@ -80,11 +84,28 @@ def segment_article(project: ProtocolProject, ref: ReferenceItem) -> Dict[str, o
     indexed_chunks = "\n".join(f"[C{idx}] {txt}" for idx, txt in enumerate(chunks))
     sections_catalog = "\n".join(
         f"- {s.id} ({s.chapter_title} -> {s.title})"
-        for s in FMSB_SECTIONS
+        for s in get_localized_canvas(lang)
         if s.id in ALLOWED_TARGET_SECTIONS
     )
 
-    prompt = f"""
+    if lang == "en":
+        prompt = f"""
+You are classifying a scientific article for a CAMES/FMSB medical research protocol.
+Topic: {project.research_idea or project.cover.title or project.name}
+
+Available protocol sections:
+{sections_catalog}
+
+Article chunks (Ref #{ref.order_index or '?'} - {ref.title}, {ref.year or ''}):
+{indexed_chunks}
+
+Speed & rigor rules:
+- Extract 1 to 3 key segments citing their `source_chunk_ids` ([C0], [C1]...).
+- Write `summary`, `key_quote_or_data`, and `relevance_note` concisely in academic medical ENGLISH, 100% faithful to numbers in the source text.
+- Indicate epidemiological scope ('monde', 'afrique', 'cameroun', or 'other').
+"""
+    else:
+        prompt = f"""
 Tu classes un article scientifique pour un protocole FMSB.
 Sujet : {project.research_idea or project.cover.title or project.name}
 
@@ -96,7 +117,7 @@ Blocs de l'article (Réf #{ref.order_index or '?'} - {ref.title}, {ref.year or '
 
 Consignes de rapidité et rigueur :
 - Extrais 1 à 3 segments clés en citant leurs `source_chunk_ids` ([C0], [C1]...).
-- Garde `summary`, `key_quote_or_data` et `relevance_note` très concis (1-2 phrases max) et 100% fidèles aux chiffres du texte.
+- Garde `summary`, `key_quote_or_data` et `relevance_note` très concis (1-2 phrases max) en français médical et 100% fidèles aux chiffres du texte.
 - Indique la portée épidémiologique ('monde', 'afrique', 'cameroun', 'other').
 """
     res = gemini_router.generate_structured(
@@ -134,7 +155,7 @@ def segment_project_articles(
     limit: int = 8,
     only_unsegmented: bool = True,
 ) -> Dict[str, object]:
-    """Segment retrieved articles concurrently using gemini-3.1-flash-lite."""
+    """Segment retrieved articles concurrently via configured Gemini reasoning chain."""
     already_segmented_ref_ids = {s.ref_id for s in project.article_segments}
     targets = [
         r
@@ -156,12 +177,31 @@ def segment_project_articles(
             "errors": [],
         }
 
+    emit_pipeline_step(
+        "prepare",
+        f"Préparation de {len(targets)} article(s) à segmenter...",
+        f"Preparing {len(targets)} article(s) for segmentation...",
+        progress_pct=15,
+    )
+
     with ThreadPoolExecutor(max_workers=3) as executor:
-        future_map = {
-            executor.submit(segment_article, project, ref): ref for ref in targets
-        }
+        future_map = {}
+        for ref in targets:
+            ctx = contextvars.copy_context()
+            fut = executor.submit(ctx.run, segment_article, project, ref)
+            future_map[fut] = ref
+        completed_cnt = 0
         for future in as_completed(future_map):
             ref = future_map[future]
+            completed_cnt += 1
+            pct = min(92, 20 + int((completed_cnt / max(len(targets), 1)) * 72))
+            emit_pipeline_step(
+                "segmenting",
+                "Extraction & classement des segments scientifiques...",
+                "Extracting & classifying scientific segments...",
+                detail=f"{completed_cnt}/{len(targets)} articles",
+                progress_pct=pct,
+            )
             try:
                 out = future.result()
                 if out["model_used"]:

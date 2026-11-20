@@ -10,7 +10,9 @@ import {
   Search,
   Sparkles,
 } from "lucide-react";
-import { api } from "../api/client";
+import { api, withAuthToken } from "../api/client";
+import type { RunWithProgressFn } from "../hooks/usePipelineTracker";
+import { useLanguage } from "../i18n/LanguageContext";
 import type {
   ImportReport,
   ProtocolProject,
@@ -22,13 +24,16 @@ interface ResearchPanelProps {
   project: ProtocolProject;
   onProjectUpdated: (updated: ProtocolProject) => void;
   onError: (msg: string) => void;
+  runWithProgress?: RunWithProgressFn;
 }
 
 export function ResearchPanel({
   project,
   onProjectUpdated,
   onError,
+  runWithProgress,
 }: ResearchPanelProps) {
+  const { lang, t } = useLanguage();
   const [tab, setTab] = useState<"search" | "import" | "refs">(
     project.entry_mode === "existing_protocol" ? "import" : "search"
   );
@@ -41,15 +46,45 @@ export function ResearchPanel({
   const [segmentReport, setSegmentReport] = useState<SegmentReport | null>(null);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
 
+  async function runTask<T>(
+    operation: string,
+    titleFr: string,
+    titleEn: string,
+    fn: (taskId?: string) => Promise<T>
+  ): Promise<T> {
+    if (runWithProgress) {
+      return runWithProgress(
+        {
+          operation,
+          titleFr,
+          titleEn,
+          projectId: project.project_id,
+        },
+        (taskId) => fn(taskId)
+      );
+    }
+    return fn(undefined);
+  }
+
   async function handleRunResearch() {
     setBusyResearch(true);
     onError("");
     try {
-      const res = await api.runResearch(project.project_id, {
-        custom_query: customQuery.trim() || undefined,
-        max_per_source: 4,
-        include_web_grounding: true,
-      });
+      const res = await runTask(
+        "research",
+        "Recherche bibliographique",
+        "Literature Search",
+        (taskId) =>
+          api.runResearch(
+            project.project_id,
+            {
+              custom_query: customQuery.trim() || undefined,
+              max_per_source: 4,
+              include_web_grounding: true,
+            },
+            taskId
+          )
+      );
       onProjectUpdated(res.project);
       setResearchReport(res.report);
     } catch (err) {
@@ -63,7 +98,12 @@ export function ResearchPanel({
     setBusySegment(true);
     onError("");
     try {
-      const res = await api.segmentArticles(project.project_id, 8);
+      const res = await runTask(
+        "segment",
+        "Segmentation des articles",
+        "Article Segmentation",
+        (taskId) => api.segmentArticles(project.project_id, 8, taskId)
+      );
       onProjectUpdated(res.project);
       setSegmentReport(res.report);
     } catch (err) {
@@ -79,7 +119,12 @@ export function ResearchPanel({
     setBusyImport(true);
     onError("");
     try {
-      const res = await api.importProtocol(project.project_id, file);
+      const res = await runTask(
+        "import",
+        "Import & analyse du document",
+        "Document Import & Analysis",
+        (taskId) => api.importProtocol(project.project_id, file, taskId)
+      );
       onProjectUpdated(res.project);
       setImportReport(res.report);
     } catch (err) {
@@ -104,7 +149,7 @@ export function ResearchPanel({
             }`}
           >
             <Search className="h-3.5 w-3.5" />
-            1. Recherche & Segmentation IA
+            {t("m1.research_tab")}
           </button>
           <button
             type="button"
@@ -116,7 +161,7 @@ export function ResearchPanel({
             }`}
           >
             <FileUp className="h-3.5 w-3.5" />
-            2. Importer un brouillon (.docx/.pdf)
+            {t("m1.import_tab")}
           </button>
           <button
             type="button"
@@ -128,8 +173,7 @@ export function ResearchPanel({
             }`}
           >
             <Database className="h-3.5 w-3.5" />
-            Références Vancouver ({project.references.length}) · Segments (
-            {project.article_segments.length})
+            {t("m1.refs_tab")} ({project.references.length} / {project.article_segments.length})
           </button>
         </div>
       </div>
@@ -141,7 +185,11 @@ export function ResearchPanel({
               type="text"
               value={customQuery}
               onChange={(e) => setCustomQuery(e.target.value)}
-              placeholder={`Sujet utilisé : "${project.research_idea || project.name}" (ou précisez une requête)...`}
+              placeholder={
+                lang === "en"
+                  ? `Topic: "${project.research_idea || project.name}" (or enter custom query)...`
+                  : `Sujet utilisé : "${project.research_idea || project.name}" (ou précisez une requête)...`
+              }
               className="min-w-[260px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs focus:border-indigo-500 focus:outline-none"
             />
             <button
@@ -156,8 +204,10 @@ export function ResearchPanel({
                 <Search className="h-3.5 w-3.5" />
               )}
               {busyResearch
-                ? "Recherche PubMed / Europe PMC / Web..."
-                : "Lancer recherche documentaire"}
+                ? lang === "en"
+                  ? "Searching PubMed / Europe PMC / Web..."
+                  : "Recherche PubMed / Europe PMC / Web..."
+                : t("m1.run_research")}
             </button>
             <button
               type="button"
@@ -171,8 +221,10 @@ export function ResearchPanel({
                 <Layers className="h-3.5 w-3.5" />
               )}
               {busySegment
-                ? "Segmentation des articles en cours..."
-                : `Segmenter les articles (${project.references.length})`}
+                ? lang === "en"
+                  ? "Segmenting articles..."
+                  : "Segmentation des articles en cours..."
+                : `${t("m1.run_segment")} (${project.references.length})`}
             </button>
           </div>
 
@@ -216,7 +268,7 @@ export function ResearchPanel({
         </div>
       )}
 
-      {tab === "import" && (
+          {tab === "import" && (
         <div className="mt-4 space-y-3">
           <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center hover:border-emerald-500">
             {busyImport ? (
@@ -226,11 +278,15 @@ export function ResearchPanel({
             )}
             <span className="mt-2 text-xs font-semibold text-slate-800">
               {busyImport
-                ? "Analyse et mapping vers les 21 étapes FMSB en cours..."
-                : "Cliquez pour importer un protocole existant (.docx, .pdf, .txt)"}
+                ? lang === "en"
+                  ? "Analyzing and mapping sections..."
+                  : "Analyse et mapping vers les étapes FMSB en cours..."
+                : t("m1.import_btn")}
             </span>
             <span className="mt-0.5 text-[11px] text-slate-500">
-              L'outil découpe votre document selon le canevas FMSB et génère un diagnostic par section.
+              {lang === "en"
+                ? "Automatically splits your document along the CAMES/FMSB canvas, extracts figures, and checks each section."
+                : "L'outil découpe votre document selon le canevas FMSB et génère un diagnostic par section."}
             </span>
             <input
               type="file"
@@ -244,14 +300,47 @@ export function ResearchPanel({
           {importReport && (
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
               <div className="font-semibold">
-                Import réussi ({importReport.filename}) :{" "}
-                {importReport.mapped_sections_count} sections FMSB renseignées
+                {lang === "en" ? "Import completed" : "Import réussi"} ({importReport.filename}) :{" "}
+                {importReport.mapped_sections_count}{" "}
+                {lang === "en" ? "sections populated" : "sections FMSB renseignées"}
                 {(importReport.extracted_images_count ?? 0) > 0
-                  ? `, ${importReport.extracted_images_count} figure(s) extraite(s)`
+                  ? `, ${importReport.extracted_images_count} ${lang === "en" ? "extracted figure(s)" : "figure(s) extraite(s)"}`
                   : ""}
                 .
               </div>
               <p className="mt-1 text-emerald-900">{importReport.global_summary}</p>
+              {importReport.extracted_images && importReport.extracted_images.length > 0 && (
+                <div className="mt-2.5 border-t border-emerald-200/80 pt-2">
+                  <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold text-emerald-900">
+                    <ImageIcon className="h-3.5 w-3.5" />
+                    {lang === "en"
+                      ? `Automatically extracted figures (${importReport.extracted_images.length})`
+                      : `Figures extraites automatiquement (${importReport.extracted_images.length})`}
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                    {importReport.extracted_images.map((im) => (
+                      <div
+                        key={im.asset_id}
+                        className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-white p-1.5"
+                      >
+                        <img
+                          src={withAuthToken(im.source_url)}
+                          alt={im.title}
+                          className="h-12 w-12 shrink-0 rounded border border-slate-200 bg-slate-50 object-contain p-0.5"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate font-semibold text-slate-900" title={im.title}>
+                            {im.title}
+                          </div>
+                          <div className="truncate text-[10px] text-emerald-700">
+                            Section : {im.target_section_id}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -261,7 +350,9 @@ export function ResearchPanel({
         <div className="mt-4 max-h-64 space-y-3 overflow-y-auto pr-1 text-xs">
           {project.references.length === 0 ? (
             <p className="text-slate-500">
-              Aucune référence collectée pour l'instant. Lancez une recherche dans l'onglet 1.
+              {lang === "en"
+                ? "No references collected yet. Run a literature search in Tab 1."
+                : "Aucune référence collectée pour l'instant. Lancez une recherche dans l'onglet 1."}
             </p>
           ) : (
             project.references.map((r) => (
@@ -284,7 +375,7 @@ export function ResearchPanel({
                     rel="noreferrer"
                     className="mt-1 inline-flex items-center gap-1 text-[11px] text-indigo-600 hover:underline"
                   >
-                    Consulter la source <ExternalLink className="h-3 w-3" />
+                    {lang === "en" ? "Open source" : "Consulter la source"} <ExternalLink className="h-3 w-3" />
                   </a>
                 )}
               </div>
@@ -295,7 +386,9 @@ export function ResearchPanel({
             <div className="pt-2">
               <div className="mb-1.5 flex items-center gap-1 font-semibold text-slate-700">
                 <ImageIcon className="h-3.5 w-3.5" />
-                Figures Open Access extraites ({project.images.length})
+                {lang === "en"
+                  ? `Extracted & Open Access Figures (${project.images.length})`
+                  : `Figures Open Access & extraites (${project.images.length})`}
               </div>
               <div className="space-y-2">
                 {project.images.map((img) => (
@@ -309,7 +402,7 @@ export function ResearchPanel({
                         {img.caption}
                       </div>
                       <div className="text-[10px] text-slate-400">
-                        Section cible : {img.target_section_id} · {img.license_info}
+                        {lang === "en" ? "Target section:" : "Section cible :"} {img.target_section_id} · {img.license_info}
                       </div>
                     </div>
                     <button
@@ -328,7 +421,9 @@ export function ResearchPanel({
                           : "bg-slate-100 text-slate-600"
                       }`}
                     >
-                      {img.approved ? "Approuvée" : "Approuver"}
+                      {img.approved
+                        ? lang === "en" ? "Approved" : "Approuvée"
+                        : lang === "en" ? "Approve" : "Approuver"}
                     </button>
                   </div>
                 ))}

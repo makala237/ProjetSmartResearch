@@ -10,6 +10,7 @@ from docx.oxml.ns import nsdecls, qn
 from docx.shared import Pt, RGBColor
 from pydantic import BaseModel
 
+from app.data.i18n import get_doc_labels, normalize_lang
 from app.schemas.protocol import FormattingRules, ProtocolProject
 from app.services.page_layout_engine import (
     DocumentPaginationPlan,
@@ -78,10 +79,11 @@ def extract_project_toc_entries(
     return entries
 
 
-def _render_toc_markdown_and_html(entries: List[TocEntry]) -> Tuple[str, str]:
+def _render_toc_markdown_and_html(entries: List[TocEntry], lang: str = "fr") -> Tuple[str, str]:
     """Render TocEntry list to clean Markdown pipe table and aligned HTML table."""
+    labels = get_doc_labels(lang)
     md_lines = [
-        "| Rubrique / Section du Protocole | Page |",
+        f"| {labels['toc_col_section']} | {labels['toc_col_page']} |",
         "| :--- | ---: |",
     ]
     html_rows: List[str] = []
@@ -104,20 +106,18 @@ def _render_toc_markdown_and_html(entries: List[TocEntry]) -> Tuple[str, str]:
         )
 
     md_lines.append("")
-    md_lines.append(
-        "*Note : Sommaire synthétique CAMES calibré sur les Grands titres & Sous-titres principaux (tenue sur 1 page A4), synchronisé avec Microsoft Word.*"
-    )
+    md_lines.append(f"*{labels['toc_note']}*")
 
     html_out = (
         '<table style="width:100%;border-collapse:collapse;text-align:left;font-size:10.5pt;">'
         '<thead><tr>'
-        '<th style="text-align:left;padding:5px 4px;border-bottom:2px solid #6C2826;color:#6C2826;">Rubrique / Section du Protocole</th>'
-        '<th style="text-align:right;padding:5px 6px;border-bottom:2px solid #6C2826;color:#6C2826;">Page</th>'
+        f'<th style="text-align:left;padding:5px 4px;border-bottom:2px solid #6C2826;color:#6C2826;">{escape(labels["toc_col_section"])}</th>'
+        f'<th style="text-align:right;padding:5px 6px;border-bottom:2px solid #6C2826;color:#6C2826;">{escape(labels["toc_col_page"])}</th>'
         "</tr></thead>"
         f"<tbody>{''.join(html_rows)}</tbody>"
         "</table>"
         '<p style="text-align:left;font-size:9pt;font-style:italic;color:#475569;margin-top:6px;">'
-        "Sommaire exécutif conforme CAMES / FMSB (1 page) — synchronisation dynamique Word (.docx) et PDF."
+        f"{escape(labels['toc_summary_note'])}"
         "</p>"
     )
     return "\n".join(md_lines), html_out
@@ -128,8 +128,9 @@ def generate_clean_toc_section_content(
     pagination_plan: Optional[DocumentPaginationPlan] = None,
 ) -> Tuple[str, str, List[TocEntry]]:
     """Generate clean Markdown and left-aligned HTML table representations of the FMSB TOC."""
+    lang = normalize_lang(getattr(project, "language", "fr"))
     entries = extract_project_toc_entries(project, pagination_plan=pagination_plan)
-    md_out, html_out = _render_toc_markdown_and_html(entries)
+    md_out, html_out = _render_toc_markdown_and_html(entries, lang=lang)
     return md_out, html_out, entries
 
 
@@ -238,6 +239,8 @@ def extract_word_toc_entries_from_docx(
 
 def sync_toc_from_exported_docx(project: ProtocolProject, docx_path: Path) -> bool:
     """Update project.sections['toc'], ['list_of_tables'], and ['list_of_figures'] from Word COM's recalculated fields."""
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    labels = get_doc_labels(lang)
     changed = False
     word_entries = extract_word_toc_entries_from_docx(docx_path, seq_filter=None)
     max_depth = max(1, min(3, int(getattr(project.formatting, "toc_depth", 2) or 2)))
@@ -245,7 +248,7 @@ def sync_toc_from_exported_docx(project: ProtocolProject, docx_path: Path) -> bo
     if len(filtered_entries) >= 3:
         toc_sec = project.sections.get("toc")
         if toc_sec is not None:
-            md_out, html_out = _render_toc_markdown_and_html(filtered_entries)
+            md_out, html_out = _render_toc_markdown_and_html(filtered_entries, lang=lang)
             toc_sec.content_markdown = md_out
             toc_sec.content_html = html_out
             changed = True
@@ -256,14 +259,14 @@ def sync_toc_from_exported_docx(project: ProtocolProject, docx_path: Path) -> bo
         clean_caption_title,
     )
 
-    for seq_label, sec_id in (("Tableau", "list_of_tables"), ("Figure", "list_of_figures")):
+    for seq_label, sec_id in ((labels["table_seq"], "list_of_tables"), (labels["figure_seq"], "list_of_figures")):
         raw_caption_entries = extract_word_toc_entries_from_docx(docx_path, seq_filter=seq_label)
         target_sec = project.sections.get(sec_id)
         if raw_caption_entries and target_sec is not None:
             caption_entries: List[CaptionListEntry] = []
             for idx, item in enumerate(raw_caption_entries, start=1):
                 clean_t = clean_caption_title(item.title, seq_label) or item.title
-                disp = f"Tableau {idx} : {clean_t}" if seq_label == "Tableau" else f"Figure {idx}. {clean_t}"
+                disp = f"{seq_label} {idx} : {clean_t}" if sec_id == "list_of_tables" else f"{seq_label} {idx}. {clean_t}"
                 caption_entries.append(
                     CaptionListEntry(
                         seq_label=seq_label,
@@ -273,7 +276,7 @@ def sync_toc_from_exported_docx(project: ProtocolProject, docx_path: Path) -> bo
                         page_label=item.page_label,
                     )
                 )
-            md_c, html_c = _render_caption_list_markdown_and_html(seq_label, caption_entries)
+            md_c, html_c = _render_caption_list_markdown_and_html(seq_label, caption_entries, lang=lang)
             target_sec.content_markdown = md_c
             target_sec.content_html = html_c
             target_sec.custom_tables = []
@@ -420,6 +423,7 @@ def insert_word_automatic_toc(
     right_tab_dxa = int(round(usable_cm * 566.929))
 
     # Subtle note paragraph (left-aligned, never justified)
+    lang = normalize_lang(getattr(project, "language", "fr"))
     note_el = OxmlElement("w:p")
     anchor_p._p.addnext(note_el)
     note_p = doc.paragraphs[0].__class__(note_el, anchor_p._parent)
@@ -427,7 +431,9 @@ def insert_word_automatic_toc(
     note_p.paragraph_format.space_before = Pt(0)
     note_p.paragraph_format.space_after = Pt(6)
     r_note = note_p.add_run(
-        "Table des matières générée automatiquement (actualisation automatique ou touche F9 sous Word)."
+        "Automatic Table of Contents (updates automatically or press F9 in Word)."
+        if lang == "en"
+        else "Table des matières générée automatiquement (actualisation automatique ou touche F9 sous Word)."
     )
     _apply_toc_entry_font(r_note, font_family, size_pt=9, bold=False)
     r_note.italic = True

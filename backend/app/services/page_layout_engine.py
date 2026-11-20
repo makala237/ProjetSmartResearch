@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import get_chapter_titles, get_doc_labels, get_localized_canvas, normalize_lang
 from app.schemas.protocol import FormattingRules, ProtocolProject, StepStatus
 from app.services.annexes_generator import build_annexes_pack
 from app.services.diagram_renderer import compute_minimum_legible_figure_size_cm
@@ -470,13 +471,18 @@ def _build_layout_blocks(
         )
     )
 
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    chap_titles = get_chapter_titles(lang)
+    doc_labels = get_doc_labels(lang)
+    localized_canvas = get_localized_canvas(lang)
+
     # TOC starts on a fresh blank page (p. ii)
     # Calibrated for CAMES executive summary (Niveaux 1 et 2 = exactement 1 page A4)
     if fmt.auto_toc:
         toc_depth = max(1, min(3, int(getattr(fmt, "toc_depth", 2) or 2)))
-        heading_count = 10 + len([s for s in FMSB_SECTIONS if s.chapter_id not in ("preliminaires", "references", "annexes")]) + len(build_annexes_pack(project))
+        heading_count = 10 + len([s for s in localized_canvas if s.chapter_id not in ("preliminaires", "references", "annexes")]) + len(build_annexes_pack(project))
         if toc_depth >= 3:
-            for s_item in FMSB_SECTIONS:
+            for s_item in localized_canvas:
                 if s_item.chapter_id in ("preliminaires", "references", "annexes"):
                     continue
                 s_obj = project.sections.get(s_item.id)
@@ -496,7 +502,7 @@ def _build_layout_blocks(
                 block_id=next_id("toc"),
                 kind="front_matter",
                 section_id="toc",
-                title="TABLE DES MATIÈRES",
+                title=doc_labels["anchor_toc"],
                 toc_level=0,
                 stream="roman",
                 estimated_height_pt=round(toc_h, 2),
@@ -511,7 +517,7 @@ def _build_layout_blocks(
         if unified_abbrs:
             abbr_rows = [[a.acronym, a.full_form] for a in unified_abbrs]
             abbr_h += _measure_table_height_pt(
-                ["Sigle / Acronyme", "Signification complète"],
+                doc_labels["abbr_headers"].split("|"),
                 abbr_rows,
                 body_pt,
                 usable_width_pt,
@@ -522,7 +528,7 @@ def _build_layout_blocks(
                 block_id=next_id("abbr"),
                 kind="front_matter",
                 section_id="abbreviations",
-                title="ABRÉVIATIONS, ACRONYMES & SIGLES",
+                title=doc_labels["anchor_abbreviations"],
                 toc_level=1,
                 stream="roman",
                 estimated_height_pt=round(max(120.0, abbr_h), 2),
@@ -539,7 +545,7 @@ def _build_layout_blocks(
             if im.approved and im.target_section_id not in ("cover_page", "toc", "abbreviations", "list_of_tables", "list_of_figures", "preliminaires")
         ]
     )
-    for spec_cnt in FMSB_SECTIONS:
+    for spec_cnt in localized_canvas:
         if spec_cnt.id in ("cover_page", "toc", "abbreviations", "list_of_tables", "list_of_figures", "preliminaires"):
             continue
         sec_cnt = project.sections.get(spec_cnt.id)
@@ -554,7 +560,7 @@ def _build_layout_blocks(
                 block_id=next_id("lot"),
                 kind="front_matter",
                 section_id="list_of_tables",
-                title="LISTE DES TABLEAUX",
+                title=doc_labels["list_of_tables_title"],
                 toc_level=1,
                 stream="roman",
                 estimated_height_pt=round(lot_h, 2),
@@ -569,7 +575,7 @@ def _build_layout_blocks(
                 block_id=next_id("lof"),
                 kind="front_matter",
                 section_id="list_of_figures",
-                title="LISTE DES FIGURES",
+                title=doc_labels["list_of_figures_title"],
                 toc_level=1,
                 stream="roman",
                 estimated_height_pt=round(lof_h, 2),
@@ -588,13 +594,13 @@ def _build_layout_blocks(
     figure_idx = 1
     diag_dir = get_settings().storage_dir / "tmp_diagrams" / project.project_id
 
-    for spec in FMSB_SECTIONS:
+    for spec in localized_canvas:
         if spec.chapter_id in ("preliminaires", "references", "annexes"):
             continue
 
         if spec.chapter_id not in seen_chapters:
             seen_chapters.add(spec.chapter_id)
-            ch_title = FMSB_CHAPTER_TITLES.get(spec.chapter_id, spec.chapter_title.upper())
+            ch_title = chap_titles.get(spec.chapter_id, spec.chapter_title.upper())
             # Grand framed chapter title sits ALONE, centered on its own page; body starts next page
             blocks.append(
                 LayoutBlock(
@@ -629,7 +635,7 @@ def _build_layout_blocks(
         )
 
         sec_state = project.sections.get(spec.id)
-        ch_title_ref = FMSB_CHAPTER_TITLES.get(spec.chapter_id, spec.chapter_title.upper())
+        ch_title_ref = chap_titles.get(spec.chapter_id, spec.chapter_title.upper())
         rich_items = (
             _extract_ordered_rich_items(sec_state.content_html, sec_state.content_markdown)
             if sec_state
@@ -803,12 +809,13 @@ def _build_layout_blocks(
                 figure_idx += 1
 
     # 3. References (grand framed title centered on its own page -> bibliography starts next page)
+    ref_bib_title = "Bibliography (Vancouver Style)" if lang == "en" else "Bibliographie (Système Vancouver)"
     blocks.append(
         LayoutBlock(
             block_id=next_id("chap"),
             kind="grand_title_frame",
             section_id="references",
-            title=FMSB_CHAPTER_TITLES["references"],
+            title=chap_titles["references"],
             toc_level=1,
             stream="arabic",
             estimated_height_pt=usable_height_pt,
@@ -823,11 +830,11 @@ def _build_layout_blocks(
             block_id=next_id("sec"),
             kind="heading_2",
             section_id="references",
-            title="Bibliographie (Système Vancouver)",
+            title=ref_bib_title,
             toc_level=2,
             stream="arabic",
             estimated_height_pt=_measure_paragraph_height_pt(
-                "Bibliographie (Système Vancouver)", body_pt + 1.0, spacing, usable_width_pt
+                ref_bib_title, body_pt + 1.0, spacing, usable_width_pt
             ),
             keep_with_next=True,
         )
@@ -897,14 +904,14 @@ def _build_layout_blocks(
         for ct in ref_sec.custom_tables:
             if not ct.headers and not ct.rows:
                 continue
-            clean_ct_title = clean_caption_title(ct.title, "Tableau") or ct.title
+            clean_ct_title = clean_caption_title(ct.title, doc_labels["table_seq"]) or ct.title
             ct_h = _measure_table_height_pt(ct.headers, ct.rows, body_pt, usable_width_pt, has_caption=True)
             blocks.append(
                 LayoutBlock(
                     block_id=next_id("rctbl"),
                     kind="table_with_caption",
                     section_id="references",
-                    title=f"Tableau {table_idx} : {clean_ct_title}",
+                    title=f"{doc_labels['table_seq']} {table_idx} : {clean_ct_title}",
                     toc_level=0,
                     stream="arabic",
                     estimated_height_pt=ct_h,
@@ -919,7 +926,7 @@ def _build_layout_blocks(
             block_id=next_id("chap"),
             kind="grand_title_frame",
             section_id="annexes",
-            title=FMSB_CHAPTER_TITLES["annexes"],
+            title=chap_titles["annexes"],
             toc_level=1,
             stream="arabic",
             estimated_height_pt=usable_height_pt,

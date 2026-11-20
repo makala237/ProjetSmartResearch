@@ -26,6 +26,7 @@ import {
   X,
 } from "lucide-react";
 import { api, withAuthToken } from "../api/client";
+import { useLanguage } from "../i18n/LanguageContext";
 import type {
   LayoutBox,
   PresentationAuditReport,
@@ -101,6 +102,7 @@ function formatDuration(totalSec: number): string {
 }
 
 export function Module4Presentation({ project, onError }: Module4PresentationProps) {
+  const { lang, t } = useLanguage();
   const [deck, setDeck] = useState<PresentationDeck | null>(null);
   const [selectedSlideIndex, setSelectedSlideIndex] = useState<number>(1);
   const [loading, setLoading] = useState(true);
@@ -497,7 +499,11 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
       <div className="flex h-96 items-center justify-center">
         <div className="flex items-center gap-3 text-slate-500">
           <RefreshCw className="h-5 w-5 animate-spin text-[#6C2826]" />
-          <span>Chargement du studio PowerPoint CAMES / FMSB...</span>
+          <span>
+            {lang === "en"
+              ? "Loading CAMES / FMSB PowerPoint Studio..."
+              : "Chargement du studio PowerPoint CAMES / FMSB..."}
+          </span>
         </div>
       </div>
     );
@@ -508,11 +514,10 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
       <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
         <Airplay className="mx-auto h-12 w-12 text-[#6C2826]" />
         <h3 className="mt-3 text-lg font-bold text-slate-900">
-          Studio Diaporama PowerPoint (CAMES / FMSB)
+          {t("m4.title")}
         </h3>
         <p className="mx-auto mt-2 max-w-md text-sm text-slate-600">
-          Générez un diaporama structuré directement à partir des sections réelles, objectifs,
-          variables, figures validées et budget de votre protocole.
+          {t("m4.subtitle")}
         </p>
         <div className="mt-6 flex flex-wrap justify-center gap-3">
           <button
@@ -520,14 +525,14 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
             className="inline-flex items-center gap-2 rounded-xl bg-[#004B87] px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[#003a6b]"
           >
             <Sparkles className="h-4 w-4" />
-            Générer tout par IA (3 rôles)
+            {t("m4.generate_ai")}
           </button>
           <button
             onClick={handleResetFromProtocol}
             className="inline-flex items-center gap-2 rounded-xl bg-[#6C2826] px-5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-[#58201e]"
           >
             <RefreshCw className="h-4 w-4" />
-            Générer depuis le protocole
+            {t("m4.reset_deck")}
           </button>
         </div>
       </div>
@@ -655,10 +660,10 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-base font-bold text-slate-900">
-                Module 4 : Studio PowerPoint (CAMES / FMSB)
+                {t("m4.title")}
               </h2>
               <span className="rounded-full bg-[#6C2826]/10 px-2.5 py-0.5 text-xs font-bold text-[#6C2826]">
-                {deck.slides.length} Diapositives
+                {deck.slides.length} {t("m4.slides_count")}
               </span>
               <span
                 className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-bold ${
@@ -666,19 +671,23 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
                     ? "bg-emerald-50 text-emerald-700"
                     : "bg-amber-50 text-amber-700"
                 }`}
-                title="Durée totale estimée des notes orales (cible CAMES : 10 à 15 min)"
+                title={
+                  lang === "en"
+                    ? "Estimated total presenter script duration (CAMES target: 10–15 min)"
+                    : "Durée totale estimée des notes orales (cible CAMES : 10 à 15 min)"
+                }
               >
                 <Clock className="h-3 w-3" />
-                Soutenance : {formatDuration(totalOralSeconds)}
+                {lang === "en" ? "Defense" : "Soutenance"} : {formatDuration(totalOralSeconds)}
               </span>
               {saving && (
                 <span className="text-[11px] font-medium text-slate-400">
-                  Sauvegarde…
+                  {lang === "en" ? "Saving…" : "Sauvegarde…"}
                 </span>
               )}
             </div>
             <p className="text-xs text-slate-500">
-              16:9 Widescreen • Données réelles du protocole • Police CAMES ≥ 24pt • {deck.decision_notes || "Prêt pour soutenance"}
+              {t("m4.subtitle")} • {deck.decision_notes || (lang === "en" ? "Ready for defense" : "Prêt pour soutenance")}
             </p>
           </div>
         </div>
@@ -688,10 +697,18 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
             onClick={handleGenerateAllAi}
             disabled={aiGeneratingAll}
             className="inline-flex items-center gap-1.5 rounded-lg bg-[#004B87] px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#003a6b] disabled:opacity-50"
-            title="Synthétise toutes les sections, vérifie la conformité CAMES et optimise la mise en page"
+            title={
+              lang === "en"
+                ? "Synthesizes all sections, checks CAMES compliance, and optimizes slide layout"
+                : "Synthétise toutes les sections, vérifie la conformité CAMES et optimise la mise en page"
+            }
           >
             <Sparkles className={`h-3.5 w-3.5 ${aiGeneratingAll ? "animate-spin" : ""}`} />
-            {aiGeneratingAll ? "Génération du diaporama…" : "Générer tout par IA"}
+            {aiGeneratingAll
+              ? lang === "en"
+                ? "Generating deck…"
+                : "Génération du diaporama…"
+              : t("m4.generate_ai")}
           </button>
 
           <button
@@ -700,7 +717,13 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
             className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-50"
           >
             <ShieldCheck className={`h-3.5 w-3.5 ${auditing ? "animate-pulse" : ""}`} />
-            {auditing ? "Audit…" : auditReport ? `Audit CAMES (${auditReport.score}/100)` : "Auditer (CAMES)"}
+            {auditing
+              ? lang === "en"
+                ? "Auditing…"
+                : "Audit…"
+              : auditReport
+                ? `${t("m4.audit_cames")} (${auditReport.score}/100)`
+                : t("m4.audit_cames")}
           </button>
 
           <div className="flex items-center rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs font-semibold">
@@ -714,7 +737,7 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
               }`}
             >
               <PenLine className="h-3 w-3" />
-              Éditeur
+              {lang === "en" ? "Editor" : "Éditeur"}
             </button>
             <button
               type="button"
@@ -732,17 +755,21 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
               }`}
             >
               <Eye className="h-3 w-3" />
-              Vrai Rendu PPTX
+              {lang === "en" ? "True PPTX Render" : "Vrai Rendu PPTX"}
             </button>
           </div>
 
           <button
             onClick={handleResetFromProtocol}
             className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-            title="Reconstruire depuis les sections du Module 1"
+            title={
+              lang === "en"
+                ? "Rebuild slides from Module 1 sections"
+                : "Reconstruire depuis les sections du Module 1"
+            }
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Réinitialiser
+            {t("m4.reset_deck")}
           </button>
 
           <a
@@ -1812,7 +1839,11 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
                             void handleAiGenerateSlide(activeSlide.slide_index);
                           }
                         }}
-                        placeholder="Consigne IA (ex: 3 puces, schéma)…"
+                        placeholder={
+                          lang === "en"
+                            ? "AI prompt (e.g., 3 bullets, chart)…"
+                            : "Consigne IA (ex: 3 puces, schéma)…"
+                        }
                         className="w-48 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-xs focus:border-[#004B87] focus:bg-white focus:outline-none"
                       />
                       <button
@@ -1824,7 +1855,7 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
                         <Sparkles
                           className={`h-3.5 w-3.5 ${aiGeneratingSlide ? "animate-spin" : ""}`}
                         />
-                        {aiGeneratingSlide ? "IA…" : "Régénérer IA"}
+                        {aiGeneratingSlide ? (lang === "en" ? "AI…" : "IA…") : t("m4.regenerate_slide")}
                       </button>
                     </div>
                   )}
@@ -1841,7 +1872,13 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
                     }`}
                   >
                     <CheckCircle2 className="h-3.5 w-3.5" />
-                    {activeSlide.is_validated ? "Validée" : "Valider"}
+                    {activeSlide.is_validated
+                      ? lang === "en"
+                        ? "Validated"
+                        : "Validée"
+                      : lang === "en"
+                        ? "Validate"
+                        : "Valider"}
                   </button>
                 </div>
               </div>
@@ -1862,16 +1899,22 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
               <div className="flex items-center gap-2">
                 <Mic className="h-5 w-5 text-[#6C2826]" />
                 <h3 className="text-sm font-bold text-slate-900">
-                  Notes de Présentation Orale (Discours devant le Jury)
+                  {t("m4.presenter_notes")}
                 </h3>
               </div>
               <div className="flex items-center gap-3 text-xs text-slate-500">
                 <span className="inline-flex items-center gap-1 font-semibold text-slate-700">
                   <Clock className="h-3.5 w-3.5 text-amber-600" />
-                  ~{estimatedSeconds} s sur cette slide
+                  {lang === "en"
+                    ? `~${estimatedSeconds}s on this slide`
+                    : `~${estimatedSeconds} s sur cette slide`}
                 </span>
                 <span>•</span>
-                <span>{wordCount} mots (130 mots/min)</span>
+                <span>
+                  {lang === "en"
+                    ? `${wordCount} words (130 wpm)`
+                    : `${wordCount} mots (130 mots/min)`}
+                </span>
               </div>
             </div>
 
@@ -1880,7 +1923,11 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
               value={activeSlide?.presenter_notes || ""}
               onChange={(e) => updateActiveSlide({ presenter_notes: e.target.value })}
               onBlur={flushPendingSave}
-              placeholder="Rédigez ici votre discours oral pour cette diapositive (exporté dans le volet Notes de PowerPoint)..."
+              placeholder={
+                lang === "en"
+                  ? "Write your spoken jury script for this slide (exported to PowerPoint Presenter Notes)..."
+                  : "Rédigez ici votre discours oral pour cette diapositive (exporté dans le volet Notes de PowerPoint)..."
+              }
               className="mt-3 w-full rounded-xl border border-slate-200 bg-slate-50/50 p-3 text-xs leading-relaxed text-slate-800 focus:border-[#6C2826] focus:bg-white focus:outline-none"
             />
           </div>

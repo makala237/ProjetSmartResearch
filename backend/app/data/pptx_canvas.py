@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Dict, List
 
@@ -32,6 +32,20 @@ PLAN_6_AXES: List[str] = [
     "5. CHRONOGRAMME DES ACTIVITÉS",
     "6. BUDGET PRÉVISIONNEL",
 ]
+
+PLAN_6_AXES_EN: List[str] = [
+    "1. INTRODUCTION & BACKGROUND",
+    "2. GENERAL OBJECTIVE",
+    "3. SPECIFIC OBJECTIVES",
+    "4. STUDY METHODOLOGY",
+    "5. ACTIVITY TIMELINE",
+    "6. ESTIMATED BUDGET",
+]
+
+
+def get_plan_axes(lang: str = "fr") -> List[str]:
+    """Return the 6 canonical defense outline axes in 'fr' or 'en'."""
+    return PLAN_6_AXES_EN if str(lang or "").strip().lower().startswith("en") else PLAN_6_AXES
 
 
 @dataclass(frozen=True)
@@ -260,6 +274,121 @@ PPTX_CANVAS_BLOCKS: List[PptxBlockSpec] = [
 ]
 
 PPTX_BLOCK_BY_ID: Dict[str, PptxBlockSpec] = {b.block_id: b for b in PPTX_CANVAS_BLOCKS}
+
+PPTX_BLOCK_EN_OVERRIDES: Dict[str, Dict[str, str]] = {
+    "welcome": {
+        "title": "WELCOME TO THE RESEARCH PROTOCOL DEFENSE",
+        "breadcrumb": "DEFENSE WELCOME",
+    },
+    "cover": {
+        "title": "OFFICIAL COVER PAGE",
+        "breadcrumb": "FMSB / CAMES COVER",
+    },
+    "plan": {
+        "title": "PRESENTATION OUTLINE",
+        "breadcrumb": "EXECUTIVE OUTLINE",
+    },
+    "introduction": {
+        "title": "Introduction",
+        "breadcrumb": "1. INTRODUCTION & BACKGROUND",
+        "ai_guidance": (
+            "Summarize in CAMES telegraphic style: clinical definition, epidemiological burden "
+            "(Global, Africa, Cameroon), local justification, research question(s), and hypothesis(es). "
+            "Keep each bullet <= 18 words with exact figures and key citations."
+        ),
+    },
+    "objective_general": {
+        "title": "General Objective",
+        "breadcrumb": "2. GENERAL OBJECTIVE",
+        "ai_guidance": (
+            "State the exact general objective of the protocol in 1 clear, impactful sentence (infinitive action verb)."
+        ),
+    },
+    "objective_specific": {
+        "title": "Specific Objectives",
+        "breadcrumb": "3. SPECIFIC OBJECTIVES",
+        "ai_guidance": (
+            "List all exact numbered specific objectives (SO 1, SO 2...) without omitting or inventing any. "
+            "Limit to 3 objectives per slide to maintain >= 24pt readability."
+        ),
+    },
+    "meth_type_site_duree": {
+        "title": "Methodology — Design, Sites & Period",
+        "breadcrumb": "4. METHODOLOGY > DESIGN, SITES & DURATION",
+        "ai_guidance": (
+            "Extract accurately: study design, selected hospitals/sites, total duration, and enrollment period."
+        ),
+    },
+    "meth_population": {
+        "title": "Methodology — Population & Sampling",
+        "breadcrumb": "4. METHODOLOGY > POPULATION & CRITERIA",
+        "ai_guidance": (
+            "Highlight target population, inclusion criteria, exclusion/non-inclusion criteria, "
+            "sampling technique, and calculated sample size (Schwartz formula where applicable)."
+        ),
+    },
+    "meth_procedure": {
+        "title": "Methodology — Procedure & Data Collection",
+        "breadcrumb": "4. METHODOLOGY > PROCEDURE",
+        "ai_guidance": (
+            "Structure operational workflow into 3 to 4 sequential steps (Ethics & Approvals -> "
+            "Recruitment & CRF Capture -> Data Entry & QC -> Statistical Analysis)."
+        ),
+    },
+    "meth_variables": {
+        "title": "Methodology — Study Variables",
+        "breadcrumb": "4. METHODOLOGY > VARIABLES",
+        "ai_guidance": (
+            "Group real study variables into 4 concise categories: sociodemographic, "
+            "clinical/diagnostic, therapeutic/intraoperative, and outcome endpoints."
+        ),
+    },
+    "meth_analyse_ethique": {
+        "title": "Methodology — Statistical Analysis & Ethics",
+        "breadcrumb": "4. METHODOLOGY > ANALYSIS & ETHICS",
+        "ai_guidance": (
+            "Specify statistical software, tests (Chi-square, Fisher, Student t, p-value threshold), "
+            "ethical clearance (IRB / CIER-FMSB), informed consent, and anonymization."
+        ),
+    },
+    "chronogram": {
+        "title": "Activity Timeline",
+        "breadcrumb": "5. TIMELINE",
+        "ai_guidance": (
+            "Summarize up to 7 key timeline milestones as 'Period: Activity' "
+            "(e.g., 'May 2026: Protocol drafting'), ordered from final milestone at top to initial milestone at bottom."
+        ),
+    },
+    "budget": {
+        "title": "Estimated Budget",
+        "breadcrumb": "6. ESTIMATED BUDGET",
+    },
+    "acknowledgements": {
+        "title": "Thank you for your attention!",
+        "breadcrumb": "CLOSING",
+    },
+}
+
+
+def get_localized_pptx_blocks(lang: str = "fr") -> List[PptxBlockSpec]:
+    """Return PPTX canvas block specs localized to 'fr' or 'en' without modifying IDs or templates."""
+    if not str(lang or "").strip().lower().startswith("en"):
+        return list(PPTX_CANVAS_BLOCKS)
+    localized: List[PptxBlockSpec] = []
+    for block in PPTX_CANVAS_BLOCKS:
+        ov = PPTX_BLOCK_EN_OVERRIDES.get(block.block_id)
+        if not ov:
+            localized.append(block)
+        else:
+            localized.append(
+                replace(
+                    block,
+                    title=ov.get("title", block.title),
+                    breadcrumb=ov.get("breadcrumb", block.breadcrumb),
+                    ai_guidance=ov.get("ai_guidance", block.ai_guidance),
+                )
+            )
+    return localized
 
 SLIDE_TEMPLATE_CATALOG: List[Dict[str, str]] = [
     {

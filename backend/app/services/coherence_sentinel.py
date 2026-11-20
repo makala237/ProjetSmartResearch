@@ -5,7 +5,9 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import get_language_prompt_directive, get_localized_section_spec, normalize_lang
 from app.schemas.protocol import CoherenceAlert, ProtocolProject, StepStatus
+from app.services.pipeline_tracker import emit_pipeline_step
 from app.services.rich_formatter import markdown_to_clean_html
 
 
@@ -13,70 +15,72 @@ _ANALYTICAL_OBJECTIVE_RE = re.compile(
     r"\b("
     r"facteurs?\s+associ[ée]s?|"
     r"d[ée]terminants?|"
-    r"comparer|comparaison|"
-    r"association|associ[ée]e?\s+[àa]|"
-    r"corr[ée]l(?:er|ation)|"
-    r"pr[ée]dicteurs?|"
-    r"facteurs?\s+de\s+risque|"
-    r"risque\s+relatif|"
+    r"comparer|comparaison|compare|"
+    r"association|associ[ée]e?\s+[àa]|associated\s+factors?|"
+    r"corr[ée]l(?:er|ation)|correlat\w*|"
+    r"pr[ée]dicteurs?|predictors?|"
+    r"facteurs?\s+de\s+risque|risk\s+factors?|"
+    r"risque\s+relatif|relative\s+risk|"
     r"odds\s+ratio|"
-    r"impact|influence\s+de|"
-    r"identifier\s+les\s+(?:causes|facteurs)"
+    r"impact|influence\s+(?:de|of)|"
+    r"identifier\s+les\s+(?:causes|facteurs)|identify\s+(?:determinants|factors|predictors)"
     r")\b",
     re.IGNORECASE,
 )
 
 _DESCRIPTIVE_OBJECTIVE_RE = re.compile(
-    r"\b(d[ée]crire|pr[ée]valence|fr[ée]quence|r[ée]partition|profil\s+(?:clinique|sociod[ée]mographique|[ée]pid[ée]miologique))\b",
+    r"\b(d[ée]crire|describe|pr[ée]valence|prevalence|fr[ée]quence|frequency|r[ée]partition|distribution|profil\s+(?:clinique|sociod[ée]mographique|[ée]pid[ée]miologique)|(?:clinical|sociodemographic)\s+profile)\b",
     re.IGNORECASE,
 )
 
 _ANALYTICAL_DESIGN_RE = re.compile(
-    r"\b(analytique|cas[\s\-–]t[ée]moins|cohorte|comparati(?:f|ve)|essai\s+clinique|exp[ée]rimental|quasi[\s\-]exp[ée]rimental|transversale\s+[àa]\s+vis[ée]e\s+analytique)\b",
+    r"\b(analytique|analytical|cas[\s\-–]t[ée]moins|case[\s\-–]control|cohorte?|comparati(?:f|ve)|essai\s+clinique|clinical\s+trial|exp[ée]rimental|quasi[\s\-]exp[ée]rimental|transversale\s+[àa]\s+vis[ée]e\s+analytique|analytical\s+cross[\s\-]sectional)\b",
     re.IGNORECASE,
 )
 
 _DESCRIPTIVE_DESIGN_RE = re.compile(
-    r"\bdescripti(?:f|ve)\b",
+    r"\b(descripti(?:f|ve))\b",
     re.IGNORECASE,
 )
 
 _NO_HYPOTHESIS_RE = re.compile(
-    r"\b(aucune\s+hypoth[èe]se|pas\s+d['’]hypoth[èe]se|sans\s+hypoth[èe]se|purement\s+descriptive\s+ne\s+n[ée]cessitant\s+pas\s+d['’]hypoth[èe]se)\b",
+    r"\b(aucune\s+hypoth[èe]se|pas\s+d['’]hypoth[èe]se|sans\s+hypoth[èe]se|purement\s+descriptive\s+ne\s+n[ée]cessitant\s+pas\s+d['’]hypoth[èe]se|no\s+(?:analytical\s+)?hypothesis|without\s+hypothesis)\b",
     re.IGNORECASE,
 )
 
-_CASE_CONTROL_DESIGN_RE = re.compile(r"\bcas[\s\-–]t[ée]moins\b", re.IGNORECASE)
+_CASE_CONTROL_DESIGN_RE = re.compile(r"\b(cas[\s\-–]t[ée]moins|case[\s\-–]control)\b", re.IGNORECASE)
 _CROSS_SECTIONAL_SAMPLE_RE = re.compile(r"\b(lorentz|cochran|schwartz|z\^?2\s*[×\*·]?\s*p)\b", re.IGNORECASE)
-_CASE_CONTROL_SAMPLE_RE = re.compile(r"\b(kelsey|schlesselman|fleiss|appariement|ratio\s+cas|t[ée]moins?\s+pour\s+(?:chaque|un)\s+cas)\b", re.IGNORECASE)
+_CASE_CONTROL_SAMPLE_RE = re.compile(r"\b(kelsey|schlesselman|fleiss|appariement|matching|ratio\s+(?:cas|cases)|t[ée]moins?\s+pour\s+(?:chaque|un)\s+cas|controls?\s+per\s+case)\b", re.IGNORECASE)
 
 _ANALYTICAL_STATS_RE = re.compile(
-    r"\b(chi[\s\-]?2|chi[\s\-]?deux|χ²|fisher|odds\s+ratio|\bor\b|r[ée]gression\s+logistique|r[ée]gression|student|mann[\s\-]?whitney|anova|kruskal|pearson|spearman|multivari[ée]e?)\b",
+    r"\b(chi[\s\-]?2|chi[\s\-]?deux|chi[\s\-]?square|χ²|fisher|odds\s+ratio|\bor\b|r[ée]gression(?:\s+logistique)?|logistic\s+regression|student|mann[\s\-]?whitney|anova|kruskal|pearson|spearman|multivari[ée]e?|multivariate)\b",
     re.IGNORECASE,
 )
 
 _MINORS_RE = re.compile(
-    r"\b(mineurs?|enfants?|adolescents?|nourrissons?|nouveau[\s\-]?n[ée]s?|p[ée]diatrique?s?)\b",
+    r"\b(mineurs?|minors?|enfants?|children|adolescents?|nourrissons?|infants?|nouveau[\s\-]?n[ée]s?|neonates?|p[ée]diatrique?s?|pediatric)\b",
     re.IGNORECASE,
 )
 _ADULT_EXCLUSION_RE = re.compile(
-    r"\b(exclusion\s+des\s+mineurs|[âa]ge\s*(?:sup[ée]rieur\s+ou\s+[ée]gal|>=|≥)\s*18|18\s+ans\s+et\s+plus|majeurs?\s+uniquement)\b",
+    r"\b(exclusion\s+des\s+mineurs|excluding\s+minors|[âa]ge\s*(?:sup[ée]rieur\s+ou\s+[ée]gal|>=|≥)\s*18|18\s+(?:ans\s+et\s+plus|years\s+and\s+older)|majeurs?\s+uniquement|adults?\s+only)\b",
     re.IGNORECASE,
 )
 _PARENTAL_CONSENT_RE = re.compile(
-    r"\b(parents?|parentale?|tuteurs?\s+l[ée]ga(?:l|ux)|repr[ée]sentants?\s+l[ée]ga(?:l|ux)|assentiment)\b",
+    r"\b(parents?|parental[e]?|tuteurs?\s+l[ée]ga(?:l|ux)|legal\s+guardians?|repr[ée]sentants?\s+l[ée]ga(?:l|ux)|assentiment|assent)\b",
     re.IGNORECASE,
 )
 
 _STUDY_DURATION_MONTHS_RE = re.compile(
-    r"\bdur[ée]e(?:\s+totale|\s+globale)?[^\n.]{0,35}?(\d{1,2})\s*mois\b",
+    r"(?:dur[ée]e(?:\s+totale|\s+globale)?|total\s+duration|duration)[^\n.]{0,35}?(\d{1,2})\s*(?:mois|months?)\b",
     re.IGNORECASE,
 )
 
 
-def _section_title(section_id: str) -> str:
-    spec = next((s for s in FMSB_SECTIONS if s.id == section_id), None)
-    return spec.title if spec else section_id
+def _section_title(section_id: str, lang: str = "fr") -> str:
+    try:
+        return get_localized_section_spec(section_id, lang).title
+    except ValueError:
+        return section_id
 
 
 def _combined_section_signal(project: ProtocolProject, memory_map: Dict[str, str], section_id: str) -> str:
@@ -418,11 +422,19 @@ def harmonize_section_with_working_memory(
 
     from app.services.drafting import deterministic_section_checks
     from app.services.gemini_client import gemini_router
-    from app.services.humanizer import sanitize_llm_french_typography
+    from app.services.humanizer import sanitize_llm_typography
+
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    emit_pipeline_step(
+        "coherence_check",
+        "Vérification des alertes de cohérence inter-sections...",
+        "Checking cross-section methodological coherence...",
+        progress_pct=25,
+    )
 
     class _HarmonizedSectionOutput(BaseModel):
         content_markdown: str = Field(
-            description="Texte harmonisé en français médical FMSB conservant 100 % des chiffres, sites et citations [n]."
+            description="Harmonized protocol text keeping 100% of numbers, sites, and [n] citations."
         )
 
     sec = project.sections.get(section_id)
@@ -449,7 +461,7 @@ def harmonize_section_with_working_memory(
             "content_html": sec.content_html,
             "study_type": project.study_type,
             "remaining_alerts_count": len(project.coherence_alerts),
-            "message": "Aucune incohérence active détectée pour cette section.",
+            "message": "No active coherence conflict detected for this section." if lang == "en" else "Aucune incohérence active détectée pour cette section.",
         }
 
     previous_text = (sec.content_markdown or "").strip()
@@ -461,10 +473,17 @@ def harmonize_section_with_working_memory(
     model_used = "coherence-harmonizer-deterministe"
 
     if use_ai:
+        emit_pipeline_step(
+            "llm_harmonize",
+            "Reformulation de la section pour rétablir la cohérence...",
+            "Harmonizing section text with updated protocol decisions...",
+            progress_pct=65,
+        )
         source_sec = project.sections.get(alert.source_section_id)
         source_excerpt = (source_sec.content_markdown if source_sec else "")[:1500]
         orig_nums = re.findall(r"\b\d+(?:[.,]\d+)?\b", previous_text)
         orig_cites = sorted({int(x) for x in re.findall(r"\[(\d+)\]", previous_text)})
+        lang_dir = get_language_prompt_directive(lang)
 
         prompt = f"""
 Tu es un directeur de thèse FMSB / CAMES. Reformule de manière chirurgicale la section suivante pour résoudre une incohérence méthodologique détectée via la mémoire de travail.
@@ -482,6 +501,7 @@ TEXTE ACTUEL DE LA SECTION À REFORMULER :
 RÈGLES STRICTES :
 1. Conserve mot pour mot et EN CHIFFRES EXACTS tous les nombres (ex. 6 mois, tailles, âges, pourcentages), tous les noms d'hôpitaux/sites et toutes les citations [n] présentes.
 2. Corrige uniquement la cohérence méthodologique vis-à-vis de la section source sans ajouter d'hallucinations ni de clichés IA.
+3. {lang_dir}
 """
         try:
             res = gemini_router.generate_structured(
@@ -504,7 +524,7 @@ RÈGLES STRICTES :
         except Exception:
             pass
 
-    final_md, _ = sanitize_llm_french_typography(final_md)
+    final_md, _ = sanitize_llm_typography(final_md, lang=lang)
     sec.content_markdown = final_md
     sec.content_html = markdown_to_clean_html(final_md)
     sec.audit_notes = deterministic_section_checks(project, section_id, final_md)

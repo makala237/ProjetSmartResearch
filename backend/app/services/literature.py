@@ -7,8 +7,10 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
+from app.data.i18n import normalize_lang
 from app.schemas.protocol import ImageAsset, ProtocolProject, ReferenceItem
 from app.services.gemini_client import gemini_router
+from app.services.pipeline_tracker import emit_pipeline_step
 from app.services.vancouver import format_vancouver_citation, refresh_vancouver_references
 
 logger = logging.getLogger(__name__)
@@ -296,9 +298,17 @@ def search_openalex(query: str, max_results: int = 5) -> List[ReferenceItem]:
     return refs
 
 
-def search_web_institutional(query: str) -> Tuple[str, List[ReferenceItem], str]:
+def search_web_institutional(query: str, lang: str = "fr") -> Tuple[str, List[ReferenceItem], str]:
     """Use Gemini Google Search Grounding for WHO / MINSANTE / Cameroon epidemiology data."""
-    prompt = f"""
+    if normalize_lang(lang) == "en":
+        prompt = f"""
+Search for reliable epidemiological figures and institutional guidelines (WHO, Cameroon Ministry of Public Health, CDC, African medical journals) on:
+{query}
+
+Provide a concise factual summary of recent statistics (Global, Africa, Cameroon) in English, citing the sources consulted.
+"""
+    else:
+        prompt = f"""
 Recherche des données épidémiologiques et recommandations institutionnelles fiables (OMS/WHO, Ministère de la Santé du Cameroun, CDC, revues africaines) sur :
 {query}
 
@@ -318,7 +328,7 @@ Résume de manière factuelle les chiffres récents (Monde, Afrique, Cameroun) e
         seen_urls.add(u)
         ref = ReferenceItem(
             source_platform="web",
-            authors=["Source institutionnelle / Web"],
+            authors=["Institutional / Web Source" if normalize_lang(lang) == "en" else "Source institutionnelle / Web"],
             title=src["title"],
             url=u,
             abstract=res["text"][:500],
@@ -383,11 +393,25 @@ def run_research_pipeline(
     include_web_grounding: bool = True,
 ) -> Dict[str, Any]:
     """Execute full multi-source literature search and update project references & images."""
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    emit_pipeline_step(
+        "plan",
+        "Formulation des requêtes biomédicales...",
+        "Formulating biomedical search queries...",
+        progress_pct=15,
+    )
     plan, planner_model = plan_research_queries(project, custom_query=custom_query)
 
     collected: List[ReferenceItem] = []
     source_errors: List[str] = []
 
+    emit_pipeline_step(
+        "pubmed",
+        "Interrogation de PubMed & Europe PMC...",
+        "Querying PubMed & Europe PMC...",
+        detail=" | ".join(plan.pubmed_queries[:2]),
+        progress_pct=35,
+    )
     for q in plan.pubmed_queries[:2]:
         try:
             collected.extend(search_pubmed(q, max_results=max_per_source))
@@ -399,6 +423,12 @@ def run_research_pipeline(
         except Exception as exc:
             source_errors.append(f"EuropePMC ({q}): {exc}")
 
+    emit_pipeline_step(
+        "openalex",
+        "Collecte sur OpenAlex...",
+        "Searching OpenAlex...",
+        progress_pct=60,
+    )
     oa_queries = plan.openalex_queries[:2] if plan.openalex_queries else plan.pubmed_queries[:2]
     for oq in oa_queries:
         try:
@@ -408,11 +438,24 @@ def run_research_pipeline(
 
     web_summary = ""
     if include_web_grounding and plan.local_epidemiology_query:
+        emit_pipeline_step(
+            "web_grounding",
+            "Recherche Web institutionnelle (OMS / MINSANTE)...",
+            "Institutional web grounding (WHO / MINSANTE)...",
+            progress_pct=78,
+        )
         try:
-            web_summary, web_refs, _ = search_web_institutional(plan.local_epidemiology_query)
+            web_summary, web_refs, _ = search_web_institutional(plan.local_epidemiology_query, lang=lang)
             collected.extend(web_refs[:3])
         except Exception as exc:
             source_errors.append(f"Web Grounding: {exc}")
+
+    emit_pipeline_step(
+        "dedup_vancouver",
+        "Déduplication, formatage Vancouver & figures Open Access...",
+        "Deduplicating, Vancouver formatting & Open Access figures...",
+        progress_pct=92,
+    )
 
     # Deduplicate against existing project references
     existing_pmids = {r.pmid for r in project.references if r.pmid}

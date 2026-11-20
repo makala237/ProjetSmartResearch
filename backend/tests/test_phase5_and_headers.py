@@ -128,10 +128,50 @@ def test_health_endpoint_phase5_and_rebranding():
     assert data["pdftoppm_available"] is True
 
 
+def test_custom_header_footer_separator_color_and_width(tmp_path: Path):
+    import zipfile
+
+    project = project_storage.get("5221c9f3-65e")
+    assert project is not None, "Le projet 5221c9f3-65e doit exister"
+    proj_copy = project.model_copy(deep=True)
+    proj_copy.formatting.header_footer_rule_color = "#1E40AF"
+    proj_copy.formatting.header_footer_rule_width_pt = 2.25
+
+    docx_path = tmp_path / "custom_hf_rules.docx"
+    compile_protocol_docx(proj_copy, docx_path)
+    assert docx_path.exists()
+
+    doc = Document(str(docx_path))
+    hdr_el_xml = doc.sections[0].header._element.xml
+    ftr_el_xml = doc.sections[0].footer._element.xml
+    # 2.25 pt * 8 eighths = 18
+    assert 'w:color="1E40AF"' in hdr_el_xml, f"Header separator color missing: {hdr_el_xml}"
+    assert 'w:sz="18"' in hdr_el_xml, f"Header separator width missing: {hdr_el_xml}"
+    assert 'w:color="1E40AF"' in ftr_el_xml, f"Footer separator color missing: {ftr_el_xml}"
+    assert 'w:sz="18"' in ftr_el_xml, f"Footer separator width missing: {ftr_el_xml}"
+
+    with zipfile.ZipFile(docx_path, "r") as zf:
+        all_hdr_xml = "\n".join(
+            zf.read(n).decode("utf-8")
+            for n in zf.namelist()
+            if n.startswith("word/header") and n.endswith(".xml")
+        )
+        all_ftr_xml = "\n".join(
+            zf.read(n).decode("utf-8")
+            for n in zf.namelist()
+            if n.startswith("word/footer") and n.endswith(".xml")
+        )
+
+    assert 'w:color="1E40AF"' in all_hdr_xml and 'w:sz="18"' in all_hdr_xml
+    assert 'w:color="1E40AF"' in all_ftr_xml and 'w:sz="18"' in all_ftr_xml
+
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as td:
         test_word_and_pdf_running_header_footer_from_page_2(Path(td) / "hdr")
         print("[OK] test_word_and_pdf_running_header_footer_from_page_2")
+        test_custom_header_footer_separator_color_and_width(Path(td) / "hf_custom")
+        print("[OK] test_custom_header_footer_separator_color_and_width")
         test_blob_storage_and_pdftoppm_rendering(Path(td) / "blob")
         print("[OK] test_blob_storage_and_pdftoppm_rendering")
     test_health_endpoint_phase5_and_rebranding()

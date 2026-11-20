@@ -152,6 +152,7 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
   const [grantRef, setGrantRef] = useState("");
   const [grantNotes, setGrantNotes] = useState("");
   const [rechargeCredits, setRechargeCredits] = useState<string>("50");
+  const [rechargeDaily38Limit, setRechargeDaily38Limit] = useState<string>("");
   const [rechargeNotes, setRechargeNotes] = useState("");
   const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
   const [confirmRoleChangeId, setConfirmRoleChangeId] = useState<string | null>(null);
@@ -493,16 +494,26 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
   }
 
   async function handleRechargeAI(creditsDelta: number) {
-    if (!selectedUserId || !creditsDelta) return;
+    const parsedDaily = rechargeDaily38Limit.trim()
+      ? Number(rechargeDaily38Limit)
+      : undefined;
+    if (!selectedUserId || (!creditsDelta && parsedDaily === undefined)) return;
     setBusy(true);
     setError(null);
     try {
       await api.adminRechargeAI(selectedUserId, {
         add_credits: creditsDelta,
+        daily_38_limit:
+          parsedDaily !== undefined && !Number.isNaN(parsedDaily)
+            ? parsedDaily
+            : undefined,
         notes: rechargeNotes.trim(),
       });
       setRechargeNotes("");
-      setNotice(`Quota IA crédité (${creditsDelta > 0 ? "+" : ""}${creditsDelta} crédits).`);
+      setRechargeDaily38Limit("");
+      setNotice(
+        `Quota IA mis à jour (${creditsDelta > 0 ? `+${creditsDelta} crédits` : "plafond journalier IA"}).`
+      );
       await refreshAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -1327,8 +1338,19 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                               </span>
                             );
                           })}
-                          <span className="ml-auto font-semibold text-indigo-700">
-                            IA: {u.ai_quota.credits_remaining} cr
+                          <span className="ml-auto inline-flex items-center gap-1.5 font-semibold text-indigo-700">
+                            <span>IA: {u.ai_quota.credits_remaining} cr</span>
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
+                                u.ai_quota.using_35_fallback
+                                  ? "bg-amber-100 text-amber-800"
+                                  : "bg-emerald-100 text-emerald-700"
+                              }`}
+                            >
+                              {u.ai_quota.using_35_fallback
+                                ? "Relais"
+                                : `Principal (${u.ai_quota.daily_38_used ?? 0}/${u.ai_quota.daily_38_limit ?? 15})`}
+                            </span>
                           </span>
                         </div>
                       )}
@@ -1602,9 +1624,22 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                             {userDetail.user.ai_quota.credits_total} restants
                           </span>
                         </div>
-                        <div className="text-[11px] text-slate-500">
-                          Utilisés : {userDetail.user.ai_quota.credits_used} · Appels IA réussis :{" "}
-                          {userDetail.user.ai_calls_count}
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                          <span>
+                            Utilisés : {userDetail.user.ai_quota.credits_used} · Appels IA réussis :{" "}
+                            {userDetail.user.ai_calls_count}
+                          </span>
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                              userDetail.user.ai_quota.using_35_fallback
+                                ? "bg-amber-100 text-amber-800"
+                                : "bg-emerald-100 text-emerald-800"
+                            }`}
+                          >
+                            {userDetail.user.ai_quota.using_35_fallback
+                              ? `Mode Relais (${userDetail.user.ai_quota.daily_38_used ?? 0}/${userDetail.user.ai_quota.daily_38_limit ?? 15})`
+                              : `Moteur Principal (${userDetail.user.ai_quota.daily_38_used ?? 0}/${userDetail.user.ai_quota.daily_38_limit ?? 15}/j)`}
+                          </span>
                         </div>
                         <div className="flex gap-2">
                           <button
@@ -1629,7 +1664,18 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                             type="number"
                             value={rechargeCredits}
                             onChange={(e) => setRechargeCredits(e.target.value)}
-                            className="w-24 rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
+                            placeholder="Crédits +"
+                            className="w-20 rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
+                          />
+                          <input
+                            type="number"
+                            min={1}
+                            max={500}
+                            value={rechargeDaily38Limit}
+                            onChange={(e) => setRechargeDaily38Limit(e.target.value)}
+                            placeholder={`Plafond/j (${userDetail.user.ai_quota.daily_38_limit ?? 15})`}
+                            title="Nouveau plafond journalier du moteur principal avant bascule en mode relais"
+                            className="w-24 rounded-lg border border-slate-300 px-2 py-1.5 text-xs"
                           />
                           <input
                             type="text"
@@ -1646,7 +1692,7 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                           className="inline-flex w-full items-center justify-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
                         >
                           <Zap className="h-3.5 w-3.5" />
-                          Appliquer crédits IA
+                          Appliquer crédits / plafond journalier
                         </button>
                       </div>
                     </div>

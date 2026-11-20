@@ -4,6 +4,11 @@ import uuid
 from pydantic import BaseModel, Field
 
 from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import (
+    get_language_prompt_directive,
+    get_localized_section_spec,
+    normalize_lang,
+)
 from app.schemas.protocol import (
     DiagramConnection,
     DiagramNode,
@@ -15,8 +20,11 @@ from app.schemas.protocol import (
 from app.services.gemini_client import gemini_router
 from app.services.humanizer import (
     HUMAN_ACADEMIC_STYLE_INSTRUCTIONS,
+    get_human_style_instructions,
     sanitize_llm_french_typography,
+    sanitize_llm_typography,
 )
+from app.services.pipeline_tracker import emit_pipeline_step
 from app.services.rich_formatter import markdown_to_clean_html, strip_ascii_diagrams
 from app.services.section_orchestrator import orchestrate_section_action
 from app.services.working_memory import (
@@ -98,16 +106,29 @@ class SuggestedTableOutput(BaseModel):
     rows: List[List[str]] = Field(default_factory=list)
 
 
-def _get_section_spec(section_id: str):
-    for s in FMSB_SECTIONS:
-        if s.id == section_id:
-            return s
-    raise ValueError(f"Section inconnue : {section_id}")
+def _get_section_spec(section_id: str, lang: str = "fr"):
+    return get_localized_section_spec(section_id, lang)
 
 
-def _format_cames_granularity_block(spec) -> str:
+def _format_cames_granularity_block(spec, lang: str = "fr") -> str:
     """Format CAMES/FMSB granular section expectations (concepts, volume, refs, tables/figures)."""
     c = spec.constraints
+    if normalize_lang(lang) == "en":
+        parts = [
+            f"CAMES / FMSB BENCHMARK FOR '{spec.title}':",
+            f"- Target length: {c.min_pages or '?'} to {c.max_pages or '?'} page(s) ({c.min_words or '?'} to {c.max_words or '?'} words).",
+            f"- Allowed references in this section: min={c.min_references if c.min_references is not None else 0}, max={c.max_references if c.max_references is not None else 'unlimited'}.",
+            f"- TABLE policy: {c.table_policy}" + (f" ({c.table_guidance})" if c.table_guidance else ""),
+            f"- FIGURE policy: {c.figure_policy}" + (f" ({c.figure_guidance})" if c.figure_guidance else ""),
+        ]
+        if getattr(spec, "cames_concepts_required", None):
+            parts.append("- MANDATORY CAMES CONCEPTS TO COVER:")
+            parts.extend(f"  * {item}" for item in spec.cames_concepts_required)
+        if getattr(spec, "concepts_to_avoid", None):
+            parts.append("- ELEMENTS TO AVOID HERE (zero redundancy):")
+            parts.extend(f"  * {item}" for item in spec.concepts_to_avoid)
+        return "\n".join(parts)
+
     parts = [
         f"REFERENTIEL CAMES / FMSB POUR '{spec.title}' :",
         f"- Volume cible : {c.min_pages or '?'} à {c.max_pages or '?'} page(s) ({c.min_words or '?'} à {c.max_words or '?'} mots).",
@@ -126,58 +147,59 @@ def _format_cames_granularity_block(spec) -> str:
 
 def deterministic_section_checks(project: ProtocolProject, section_id: str, text: str) -> List[str]:
     """Run hard-coded CAMES/FMSB methodological, volume, reference, and table-policy rules."""
+    lang = normalize_lang(getattr(project, "language", "fr"))
     notes: List[str] = []
-    spec = _get_section_spec(section_id)
+    spec = _get_section_spec(section_id, lang)
     c = spec.constraints
     words = len(text.split()) if text.strip() else 0
 
     if c.required and words == 0:
-        notes.append("Section vide : un contenu est requis par le canevas CAMES/FMSB.")
+        notes.append(
+            "Empty section: content is required by CAMES/FMSB guidelines."
+            if lang == "en"
+            else "Section vide : un contenu est requis par le canevas CAMES/FMSB."
+        )
 
     if words > 0:
         if c.min_words and words < c.min_words:
             notes.append(
-                f"Volume insuffisant selon CAMES/FMSB : {words} mots (minimum recommandé : {c.min_words} mots)."
+                f"Insufficient length per CAMES/FMSB: {words} words (recommended minimum: {c.min_words} words)."
+                if lang == "en"
+                else f"Volume insuffisant selon CAMES/FMSB : {words} mots (minimum recommandé : {c.min_words} mots)."
             )
         if c.max_words and words > c.max_words and section_id not in ("intro_contexte", "intro_interet"):
             notes.append(
-                f"Dépassement de volume CAMES/FMSB : {words} mots (maximum recommandé : {c.max_words} mots)."
+                f"Word limit exceeded per CAMES/FMSB: {words} words (recommended maximum: {c.max_words} words)."
+                if lang == "en"
+                else f"Dépassement de volume CAMES/FMSB : {words} mots (maximum recommandé : {c.max_words} mots)."
             )
 
-    # Check per-section citation bounds (excluding intro which shares a global 5-ref rule and references list itself)
     if words > 0 and section_id not in ("intro_contexte", "intro_interet", "references", "toc", "abbreviations", "list_of_tables", "list_of_figures"):
         cited_nums = set(re.findall(r"\[(\d+)\]", text))
         if c.min_references is not None and c.min_references > 0 and len(cited_nums) < c.min_references:
             notes.append(
-                f"Citations insuffisantes ({len(cited_nums)} réf. citées) : le référentiel CAMES attend au moins {c.min_references} référence(s) [n] dans cette section."
+                f"Insufficient citations ({len(cited_nums)} ref(s) cited): CAMES requires at least {c.min_references} citation(s) [n] in this section."
+                if lang == "en"
+                else f"Citations insuffisantes ({len(cited_nums)} réf. citées) : le référentiel CAMES attend au moins {c.min_references} référence(s) [n] dans cette section."
             )
         if c.max_references is not None and len(cited_nums) > c.max_references:
             notes.append(
-                f"Trop de citations ({len(cited_nums)} réf. citées) : maximum autorisé de {c.max_references} référence(s) dans cette section."
+                f"Too many citations ({len(cited_nums)} ref(s) cited): maximum allowed is {c.max_references} citation(s) in this section."
+                if lang == "en"
+                else f"Trop de citations ({len(cited_nums)} réf. citées) : maximum autorisé de {c.max_references} référence(s) dans cette section."
             )
 
-    # Check table policy
     if c.table_policy == "forbidden":
         sec_obj = project.sections.get(section_id)
         has_raw_table = bool(re.search(r"(?m)^\s*\|[\s:\-|]+\|\s*$", text or ""))
         if has_raw_table or (sec_obj and getattr(sec_obj, "custom_tables", None)):
             notes.append(
-                "Politique CAMES : aucun tableau n'est attendu dans cette section (supprimer les tableaux superflus)."
+                "CAMES policy: no tables are expected in this section (remove superfluous tables)."
+                if lang == "en"
+                else "Politique CAMES : aucun tableau n'est attendu dans cette section (supprimer les tableaux superflus)."
             )
 
-    # Introduction rule: max 2 pages (~900 words) and max 5 references across intro sections
     if section_id in ("intro_contexte", "intro_interet"):
-        intro_text = " ".join(
-            [
-                project.sections.get("intro_contexte").content_markdown
-                if project.sections.get("intro_contexte")
-                else "",
-                project.sections.get("intro_interet").content_markdown
-                if project.sections.get("intro_interet")
-                else "",
-            ]
-        )
-        # If checking current draft before saving, swap with candidate text
         if section_id == "intro_contexte":
             other = project.sections.get("intro_interet").content_markdown if project.sections.get("intro_interet") else ""
             intro_text = f"{text} {other}"
@@ -188,16 +210,24 @@ def deterministic_section_checks(project: ProtocolProject, section_id: str, text
         intro_words = len(intro_text.split())
         if intro_words > 900:
             notes.append(
-                f"Alerte volume Introduction : ~{intro_words} mots au total (cible ≤ 2 pages ≈ 800-900 mots)."
+                f"Introduction length alert: ~{intro_words} words total (target <= 2 pages ≈ 800–900 words)."
+                if lang == "en"
+                else f"Alerte volume Introduction : ~{intro_words} mots au total (cible ≤ 2 pages ≈ 800-900 mots)."
             )
         cited_nums = set(re.findall(r"\[(\d+)\]", intro_text))
         if len(cited_nums) > 5:
             notes.append(
-                f"Alerte FMSB Introduction : {len(cited_nums)} références citées ({sorted(cited_nums)}) alors que le maximum autorisé est 5."
+                f"FMSB Introduction alert: {len(cited_nums)} references cited ({sorted(cited_nums)}) whereas maximum allowed is 5."
+                if lang == "en"
+                else f"Alerte FMSB Introduction : {len(cited_nums)} références citées ({sorted(cited_nums)}) alors que le maximum autorisé est 5."
             )
 
     if section_id == "chap1_hypotheses" and text.strip().endswith("?"):
-        notes.append("L'hypothèse principale doit être formulée à la forme affirmative (pas sous forme de question).")
+        notes.append(
+            "Primary hypothesis must be phrased as an affirmative statement (never as a question)."
+            if lang == "en"
+            else "L'hypothèse principale doit être formulée à la forme affirmative (pas sous forme de question)."
+        )
 
     return notes
 
@@ -208,7 +238,8 @@ def draft_section_with_ai(
     user_instruction: Optional[str] = None,
 ) -> Dict[str, object]:
     """Draft or refine a section grounded strictly in approved ArticleSegments and FMSB rules."""
-    spec = _get_section_spec(section_id)
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    spec = _get_section_spec(section_id, lang)
     if section_id in ("toc", "abbreviations", "list_of_tables", "list_of_figures", "references", "annexes"):
         from app.services.storage import sync_special_sections
 
@@ -220,15 +251,17 @@ def draft_section_with_ai(
                 "content_markdown": synced_sec.content_markdown,
                 "content_html": synced_sec.content_html,
                 "cited_ref_ids": [],
-                "assistant_commentary": "Section liminaire synchronisée automatiquement selon l'ordre officiel FMSB.",
+                "assistant_commentary": (
+                    "Preliminary section automatically synchronized per CAMES/FMSB order."
+                    if lang == "en"
+                    else "Section liminaire synchronisée automatiquement selon l'ordre officiel FMSB."
+                ),
                 "deterministic_notes": [],
             }
 
     current_sec = project.sections.get(section_id)
     current_text = current_sec.content_markdown if current_sec else ""
 
-    # Preliminary Tri-Engine Orchestration:
-    # Memory (Gemini Flash) -> Check initial text -> Gemini Decision 1 -> Agent Antigravity (Vancouver + Images)
     orch = orchestrate_section_action(
         project=project,
         section_id=section_id,
@@ -238,7 +271,6 @@ def draft_section_with_ai(
     orch_trace = orch["orchestration_trace"]
     cross_memory = orch["cross_section_memory"]
 
-    # Gather approved segments targeting this section (including any newly produced by Antigravity)
     ref_by_id = {r.ref_id: r for r in project.references}
     matching_segments = [
         seg
@@ -252,60 +284,76 @@ def draft_section_with_ai(
             for s in matching_segments[:15]
         )
     else:
-        # Fallback: provide available reference list summaries if segmentation hasn't targeted this section
         segments_context = "\n".join(
             f"- Réf [{r.order_index}] {r.title} ({r.year or ''}): {r.abstract[:280]}"
             for r in project.references[:6]
-        ) or "Aucune référence segmentée pour cette section pour le moment."
+        ) or ("No segmented references available for this section yet." if lang == "en" else "Aucune référence segmentée pour cette section pour le moment.")
 
-    mode_priority_rule = (
-        "REGLE PRIORITAIRE (TEXTE INITIAL PRESENT) : Un brouillon ou contenu existe déjà ci-dessous. "
-        "Raisonne EN PRIORITE sur ce texte existant pour l'améliorer, le préciser et atteindre les objectifs FMSB sans effacer l'acquis valide."
-        if orch_trace["initial_text_present"]
-        else "SECTION INITIALEMENT VIDE : Rédige une proposition complète et rigoureuse en t'appuyant sur les références apportées par Antigravity."
-    )
+    if lang == "en":
+        mode_priority_rule = (
+            "PRIORITY RULE (EXISTING TEXT PRESENT): A draft already exists below. "
+            "Reason FIRST on this existing text to refine, sharpen, and meet CAMES/FMSB standards without discarding valid points."
+            if orch_trace["initial_text_present"]
+            else "INITIALLY EMPTY SECTION: Draft a complete, rigorous proposal grounded strictly in the provided references."
+        )
+    else:
+        mode_priority_rule = (
+            "REGLE PRIORITAIRE (TEXTE INITIAL PRESENT) : Un brouillon ou contenu existe déjà ci-dessous. "
+            "Raisonne EN PRIORITE sur ce texte existant pour l'améliorer, le préciser et atteindre les objectifs FMSB sans effacer l'acquis valide."
+            if orch_trace["initial_text_present"]
+            else "SECTION INITIALEMENT VIDE : Rédige une proposition complète et rigoureuse en t'appuyant sur les références apportées par Antigravity."
+        )
 
-    cames_block = _format_cames_granularity_block(spec)
+    cames_block = _format_cames_granularity_block(spec, lang=lang)
+    lang_directive = get_language_prompt_directive(lang)
+    style_instructions = get_human_style_instructions(lang)
 
     prompt = f"""
-Tu es un directeur de recherche médicale à la FMSB (Université de Yaoundé I), expert du référentiel CAMES / CADMEF.
-Rédige (ou améliore) la section suivante du protocole de recherche :
+You are a senior medical research supervisor (FMSB / CAMES / CADMEF standards).
+Draft or refine the following medical research protocol section:
 
-SECTION CIBLE : {spec.chapter_title} — {spec.title}
-DESCRIPTION : {spec.description}
-ATTENDUS FMSB :
+{lang_directive}
+
+TARGET SECTION: {spec.chapter_title} — {spec.title}
+DESCRIPTION: {spec.description}
+EXPECTED POINTS:
 {chr(10).join('- ' + g for g in spec.guidance_points)}
 
 {cames_block}
 
 {mode_priority_rule}
 
-SUJET DE L'ETUDIANT :
-- Titre : {project.cover.title or project.name}
-- Type d'étude : {project.study_type}
-- Idée / Contexte : {project.research_idea}
+STUDY CONTEXT:
+- Title: {project.cover.title or project.name}
+- Study type: {project.study_type}
+- Research idea / Setting: {project.research_idea}
 
-MEMOIRE TRANSVERSALE DES AUTRES SECTIONS (NE PAS RE-EXPLIQUER CE QUI EST DEJA ECRIT AILLEURS) :
+CROSS-SECTION WORKING MEMORY (DO NOT REPEAT FACTS ALREADY WRITTEN ELSEWHERE):
 {cross_memory}
 
-BROUILLON ACTUEL DE CETTE SECTION :
-{current_text if current_text.strip() else '(Vide)'}
+CURRENT SECTION DRAFT:
+{current_text if current_text.strip() else '(Empty)'}
 
-INSTRUCTION / RETOUR DE L'ETUDIANT :
-{user_instruction or 'Rédige une proposition complète, structurée et académique pour cette section.'}
+USER INSTRUCTION:
+{user_instruction or ('Draft a complete, well-structured, rigorous academic text for this section in English.' if lang == 'en' else 'Rédige une proposition complète, structurée et académique pour cette section.')}
 
-SEGMENTS SCIENTIFIQUES VERIFIES DISPONIBLES (dont références Vancouver préparées par Antigravity) :
+VERIFIED SCIENTIFIC SEGMENTS AVAILABLE:
 {segments_context}
 
-REGLES ANTI-HALLUCINATION ET ANTI-REDONDANCE STRICTES :
-1. N'invente AUCUNE statistique, AUCUN taux, AUCUNE référence bibliographique.
-2. Cite uniquement les références fournies ci-dessus sous la forme [n] (ex: [1], [2]).
-3. Ne répète JAMAIS une explication, définition ou statistique déjà exposée dans la MEMOIRE TRANSVERSALE ci-dessus.
-4. Si une donnée locale précise (ex. effectif d'un hôpital ou taux local manquant) n'est pas dans les sources, écris explicitement [À compléter par l'investigateur : ...].
-5. Respecte un style scientifique médical sobre en français, prêt pour un protocole FMSB.
-{HUMAN_ACADEMIC_STYLE_INSTRUCTIONS}
+STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
+1. NEVER invent any statistic, rate, sample figure, or reference.
+2. Cite ONLY the provided references above using [n] notation (e.g., [1], [2]).
+3. NEVER repeat explanations, definitions, or statistics already written in the CROSS-SECTION WORKING MEMORY.
+4. If local institutional data is missing from sources, explicitly write {'[To be completed by investigator: ...]' if lang == 'en' else '[À compléter par l’investigateur : ...]'}.
+{style_instructions}
 {STRUCTURED_TOOLS_INSTRUCTIONS}
 """
+    emit_pipeline_step(
+        "llm_draft",
+        f"Rédaction scientifique de « {spec.title} »...",
+        f"Drafting « {spec.title} »...",
+        progress_pct=72,
+    )
     res = gemini_router.generate_structured(
         role="drafting",
         contents=prompt,
@@ -314,15 +362,23 @@ REGLES ANTI-HALLUCINATION ET ANTI-REDONDANCE STRICTES :
     )
     dto: DraftSectionOutput = res["data"]
 
-    if spec.constraints.table_policy == "forbidden" and "tableau" not in (user_instruction or "").lower():
+    if spec.constraints.table_policy == "forbidden" and "tableau" not in (user_instruction or "").lower() and "table" not in (user_instruction or "").lower():
         dto.suggested_tables = []
 
+    emit_pipeline_step(
+        "postprocess",
+        "Contrôle typographique, normes CAMES & mémoire de travail...",
+        "Typography cleanup, CAMES compliance check & working memory...",
+        detail="",
+        progress_pct=90,
+        active_model=res["model_used"],
+    )
     order_to_ref_id = {r.order_index: r.ref_id for r in project.references if r.order_index}
     cited_ref_ids = [
         order_to_ref_id[idx] for idx in dto.cited_order_indices if idx in order_to_ref_id
     ]
     clean_md = strip_ascii_diagrams(dto.content_markdown)
-    clean_md, _ = sanitize_llm_french_typography(clean_md)
+    clean_md, _ = sanitize_llm_typography(clean_md, lang=lang)
     clean_html = markdown_to_clean_html(clean_md)
     det_notes = deterministic_section_checks(project, section_id, clean_md)
 
@@ -405,7 +461,8 @@ def _append_structured_elements(sec, dto: DraftSectionOutput) -> None:
 
 def audit_section_with_ai(project: ProtocolProject, section_id: str) -> Dict[str, object]:
     """Run Tri-Engine orchestration + deterministic checks + Gemini audit role on a section."""
-    spec = _get_section_spec(section_id)
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    spec = _get_section_spec(section_id, lang)
     sec = project.sections.get(section_id)
     text = sec.content_markdown if sec else ""
 
@@ -420,6 +477,21 @@ def audit_section_with_ai(project: ProtocolProject, section_id: str) -> Dict[str
     det_notes = deterministic_section_checks(project, section_id, text)
 
     if not text.strip():
+        if lang == "en":
+            extra_rec = (
+                f"The literature agent prepared {orch_trace['added_references_count']} Vancouver reference(s) for this section. "
+                if orch_trace["added_references_count"] > 0
+                else ""
+            )
+            return {
+                "model_used": orch_trace.get("decision_model"),
+                "compliant": False,
+                "issues": det_notes or ["Section is empty."],
+                "recommendations": [
+                    extra_rec + "Click « Draft this step » to generate the structured draft."
+                ],
+                "orchestration_trace": orch_trace,
+            }
         extra_rec = (
             f"L'assistant documentaire a préparé {orch_trace['added_references_count']} référence(s) Vancouver pour cette section. "
             if orch_trace["added_references_count"] > 0
@@ -435,23 +507,32 @@ def audit_section_with_ai(project: ProtocolProject, section_id: str) -> Dict[str
             "orchestration_trace": orch_trace,
         }
 
-    cames_block = _format_cames_granularity_block(spec)
+    cames_block = _format_cames_granularity_block(spec, lang=lang)
+    lang_directive = get_language_prompt_directive(lang)
 
     prompt = f"""
-Évalue la conformité méthodologique CAMES / FMSB de cette section de protocole de recherche.
-Section : {spec.chapter_title} — {spec.title}
-Attendus FMSB : {spec.guidance_points}
+Evaluate CAMES / FMSB methodological compliance of this medical research protocol section.
+{lang_directive}
+
+Section: {spec.chapter_title} — {spec.title}
+Expectations: {spec.guidance_points}
 
 {cames_block}
 
-MÉMOIRE DES AUTRES SECTIONS (détecter toute redondance ou répétition inutile) :
+CROSS-SECTION MEMORY (detect redundancy or repetition):
 {cross_memory[:1800]}
 
-Texte rédigé :
+Drafted text:
 {text}
 
-Vérifie : développement des concepts CAMES obligatoires, respect des bornes de mots/références, conformité de la politique tableaux/figures, présence de citations [n], absence de répétition avec les autres sections.
+Verify: coverage of mandatory CAMES concepts, word/reference bounds, table/figure policy compliance, presence of [n] citations, and zero repetition across sections. Return `issues` and `recommendations` in {'English' if lang == 'en' else 'French'}.
 """
+    emit_pipeline_step(
+        "llm_audit",
+        f"Audit méthodologique CAMES de « {spec.title} »...",
+        f"Auditing CAMES compliance for « {spec.title} »...",
+        progress_pct=75,
+    )
     res = gemini_router.generate_structured(
         role="audit",
         contents=prompt,
@@ -482,7 +563,8 @@ def fix_section_issues_with_ai(
     section_id: str,
 ) -> Dict[str, object]:
     """Fix flagged audit notifications in a section after explicit user authorization."""
-    spec = _get_section_spec(section_id)
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    spec = _get_section_spec(section_id, lang)
     sec = project.sections.get(section_id)
     current_text = sec.content_markdown if sec else ""
     issues = sec.audit_notes if sec else []
@@ -500,34 +582,43 @@ def fix_section_issues_with_ai(
         f"[{r.order_index}] {r.vancouver_citation}" for r in project.references[:20]
     )
 
-    cames_block = _format_cames_granularity_block(spec)
+    cames_block = _format_cames_granularity_block(spec, lang=lang)
+    lang_directive = get_language_prompt_directive(lang)
+    style_instructions = get_human_style_instructions(lang)
 
     prompt = f"""
-L'étudiant t'autorise à corriger les manquements signalés par l'audit CAMES/FMSB sur cette section.
+The investigator authorizes you to fix every CAMES/FMSB audit issue flagged in this section.
+{lang_directive}
 
-SECTION : {spec.chapter_title} — {spec.title}
-ATTENDUS FMSB : {spec.guidance_points}
+SECTION: {spec.chapter_title} — {spec.title}
+EXPECTATIONS: {spec.guidance_points}
 
 {cames_block}
 
-MANQUEMENTS SIGNALES A CORRIGER :
-{chr(10).join('- ' + i for i in issues) if issues else '- Améliorer la conformité FMSB globale'}
+FLAGGED ISSUES TO FIX:
+{chr(10).join('- ' + i for i in issues) if issues else '- Improve overall FMSB compliance'}
 
-MEMOIRE TRANSVERSALE DES AUTRES SECTIONS (ne pas dupliquer ailleurs) :
+CROSS-SECTION MEMORY (do not duplicate):
 {cross_memory[:1800]}
 
-TEXTE ACTUEL :
-{current_text or '(Vide)'}
+CURRENT TEXT:
+{current_text or '(Empty)'}
 
-REFERENCES DISPONIBLES :
-{refs_ctx or 'Aucune'}
+AVAILABLE REFERENCES:
+{refs_ctx or 'None'}
 
-Consignes :
-- Raisonne en priorité sur le texte actuel pour corriger précisément chaque manquement signalé tout en conservant les éléments déjà valides et les citations [n] exactes.
-- N'invente aucune donnée chiffrée ni aucune référence.
-{HUMAN_ACADEMIC_STYLE_INSTRUCTIONS}
+Instructions:
+- Reason first on the current text to resolve each flagged issue precisely while preserving valid content and exact [n] citations.
+- Never invent figures, statistics, or references.
+{style_instructions}
 {STRUCTURED_TOOLS_INSTRUCTIONS}
 """
+    emit_pipeline_step(
+        "llm_fix",
+        f"Correction ciblée de « {spec.title} »...",
+        f"Fixing flagged audit issues in « {spec.title} »...",
+        progress_pct=72,
+    )
     res = gemini_router.generate_structured(
         role="drafting",
         contents=prompt,
@@ -537,8 +628,17 @@ Consignes :
     dto: DraftSectionOutput = res["data"]
     if spec.constraints.table_policy == "forbidden":
         dto.suggested_tables = []
+
+    emit_pipeline_step(
+        "postprocess",
+        "Contrôle CAMES final & mise à jour mémoire de travail...",
+        "Running final CAMES checks & working memory sync...",
+        detail="",
+        progress_pct=90,
+        active_model=res["model_used"],
+    )
     clean_md = strip_ascii_diagrams(dto.content_markdown)
-    clean_md, _ = sanitize_llm_french_typography(clean_md)
+    clean_md, _ = sanitize_llm_typography(clean_md, lang=lang)
     clean_html = markdown_to_clean_html(clean_md)
     det_notes = deterministic_section_checks(project, section_id, clean_md)
 
@@ -573,21 +673,24 @@ def suggest_section_diagram_with_ai(
     diagram_goal: str = "",
 ) -> Dict[str, object]:
     """Generate a structured node-and-arrow vector diagram tailored to a section."""
-    spec = _get_section_spec(section_id)
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    spec = _get_section_spec(section_id, lang)
     sec = project.sections.get(section_id)
     upstream_mem, _ = get_upstream_and_current_memory(project, section_id)
+    lang_dir = get_language_prompt_directive(lang)
     prompt = f"""
-Conçois un schéma conceptuel ou diagramme de flux structuré pour un protocole médical FMSB.
-Section : {spec.chapter_title} — {spec.title}
-Sujet du protocole : {project.cover.title or project.name}
-Titre souhaité du schéma : {diagram_title}
-Objectif du schéma : {diagram_goal or 'Modéliser clairement les relations / étapes de cette section'}
-Mémoire de travail en amont (pour harmonie) :
+Design a structured conceptual diagram or flowchart for a medical research protocol.
+{lang_dir}
+Section: {spec.chapter_title} — {spec.title}
+Protocol topic: {project.cover.title or project.name}
+Diagram title: {diagram_title}
+Goal: {diagram_goal or 'Clearly model relationships / steps for this section'}
+Upstream working memory:
 {upstream_mem[:1500]}
 
-Texte actuel de la section : {(sec.content_markdown if sec else '')[:2500]}
+Current section text: {(sec.content_markdown if sec else '')[:2500]}
 
-Renvoie des nœuds (`id` courts ex: "n1", "n2", `shape`: "rounded"|"rectangle"|"circle"|"diamond", `title`, `items` concis) et des `connections` (`from_id`, `to_id`, `label`).
+Return short node `id` values ("n1", "n2"...), `shape`: "rounded"|"rectangle"|"circle"|"diamond", `title`, concise `items`, and `connections` (`from_id`, `to_id`, `label`).
 """
     res = gemini_router.generate_structured(
         role="drafting",
@@ -613,21 +716,24 @@ def suggest_section_table_with_ai(
     table_goal: str = "",
 ) -> Dict[str, object]:
     """Generate a structured table (headers + rows) tailored to a specific FMSB section."""
-    spec = _get_section_spec(section_id)
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    spec = _get_section_spec(section_id, lang)
     sec = project.sections.get(section_id)
     upstream_mem, _ = get_upstream_and_current_memory(project, section_id)
+    lang_dir = get_language_prompt_directive(lang)
     prompt = f"""
-Génère un tableau structuré pertinent pour un protocole médical FMSB.
-Section : {spec.chapter_title} — {spec.title}
-Sujet du protocole : {project.cover.title or project.name}
-Titre souhaité du tableau : {table_title}
-Précision de l'étudiant : {table_goal or 'Structurer clairement les données de cette section'}
-Mémoire de travail en amont (pour harmonie) :
+Generate a structured table for a CAMES/FMSB medical research protocol.
+{lang_dir}
+Section: {spec.chapter_title} — {spec.title}
+Protocol topic: {project.cover.title or project.name}
+Table title: {table_title}
+Goal: {table_goal or 'Clearly structure data for this section'}
+Upstream working memory:
 {upstream_mem[:1500]}
 
-Texte actuel de la section : {(sec.content_markdown if sec else '')[:2000]}
+Current section text: {(sec.content_markdown if sec else '')[:2000]}
 
-Renvoie des colonnes concises (`headers`) et 3 à 6 lignes (`rows`) réalistes et rigoureuses (utilise [À compléter] si une valeur locale manque).
+Return concise column `headers` and 3 to 6 realistic `rows` (use {'[To be completed]' if lang == 'en' else '[À compléter]'} if local figures are missing).
 """
     res = gemini_router.generate_structured(
         role="drafting",

@@ -13,6 +13,7 @@ from docx.shared import Pt, RGBColor
 from pydantic import BaseModel
 
 from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import get_doc_labels, get_localized_canvas, normalize_lang
 from app.schemas.protocol import (
     AbbreviationItem,
     FormattingRules,
@@ -422,22 +423,21 @@ def collect_deduplicated_abbreviations(project: ProtocolProject) -> List[Abbrevi
     return sorted_items
 
 
-def _render_abbreviations_markdown_and_html(items: List[AbbreviationItem]) -> Tuple[str, str]:
+def _render_abbreviations_markdown_and_html(
+    items: List[AbbreviationItem],
+    lang: str = "fr",
+) -> Tuple[str, str]:
     """Render a SINGLE unified 2-column A-Z table (without page column)."""
+    labels = get_doc_labels(lang)
+    col_abbr, col_meaning = labels["abbr_headers"].split("|")
     if not items:
-        md = (
-            "### LISTE DES ABRÉVIATIONS, ACRONYMES & SIGLES\n\n"
-            "Aucune abréviation ou sigle enregistré pour le moment."
-        )
-        html = (
-            '<p style="text-align:left;font-style:italic;color:#64748b;">'
-            "Aucune abréviation ou sigle enregistré pour le moment."
-            "</p>"
-        )
+        empty_txt = labels["no_abbreviations"]
+        md = f"### {labels['anchor_abbreviations']}\n\n{empty_txt}"
+        html = f'<p style="text-align:left;font-style:italic;color:#64748b;">{escape(empty_txt)}</p>'
         return md, html
 
     md_lines = [
-        "| Sigle / Acronyme | Signification complète |",
+        f"| {col_abbr} | {col_meaning} |",
         "| :--- | :--- |",
     ]
     html_rows: List[str] = []
@@ -459,8 +459,8 @@ def _render_abbreviations_markdown_and_html(items: List[AbbreviationItem]) -> Tu
     html = (
         '<table style="width:100%;border-collapse:collapse;text-align:left;font-size:11pt;margin-top:8px;">'
         "<thead><tr>"
-        '<th style="text-align:left;padding:8px 10px;background-color:#6C2826;color:#ffffff;width:24%;">Sigle / Acronyme</th>'
-        '<th style="text-align:left;padding:8px 10px;background-color:#6C2826;color:#ffffff;width:76%;">Signification complète</th>'
+        f'<th style="text-align:left;padding:8px 10px;background-color:#6C2826;color:#ffffff;width:24%;">{escape(col_abbr)}</th>'
+        f'<th style="text-align:left;padding:8px 10px;background-color:#6C2826;color:#ffffff;width:76%;">{escape(col_meaning)}</th>'
         "</tr></thead>"
         f"<tbody>{''.join(html_rows)}</tbody>"
         "</table>"
@@ -473,10 +473,11 @@ def build_unified_abbreviations_list(
     mark_validated: bool = True,
 ) -> Tuple[str, str, List[AbbreviationItem]]:
     """Unify & deduplicate ALL project abbreviations into ONE clean alphabetical table (no duplicates, no page column)."""
+    lang = normalize_lang(getattr(project, "language", "fr"))
     items = collect_deduplicated_abbreviations(project)
     project.abbreviations = items
 
-    md_out, html_out = _render_abbreviations_markdown_and_html(items)
+    md_out, html_out = _render_abbreviations_markdown_and_html(items, lang=lang)
     abbr_sec = project.sections.get("abbreviations")
     if abbr_sec is not None:
         # Eliminate redundant separate custom tables & stray diagrams from abbreviations
@@ -567,12 +568,23 @@ def deduplicate_project_media_and_tables(project: ProtocolProject) -> None:
 def _render_caption_list_markdown_and_html(
     seq_label: str,
     entries: List[CaptionListEntry],
+    lang: str = "fr",
 ) -> Tuple[str, str]:
-    col_title = f"N° & Titre du {seq_label.lower()}" if seq_label == "Tableau" else "N° & Titre de la figure"
+    is_en = normalize_lang(lang) == "en"
+    is_tbl = seq_label.lower() in ("tableau", "table")
+    col_title = (
+        ("No. & Table Title" if is_tbl else "No. & Figure Title")
+        if is_en
+        else (f"N° & Titre du {seq_label.lower()}" if is_tbl else "N° & Titre de la figure")
+    )
     empty_msg = (
-        "Aucun tableau numéroté n'est encore présent dans le protocole."
-        if seq_label == "Tableau"
-        else "Aucune figure ou schéma vectoriel n'est encore présent dans le protocole."
+        ("No numbered tables are currently present in this protocol." if is_tbl else "No numbered figures or conceptual diagrams are currently present in this protocol.")
+        if is_en
+        else (
+            "Aucun tableau numéroté n'est encore présent dans le protocole."
+            if is_tbl
+            else "Aucune figure ou schéma vectoriel n'est encore présent dans le protocole."
+        )
     )
     if not entries:
         md = f"{empty_msg}"
@@ -599,7 +611,9 @@ def _render_caption_list_markdown_and_html(
 
     md_lines.append("")
     md_lines.append(
-        "*Note : numérotation séquentielle sans doublon et pagination A4 synchronisée automatiquement avec Word.*"
+        "*Note: Deduplicated sequential numbering and A4 pagination automatically synchronized with Word.*"
+        if is_en
+        else "*Note : numérotation séquentielle sans doublon et pagination A4 synchronisée automatiquement avec Word.*"
     )
     html = (
         '<table style="width:100%;border-collapse:collapse;text-align:left;font-size:11pt;margin-top:8px;">'
@@ -621,6 +635,11 @@ def extract_project_tables_and_figures_entries(
     """Extract ordered, deduplicated Table and Figure entries paired with their exact A4 pages."""
     from app.services.page_layout_engine import _build_layout_blocks, plan_document_pagination
 
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    labels = get_doc_labels(lang)
+    tbl_seq = labels["table_seq"]
+    fig_seq = labels["figure_seq"]
+
     deduplicate_project_media_and_tables(project)
     plan = pagination_plan or plan_document_pagination(project, use_gemini_decision=use_gemini_decision)
     all_blocks, _ = _build_layout_blocks(project)
@@ -638,7 +657,7 @@ def extract_project_tables_and_figures_entries(
 
     for blk in all_blocks:
         if blk.kind == "table_with_caption" and blk.title.strip():
-            raw_title = clean_caption_title(blk.title, "Tableau")
+            raw_title = clean_caption_title(blk.title, tbl_seq)
             dedup_k = f"{blk.section_id}::{_normalize_dedup_key(raw_title)}"
             if not raw_title or dedup_k in seen_tbl_titles:
                 continue
@@ -652,16 +671,16 @@ def extract_project_tables_and_figures_entries(
             )
             table_entries.append(
                 CaptionListEntry(
-                    seq_label="Tableau",
+                    seq_label=tbl_seq,
                     number=num,
                     title=raw_title,
-                    display_label=f"Tableau {num} : {raw_title}",
+                    display_label=f"{tbl_seq} {num} : {raw_title}",
                     page_label=pg_lbl,
                     section_id=blk.section_id,
                 )
             )
         elif blk.kind == "figure_with_caption" and blk.title.strip():
-            raw_title = clean_caption_title(blk.title, "Figure")
+            raw_title = clean_caption_title(blk.title, fig_seq)
             dedup_k = f"{blk.section_id}::{_normalize_dedup_key(raw_title)}"
             if not raw_title or dedup_k in seen_fig_titles:
                 continue
@@ -675,10 +694,10 @@ def extract_project_tables_and_figures_entries(
             )
             figure_entries.append(
                 CaptionListEntry(
-                    seq_label="Figure",
+                    seq_label=fig_seq,
                     number=num,
                     title=raw_title,
-                    display_label=f"Figure {num}. {raw_title}",
+                    display_label=f"{fig_seq} {num}. {raw_title}",
                     page_label=pg_lbl,
                     section_id=blk.section_id,
                 )
@@ -694,13 +713,15 @@ def build_unified_tables_and_figures_lists(
     use_gemini_decision: bool = True,
 ) -> Tuple[List[CaptionListEntry], List[CaptionListEntry], Any]:
     """Update sections['list_of_tables'] & sections['list_of_figures'] with clean deduplicated paginated lists."""
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    labels = get_doc_labels(lang)
     table_entries, figure_entries, plan = extract_project_tables_and_figures_entries(
         project,
         pagination_plan=pagination_plan,
         use_gemini_decision=use_gemini_decision,
     )
 
-    lot_md, lot_html = _render_caption_list_markdown_and_html("Tableau", table_entries)
+    lot_md, lot_html = _render_caption_list_markdown_and_html(labels["table_seq"], table_entries, lang=lang)
     lot_sec = project.sections.get("list_of_tables")
     if lot_sec is not None:
         lot_sec.custom_tables = []
@@ -711,7 +732,7 @@ def build_unified_tables_and_figures_lists(
             lot_sec.status = StepStatus.VALIDATED
         lot_sec.audit_notes = []
 
-    lof_md, lof_html = _render_caption_list_markdown_and_html("Figure", figure_entries)
+    lof_md, lof_html = _render_caption_list_markdown_and_html(labels["figure_seq"], figure_entries, lang=lang)
     lof_sec = project.sections.get("list_of_figures")
     if lof_sec is not None:
         lof_sec.custom_tables = []
@@ -746,8 +767,10 @@ def insert_word_automatic_caption_list(
     seq_label: str,
     entries: List[CaptionListEntry],
     fmt: FormattingRules,
+    lang: str = "fr",
 ) -> Any:
     """Insert a native Word TOC \\h \\z \\c <seq_label> field pre-populated with left-aligned dot-leader entries."""
+    norm_lang = normalize_lang(lang)
     font_family = fmt.font_family or "Times New Roman"
     base_pt = int(fmt.body_font_size_pt or 12)
     usable_cm = max(12.0, 21.0 - 2.0 * float(fmt.margin_cm or 2.5))
@@ -760,7 +783,9 @@ def insert_word_automatic_caption_list(
     note_p.paragraph_format.space_before = Pt(0)
     note_p.paragraph_format.space_after = Pt(6)
     r_note = note_p.add_run(
-        "Liste générée automatiquement (actualisation automatique ou touche F9 sous Word)."
+        "Automatically generated list (updates automatically or press F9 in Word)."
+        if norm_lang == "en"
+        else "Liste générée automatiquement (actualisation automatique ou touche F9 sous Word)."
     )
     _apply_list_entry_font(r_note, font_family, size_pt=9)
     r_note.italic = True
@@ -780,11 +805,19 @@ def insert_word_automatic_caption_list(
             parse_xml(f'<w:instrText {nsdecls("w")} xml:space="preserve">{instr}</w:instrText>')
         )
         r._r.append(parse_xml(f'<w:fldChar {nsdecls("w")} w:fldCharType="separate"/>'))
-        empty_msg = (
-            "Aucun tableau numéroté dans le protocole."
-            if seq_label == "Tableau"
-            else "Aucune figure numérotée dans le protocole."
-        )
+        is_table = seq_label.strip().lower() in ("tableau", "table")
+        if norm_lang == "en":
+            empty_msg = (
+                "No numbered table in the protocol."
+                if is_table
+                else "No numbered figure in the protocol."
+            )
+        else:
+            empty_msg = (
+                "Aucun tableau numéroté dans le protocole."
+                if is_table
+                else "Aucune figure numérotée dans le protocole."
+            )
         r_msg = empty_p.add_run(empty_msg)
         _apply_list_entry_font(r_msg, font_family, size_pt=base_pt)
         r_msg.italic = True

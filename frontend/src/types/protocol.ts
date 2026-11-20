@@ -223,6 +223,8 @@ export interface FormattingRules {
   border_color?: string;
   box_border_width_pt?: number;
   box_corner_radius_pct?: number;
+  header_footer_rule_color?: string;
+  header_footer_rule_width_pt?: number;
 }
 
 export interface SectionState {
@@ -280,6 +282,7 @@ export interface ProtocolProject {
   locked_author_name?: string;
   locked_matricule?: string;
   name: string;
+  language?: "fr" | "en";
   entry_mode: EntryMode;
   research_idea: string;
   study_type: string;
@@ -300,6 +303,29 @@ export interface ProtocolProject {
   formatting: FormattingRules;
   created_at: string;
   updated_at: string;
+}
+
+export interface PipelineProgressStep {
+  key: string;
+  label: string;
+  detail: string;
+  status: "running" | "done" | "error";
+  timestamp: string;
+}
+
+export interface PipelineProgressSnapshot {
+  task_id: string;
+  project_id: string;
+  operation: string;
+  lang: "fr" | "en";
+  title: string;
+  status: "running" | "done" | "error";
+  progress_pct: number;
+  active_model: string;
+  fallback_triggered: boolean;
+  error_message: string;
+  elapsed_sec: number;
+  steps: PipelineProgressStep[];
 }
 
 export interface ModelsStatus {
@@ -366,6 +392,15 @@ export interface AuditResult {
   orchestration_trace?: SectionOrchestrationTrace;
 }
 
+export interface ExtractedImportImageSummary {
+  asset_id: string;
+  title: string;
+  target_section_id: string;
+  source_url: string;
+  caption?: string;
+  anchor_hint?: string;
+}
+
 export interface ImportReport {
   model_used: string;
   filename: string;
@@ -375,6 +410,7 @@ export interface ImportReport {
   mapped_sections_count: number;
   extracted_references_count?: number;
   extracted_images_count?: number;
+  extracted_images?: ExtractedImportImageSummary[];
 }
 
 export interface GlobalAuditCheck {

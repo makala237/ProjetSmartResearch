@@ -6,7 +6,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -28,6 +28,7 @@ from app.api.deps import (
 )
 from app.core.config import WORKSPACE_DIR, get_settings
 from app.data.fmsb_canvas import FMSB_CANVAS_VERSION, FMSB_SECTIONS
+from app.data.i18n import get_localized_canvas, normalize_lang
 from app.db.database import engine, get_db, init_db
 from app.db.models import UserORM
 from app.schemas.auth import (
@@ -46,6 +47,7 @@ from app.services.auth_service import (
 )
 from app.services.licensing_service import (
     assert_ai_quota_available,
+    is_module_active,
     record_usage_and_debit,
 )
 from app.schemas.protocol import (
@@ -62,6 +64,7 @@ from app.schemas.protocol import (
     StepStatus,
     UpdateCRFSchemaRequest,
     UpdateFormattingRequest,
+    UpdateLanguageRequest,
     UpdateSectionRequest,
     UpdateStructuredDataRequest,
     UpsertPatientRecordRequest,
@@ -87,7 +90,11 @@ from app.services.drafting import (
     suggest_section_diagram_with_ai,
     suggest_section_table_with_ai,
 )
-from app.services.gemini_client import gemini_router
+from app.services.gemini_client import (
+    gemini_router,
+    get_ai_routing_policy,
+    reset_ai_routing_policy,
+)
 from app.services.global_audit import (
     run_global_protocol_audit,
     sync_structured_from_sections,
@@ -107,6 +114,13 @@ from app.services.media_transport import (
     transport_and_repair_project_images,
 )
 from app.services.page_layout_engine import plan_document_pagination
+from app.services.pipeline_tracker import (
+    emit_pipeline_step,
+    finish_pipeline_task,
+    get_pipeline_task_snapshot,
+    reset_pipeline_context,
+    start_pipeline_task,
+)
 from app.services.section_orchestrator import orchestrate_section_action
 from app.services.working_memory import (
     get_working_memory_path,
@@ -196,6 +210,15 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def _cleanup_request_contextvars(request: Request, call_next):
+    try:
+        return await call_next(request)
+    finally:
+        reset_ai_routing_policy()
+        reset_pipeline_context()
 
 
 class ResearchRequest(BaseModel):
@@ -364,12 +387,60 @@ def list_models(_current_user: UserORM = Depends(get_active_user)) -> Dict[str, 
 
 
 @app.get("/api/canvas")
-def get_canvas() -> Dict[str, object]:
+def get_canvas(lang: str = "fr") -> Dict[str, object]:
+    norm_lang = normalize_lang(lang)
+    sections = get_localized_canvas(norm_lang)
     return {
         "version": FMSB_CANVAS_VERSION,
-        "total_steps": len(FMSB_SECTIONS),
-        "sections": [s.model_dump() for s in FMSB_SECTIONS],
+        "language": norm_lang,
+        "total_steps": len(sections),
+        "sections": [s.model_dump() for s in sections],
     }
+
+
+@app.get("/api/pipeline/progress/{task_id}")
+async def get_pipeline_progress(
+    task_id: str,
+    current_user: UserORM = Depends(get_active_user),
+) -> Dict[str, object]:
+    snapshot = get_pipeline_task_snapshot(
+        task_id=task_id,
+        requesting_user_id=current_user.id,
+        is_admin=(current_user.role == "admin"),
+    )
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Tâche introuvable ou expirée.")
+    return snapshot
+
+
+def _begin_request_pipeline_task(
+    request: Request,
+    current_user: UserORM,
+    project: ProtocolProject,
+    operation: str,
+    title_fr: str,
+    title_en: str,
+) -> bool:
+    task_id = (request.headers.get("X-Pipeline-Task-Id") or "").strip()
+    if not task_id:
+        return False
+    policy = get_ai_routing_policy()
+    initial_model = (
+        settings.gemini_fallback_reasoning_model
+        if policy.get("force_fallback_35")
+        else settings.gemini_primary_reasoning_model
+    )
+    start_pipeline_task(
+        task_id=task_id,
+        user_id=current_user.id,
+        project_id=project.project_id,
+        operation=operation,
+        title_fr=title_fr,
+        title_en=title_en,
+        lang=getattr(project, "language", "fr"),
+        initial_model=initial_model,
+    )
+    return True
 
 
 @app.post("/api/translate-department")
@@ -437,6 +508,18 @@ def get_project(
     if ensure_project_crf_fields(project):
         project = project_storage.save(project)
     return project
+
+
+@app.patch("/api/projects/{project_id}/language", response_model=ProtocolProject)
+def update_project_language(
+    project_id: str,
+    payload: UpdateLanguageRequest,
+    current_user: UserORM = Depends(require_any_active_license()),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
+    project.language = normalize_lang(payload.language)
+    sync_special_sections(project)
+    return project_storage.save(project)
 
 
 @app.patch("/api/projects/{project_id}/cover", response_model=ProtocolProject)
@@ -704,6 +787,14 @@ def run_project_research(
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="research")
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="research",
+        title_fr="Recherche bibliographique",
+        title_en="Literature Search",
+    )
     try:
         report = run_research_pipeline(
             project,
@@ -722,8 +813,12 @@ def run_project_research(
             model_used=str(report.get("planner_model", "")),
             ip_address=get_client_ip(request),
         )
+        if tracked:
+            finish_pipeline_task("done")
         return {"project": project.model_dump(mode="json"), "report": report}
     except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -742,6 +837,14 @@ def segment_project(
             status_code=400,
             detail="Aucune référence trouvée dans le projet. Lancez d'abord la recherche documentaire.",
         )
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="segment",
+        title_fr="Segmentation des articles",
+        title_en="Article Segmentation",
+    )
     try:
         report = segment_project_articles(
             project,
@@ -760,8 +863,12 @@ def segment_project(
             model_used=",".join(str(m) for m in models[:2]),
             ip_address=get_client_ip(request),
         )
+        if tracked:
+            finish_pipeline_task("done")
         return {"project": project.model_dump(mode="json"), "report": report}
     except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -905,8 +1012,22 @@ def draft_section(
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="draft_section")
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="draft",
+        title_fr="Rédaction de la section",
+        title_en="Section Drafting",
+    )
     try:
         if section_id in ("toc", "abbreviations", "list_of_tables", "list_of_figures"):
+            emit_pipeline_step(
+                "lists_sync",
+                "Génération des listes & sommaire...",
+                "Generating lists & table of contents...",
+                progress_pct=50,
+            )
             res_lists = generate_all_lists_and_toc(project, use_gemini_decision=True)
             saved = project_storage.save(project)
             sec_out = saved.sections[section_id]
@@ -926,6 +1047,8 @@ def draft_section(
                 model_used=str(plan.model_used or ""),
                 ip_address=get_client_ip(request),
             )
+            if tracked:
+                finish_pipeline_task("done")
             return {
                 "project": saved.model_dump(mode="json"),
                 "result": {
@@ -944,6 +1067,12 @@ def draft_section(
             user_instruction=payload.instruction,
         )
         if section_id == "references":
+            emit_pipeline_step(
+                "vancouver_check",
+                "Validation Vancouver ICMJE...",
+                "Validating Vancouver ICMJE citations...",
+                progress_pct=82,
+            )
             ref_report = build_and_validate_vancouver_references(
                 project, use_gemini_decision=True, mark_validated=False
             )
@@ -955,6 +1084,12 @@ def draft_section(
                 result["audit_notes"] = list(result.get("audit_notes") or []) + [
                     f"Validation Vancouver ICMJE : {ref_report['references_count']} références."
                 ]
+        emit_pipeline_step(
+            "coherence_save",
+            "Vérification de cohérence & sauvegarde...",
+            "Checking coherence & saving...",
+            progress_pct=92,
+        )
         _sync_module2_queue(project)
         evaluate_project_coherence(project, changed_section_id=section_id)
         project_storage.save(project)
@@ -968,8 +1103,12 @@ def draft_section(
             model_used=str(result.get("model_used", "")),
             ip_address=get_client_ip(request),
         )
+        if tracked:
+            finish_pipeline_task("done")
         return {"project": project.model_dump(mode="json"), "result": result}
     except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -985,6 +1124,14 @@ def audit_section(
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="audit_section")
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="audit",
+        title_fr="Audit de conformité FMSB",
+        title_en="FMSB Compliance Audit",
+    )
     try:
         result = audit_section_with_ai(project, section_id=section_id)
         project_storage.save(project)
@@ -998,8 +1145,12 @@ def audit_section(
             model_used=str(result.get("model_used", "")),
             ip_address=get_client_ip(request),
         )
+        if tracked:
+            finish_pipeline_task("done")
         return {"project": project.model_dump(mode="json"), "result": result}
     except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -1015,8 +1166,22 @@ def fix_section(
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="fix_section")
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="fix",
+        title_fr="Correction guidée par l'audit",
+        title_en="Audit-Guided Fix",
+    )
     try:
         result = fix_section_issues_with_ai(project, section_id=section_id)
+        emit_pipeline_step(
+            "coherence_save",
+            "Synchronisation & sauvegarde...",
+            "Syncing & saving...",
+            progress_pct=92,
+        )
         _sync_module2_queue(project)
         evaluate_project_coherence(project, changed_section_id=section_id)
         project_storage.save(project)
@@ -1030,8 +1195,12 @@ def fix_section(
             model_used=str(result.get("model_used", "")),
             ip_address=get_client_ip(request),
         )
+        if tracked:
+            finish_pipeline_task("done")
         return {"project": project.model_dump(mode="json"), "result": result}
     except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -1057,9 +1226,23 @@ def humanize_section(
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="humanize_section")
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="humanize",
+        title_fr="Humanisation académique",
+        title_en="Academic Humanization",
+    )
     try:
         use_ai = True if payload is None else bool(payload.use_ai)
         result = humanize_section_with_ai(project, section_id=section_id, use_ai=use_ai)
+        emit_pipeline_step(
+            "coherence_save",
+            "Mise à jour & sauvegarde...",
+            "Updating & saving...",
+            progress_pct=92,
+        )
         _sync_module2_queue(project)
         evaluate_project_coherence(project, changed_section_id=section_id)
         project_storage.save(project)
@@ -1075,8 +1258,12 @@ def humanize_section(
             model_used=model_used,
             ip_address=get_client_ip(request),
         )
+        if tracked:
+            finish_pipeline_task("done")
         return {"project": project.model_dump(mode="json"), "result": result}
     except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -1093,6 +1280,14 @@ def harmonize_section(
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="harmonize_section")
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="harmonize",
+        title_fr="Harmonisation de cohérence",
+        title_en="Coherence Harmonization",
+    )
     try:
         alert_id = payload.alert_id if payload is not None else None
         use_ai = payload.use_ai if payload is not None else True
@@ -1116,8 +1311,12 @@ def harmonize_section(
             model_used=model_used,
             ip_address=get_client_ip(request),
         )
+        if tracked:
+            finish_pipeline_task("done")
         return {"project": saved.model_dump(mode="json"), "result": result}
     except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -1139,6 +1338,14 @@ def run_section_antigravity(
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="antigravity_section")
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="antigravity",
+        title_fr="Enrichissement scientifique web",
+        title_en="Web Scientific Enrichment",
+    )
     try:
         orch = orchestrate_section_action(
             project,
@@ -1159,12 +1366,16 @@ def run_section_antigravity(
             model_used=str((orch.get("antigravity_report") or {}).get("agent_used", "")),
             ip_address=get_client_ip(request),
         )
+        if tracked:
+            finish_pipeline_task("done")
         return {
             "project": project.model_dump(mode="json"),
             "orchestration_trace": orch["orchestration_trace"],
             "antigravity_report": orch["antigravity_report"],
         }
     except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -1496,6 +1707,14 @@ async def import_existing_protocol(
         if "cover_page" in project.sections
         else None
     )
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="import",
+        title_fr="Import & analyse du document",
+        title_en="Document Import & Analysis",
+    )
     content = await file.read()
     try:
         report = analyze_and_import_protocol(
@@ -1519,8 +1738,12 @@ async def import_existing_protocol(
             model_used=str(report.get("model_used", "")),
             ip_address=get_client_ip(request),
         )
+        if tracked:
+            finish_pipeline_task("done")
         return {"project": project.model_dump(mode="json"), "report": report}
     except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc))
 
 
@@ -1601,39 +1824,66 @@ def generate_project_toc(
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     cost = assert_ai_quota_available(db, current_user, module_key="module2", action="generate_toc")
-    res = generate_all_lists_and_toc(project, use_gemini_decision=True)
-    plan = res["plan"]
-    entries = res["toc_entries"]
-    saved = project_storage.save(project)
-    record_usage_and_debit(
-        db=db,
-        user=current_user,
-        module_key="module2",
-        action="generate_toc",
-        credits_cost=cost,
-        project_id=project_id,
-        model_used=str(plan.model_used or ""),
-        ip_address=get_client_ip(request),
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="generate_toc",
+        title_fr="Génération TDM & listes",
+        title_en="TOC & Lists Generation",
     )
-    pagination_summary = {
-        "model_used": plan.model_used,
-        "decision_notes": plan.decision_notes,
-        "total_roman_pages": plan.total_roman_pages,
-        "total_arabic_pages": plan.total_arabic_pages,
-        "usable_width_cm": plan.usable_width_cm,
-        "usable_height_cm": plan.usable_height_cm,
-        "figures_checked": len(plan.figure_dimensions_cm),
-        "figure_dimensions_cm": plan.figure_dimensions_cm,
-    }
-    return {
-        "project": saved.model_dump(mode="json"),
-        "entries_count": res["entries_count"],
-        "abbreviations_count": res["abbreviations_count"],
-        "tables_count": res["tables_count"],
-        "figures_count": res["figures_count"],
-        "entries": [e.model_dump(mode="json") for e in entries],
-        "pagination_summary": pagination_summary,
-    }
+    try:
+        emit_pipeline_step(
+            "collect_items",
+            "Collecte des abréviations, tableaux et figures...",
+            "Collecting abbreviations, tables, and figures...",
+            progress_pct=35,
+        )
+        res = generate_all_lists_and_toc(project, use_gemini_decision=True)
+        emit_pipeline_step(
+            "build_toc",
+            "Pagination A4 & mise à jour du sommaire...",
+            "Computing A4 pagination & updating TOC...",
+            progress_pct=85,
+        )
+        plan = res["plan"]
+        entries = res["toc_entries"]
+        saved = project_storage.save(project)
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module2",
+            action="generate_toc",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(plan.model_used or ""),
+            ip_address=get_client_ip(request),
+        )
+        pagination_summary = {
+            "model_used": plan.model_used,
+            "decision_notes": plan.decision_notes,
+            "total_roman_pages": plan.total_roman_pages,
+            "total_arabic_pages": plan.total_arabic_pages,
+            "usable_width_cm": plan.usable_width_cm,
+            "usable_height_cm": plan.usable_height_cm,
+            "figures_checked": len(plan.figure_dimensions_cm),
+            "figure_dimensions_cm": plan.figure_dimensions_cm,
+        }
+        if tracked:
+            finish_pipeline_task("done")
+        return {
+            "project": saved.model_dump(mode="json"),
+            "entries_count": res["entries_count"],
+            "abbreviations_count": res["abbreviations_count"],
+            "tables_count": res["tables_count"],
+            "figures_count": res["figures_count"],
+            "entries": [e.model_dump(mode="json") for e in entries],
+            "pagination_summary": pagination_summary,
+        }
+    except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/projects/{project_id}/validate-references")
@@ -1645,40 +1895,75 @@ def validate_project_references(
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     cost = assert_ai_quota_available(db, current_user, module_key="module2", action="validate_references")
-    ref_report = build_and_validate_vancouver_references(
-        project, use_gemini_decision=True, mark_validated=True
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="validate_refs",
+        title_fr="Validation Vancouver ICMJE",
+        title_en="Vancouver ICMJE Validation",
     )
-    generate_all_lists_and_toc(project, use_gemini_decision=False)
-    saved = project_storage.save(project)
-    record_usage_and_debit(
-        db=db,
-        user=current_user,
-        module_key="module2",
-        action="validate_references",
-        credits_cost=cost,
-        project_id=project_id,
-        model_used=str(ref_report.get("decision_model", "")),
-        ip_address=get_client_ip(request),
-    )
-    return {
-        "project": saved.model_dump(mode="json"),
-        **ref_report,
-    }
+    try:
+        emit_pipeline_step(
+            "vancouver_audit",
+            "Normalisation des citations Vancouver...",
+            "Normalizing Vancouver citations...",
+            progress_pct=45,
+        )
+        ref_report = build_and_validate_vancouver_references(
+            project, use_gemini_decision=True, mark_validated=True
+        )
+        emit_pipeline_step(
+            "sync_lists",
+            "Synchronisation du sommaire & sauvegarde...",
+            "Synchronizing TOC & saving...",
+            progress_pct=85,
+        )
+        generate_all_lists_and_toc(project, use_gemini_decision=False)
+        saved = project_storage.save(project)
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module2",
+            action="validate_references",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(ref_report.get("decision_model", "")),
+            ip_address=get_client_ip(request),
+        )
+        if tracked:
+            finish_pipeline_task("done")
+        return {
+            "project": saved.model_dump(mode="json"),
+            **ref_report,
+        }
+    except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/projects/{project_id}/export/docx")
 def export_docx(
     project_id: str,
     request: Request,
+    payload: Optional[UpdateFormattingRequest] = Body(default=None),
     current_user: UserORM = Depends(get_active_user),
     db: Session = Depends(get_db),
 ) -> FileResponse:
     project = get_authorized_project(project_id, current_user)
+    saved_formatting = project.formatting.model_copy(deep=True)
+    can_write_m2 = current_user.role == "admin" or is_module_active(db, current_user, "module2")[0]
+    if payload is not None and payload.formatting is not None:
+        project.formatting = payload.formatting
+
     out_path = settings.storage_dir / "exports" / f"{project.project_id}_protocole.docx"
     compile_protocol_docx(project, out_path)
     toc_depth = int(getattr(project.formatting, "toc_depth", 2) or 2)
     if update_docx_fields_via_word_com(out_path, toc_depth=toc_depth):
         sync_toc_from_exported_docx(project, out_path)
+    if not can_write_m2:
+        project.formatting = saved_formatting
     project_storage.save(project)
     record_usage_and_debit(
         db=db,
@@ -1700,14 +1985,22 @@ def export_docx(
 def export_pdf(
     project_id: str,
     request: Request,
+    payload: Optional[UpdateFormattingRequest] = Body(default=None),
     current_user: UserORM = Depends(get_active_user),
     db: Session = Depends(get_db),
 ) -> FileResponse:
     project = get_authorized_project(project_id, current_user)
+    saved_formatting = project.formatting.model_copy(deep=True)
+    can_write_m2 = current_user.role == "admin" or is_module_active(db, current_user, "module2")[0]
+    if payload is not None and payload.formatting is not None:
+        project.formatting = payload.formatting
+
     out_path = settings.storage_dir / "exports" / f"{project.project_id}_protocole.pdf"
     try:
         compile_protocol_pdf(project, out_path)
         sync_toc_from_exported_docx(project, out_path.with_suffix(".docx"))
+        if not can_write_m2:
+            project.formatting = saved_formatting
         project_storage.save(project)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))

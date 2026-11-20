@@ -29,6 +29,11 @@ class AIQuotaOut(BaseModel):
     credits_total: int = 0
     credits_used: int = 0
     credits_remaining: int = 0
+    daily_38_limit: int = 15
+    daily_38_used: int = 0
+    daily_38_remaining: int = 15
+    active_reasoning_model: str = "gemini-3.8-flash"
+    using_35_fallback: bool = False
 
 
 class UserMeOut(BaseModel):

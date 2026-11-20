@@ -1,9 +1,11 @@
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from fastapi import HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.security import ensure_utc
 from app.db.models import (
     AdminAuditLogORM,
@@ -15,6 +17,7 @@ from app.db.models import (
     UserORM,
     utcnow,
 )
+from app.services.gemini_client import set_ai_routing_policy
 
 MODULE_KEYS: Tuple[str, ...] = ("module1", "module2", "module3", "module4")
 
@@ -121,6 +124,52 @@ def assert_module_write_allowed(db: Session, user: UserORM, module_key: str) -> 
     )
 
 
+def get_student_daily_38_usage(db: Session, user: UserORM) -> Dict[str, Any]:
+    """Compute today's Gemini 3.8 usage for a user and whether student 3.5 relay is active."""
+    settings = get_settings()
+    primary = (settings.gemini_primary_reasoning_model or "gemini-3.8-flash").strip()
+    fallback = (settings.gemini_fallback_reasoning_model or "gemini-3.5-flash").strip()
+
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    quota = db.get(UserAIQuotaORM, user.id)
+    configured_limit = quota.daily_38_limit if (quota and quota.daily_38_limit is not None) else None
+    limit = int(configured_limit if configured_limit is not None else settings.student_daily_gemini38_limit)
+
+    events = (
+        db.query(UsageEventORM)
+        .filter(
+            UsageEventORM.user_id == user.id,
+            UsageEventORM.status == "ok",
+            func.lower(UsageEventORM.model_used).contains("gemini-3.8"),
+        )
+        .all()
+    )
+    used_today = sum(
+        1 for ev in events if (ensure_utc(ev.created_at) or now) >= day_start
+    )
+
+    if user.role == "admin":
+        return {
+            "daily_limit": 0,
+            "used_today": used_today,
+            "remaining_today": 9999,
+            "fallback_active": False,
+            "active_reasoning_model": primary,
+        }
+
+    fallback_active = bool(limit > 0 and used_today >= limit)
+    remaining_today = max(0, limit - used_today)
+    return {
+        "daily_limit": limit,
+        "used_today": used_today,
+        "remaining_today": remaining_today,
+        "fallback_active": fallback_active,
+        "active_reasoning_model": fallback if fallback_active else primary,
+    }
+
+
 def assert_ai_quota_available(
     db: Session,
     user: UserORM,
@@ -136,6 +185,13 @@ def assert_ai_quota_available(
 
     cost = AI_ACTION_COSTS.get(action, 1) if credits_cost is None else int(credits_cost)
     if user.role == "admin" or cost <= 0:
+        daily_38 = get_student_daily_38_usage(db, user)
+        set_ai_routing_policy(
+            prefer_fallback_35=daily_38["fallback_active"],
+            reason="student_daily_38_cap" if daily_38["fallback_active"] else "",
+            user_id=user.id,
+            daily_status=daily_38,
+        )
         return max(0, cost)
 
     quota = db.get(UserAIQuotaORM, user.id)
@@ -159,6 +215,13 @@ def assert_ai_quota_available(
                 ),
             },
         )
+    daily_38 = get_student_daily_38_usage(db, user)
+    set_ai_routing_policy(
+        prefer_fallback_35=daily_38["fallback_active"],
+        reason="student_daily_38_cap" if daily_38["fallback_active"] else "",
+        user_id=user.id,
+        daily_status=daily_38,
+    )
     return cost
 
 
@@ -377,8 +440,9 @@ def recharge_user_ai_quota(
     target_user: UserORM,
     add_credits: int,
     notes: str = "",
+    daily_38_limit: Optional[int] = None,
 ) -> UserAIQuotaORM:
-    """Adjust or top up a user's AI credit allowance and record an admin audit entry."""
+    """Adjust or top up a user's AI credit allowance (and optional daily Gemini 3.8 cap) and record an admin audit entry."""
     now = utcnow()
     quota = db.get(UserAIQuotaORM, target_user.id)
     if quota is None:
@@ -387,7 +451,10 @@ def recharge_user_ai_quota(
         db.flush()
 
     old_total = int(quota.credits_total or 0)
+    old_daily = quota.daily_38_limit
     quota.credits_total = max(int(quota.credits_used or 0), old_total + int(add_credits))
+    if daily_38_limit is not None:
+        quota.daily_38_limit = int(daily_38_limit) if int(daily_38_limit) >= 1 else None
     quota.updated_at = now
 
     db.add(
@@ -400,6 +467,8 @@ def recharge_user_ai_quota(
                 "old_total": old_total,
                 "new_total": quota.credits_total,
                 "credits_used": int(quota.credits_used or 0),
+                "old_daily_38_limit": old_daily,
+                "new_daily_38_limit": quota.daily_38_limit,
                 "notes": notes.strip(),
             },
             created_at=now,

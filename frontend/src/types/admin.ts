@@ -84,6 +84,7 @@ export interface AdminAdjustEntitlementRequest {
 
 export interface AdminRechargeAIRequest {
   add_credits: number;
+  daily_38_limit?: number;
   notes?: string;
 }
 

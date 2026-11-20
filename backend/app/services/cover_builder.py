@@ -12,6 +12,7 @@ from docx.oxml.ns import nsdecls, qn
 from docx.shared import Cm, Pt, RGBColor
 from PIL import Image as PILImage
 
+from app.data.i18n import get_doc_labels, normalize_lang
 from app.schemas.protocol import CoverMetadata, FormattingRules, ProtocolProject, SupervisorInfo
 
 WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
@@ -543,22 +544,24 @@ def build_fmsb_cover_page(
     )
 
     # 4. Exact FMSB thesis protocol line just below title box + Student identity
-    degree = (cover.degree_label or "Doctorat en Médecine Générale").strip()
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    labels = get_doc_labels(lang)
+    degree = (cover.degree_label or ("Medical Doctor Thesis" if lang == "en" else "Doctorat en Médecine Générale")).strip()
     add_cover_para(
-        f"Protocole de thèse de {degree} rédigé par :",
+        labels["cover_written_by"].format(degree=degree),
         size_pt=12,
         italic=False,
         space_before=6,
         space_after=10,
     )
 
-    author = (cover.author_name or "Noms & Prénoms de l'étudiant").strip()
+    author = (cover.author_name or ("Candidate Full Name" if lang == "en" else "Noms & Prénoms de l'étudiant")).strip()
     add_cover_para(author, size_pt=13, bold=True, space_before=0, space_after=3)
 
     matricule = (cover.matricule or "—").strip()
-    add_cover_para(f"Matricule : {matricule}", size_pt=12, bold=False, space_before=0, space_after=16)
+    add_cover_para(labels["cover_reg_no"].format(matricule=matricule), size_pt=12, bold=False, space_before=0, space_after=16)
 
-    # 5. Supervision table (Directeur | Co-directeur(s))
+    # 5. Supervision table (Directeur / Supervisor | Co-directeur(s) / Co-supervisor(s))
     sup_tbl = doc.add_table(rows=1, cols=2)
     sup_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
     sup_tbl.autofit = False
@@ -583,7 +586,7 @@ def build_fmsb_cover_page(
             p_empty.alignment = WD_ALIGN_PARAGRAPH.CENTER
             p_empty.paragraph_format.space_before = Pt(0)
             p_empty.paragraph_format.space_after = Pt(2)
-            r_empty = p_empty.add_run("À renseigner")
+            r_empty = p_empty.add_run(labels["cover_to_complete"])
             _apply_cover_run_font(r_empty, "Times New Roman", size_pt=12, bold=False)
             return
 
@@ -609,8 +612,8 @@ def build_fmsb_cover_page(
     dir_list = [cover.director_info] if cover.director_info.has_content() else []
     codir_list = [c for c in cover.co_directors_info if c.has_content()]
 
-    _render_supervisor_blocks(sup_tbl.cell(0, 0), "Directeur", dir_list)
-    _render_supervisor_blocks(sup_tbl.cell(0, 1), "Co-directeur(s)", codir_list)
+    _render_supervisor_blocks(sup_tbl.cell(0, 0), labels["cover_supervisor"], dir_list)
+    _render_supervisor_blocks(sup_tbl.cell(0, 1), labels["cover_cosupervisor"], codir_list)
     toc_el.addprevious(sup_tbl._tbl)
 
     # 6. Academic year pushed toward the bottom of Page 1 inside a small matching bordered frame
@@ -630,7 +633,7 @@ def build_fmsb_cover_page(
         anchor_el=toc_el,
         parent_container=toc_anchor_p._parent,
         doc=doc,
-        text=f"Année académique {acad}",
+        text=labels["cover_academic_year"].format(year=acad),
         width_cm=7.4,
         height_cm=1.05,
         font_family="Times New Roman",

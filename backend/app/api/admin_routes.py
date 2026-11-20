@@ -49,6 +49,7 @@ from app.services.licensing_service import (
     MODULE_KEYS,
     adjust_user_module_entitlement,
     apply_license_plan_to_user,
+    get_student_daily_38_usage,
     recharge_user_ai_quota,
 )
 from app.services.storage import project_storage
@@ -167,18 +168,29 @@ def _build_student_rows(
         else:
             summary = "none"
 
+        daily_38 = get_student_daily_38_usage(db, u)
         q = quota_by_user.get(u.id)
         if q:
             ai_quota = AIQuotaOut(
                 credits_total=int(q.credits_total),
                 credits_used=int(q.credits_used),
                 credits_remaining=max(0, int(q.credits_total) - int(q.credits_used)),
+                daily_38_limit=daily_38["daily_limit"],
+                daily_38_used=daily_38["used_today"],
+                daily_38_remaining=daily_38["remaining_today"],
+                active_reasoning_model=daily_38["active_reasoning_model"],
+                using_35_fallback=daily_38["fallback_active"],
             )
         else:
             ai_quota = AIQuotaOut(
                 credits_total=100000 if u.role == "admin" else 0,
                 credits_used=0,
                 credits_remaining=100000 if u.role == "admin" else 0,
+                daily_38_limit=daily_38["daily_limit"],
+                daily_38_used=daily_38["used_today"],
+                daily_38_remaining=daily_38["remaining_today"],
+                active_reasoning_model=daily_38["active_reasoning_model"],
+                using_35_fallback=daily_38["fallback_active"],
             )
 
         pr = proj_by_user.get(u.id)
@@ -847,6 +859,7 @@ def recharge_ai_credits(
         target_user=user,
         add_credits=payload.add_credits,
         notes=payload.notes,
+        daily_38_limit=payload.daily_38_limit,
     )
     db.refresh(user)
     return _build_student_rows(db, [user])[0]

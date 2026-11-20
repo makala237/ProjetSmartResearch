@@ -1,3 +1,4 @@
+from contextvars import ContextVar
 import json
 import logging
 import re
@@ -9,10 +10,38 @@ from google.genai import errors, types
 from pydantic import BaseModel
 
 from app.core.config import get_settings
+from app.services.pipeline_tracker import update_pipeline_model
 
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 GEMINI_DECISION_1_LABEL = "Gemini Decision 1"
+
+_ai_routing_policy: ContextVar[Dict[str, Any]] = ContextVar("ai_routing_policy", default={})
+
+
+def set_ai_routing_policy(
+    prefer_fallback_35: bool,
+    reason: str = "",
+    user_id: str = "",
+    daily_status: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Bind per-request Gemini reasoning routing policy into the current context."""
+    _ai_routing_policy.set(
+        {
+            "prefer_fallback_35": bool(prefer_fallback_35),
+            "reason": reason,
+            "user_id": user_id,
+            "daily_status": daily_status or {},
+        }
+    )
+
+
+def get_ai_routing_policy() -> Dict[str, Any]:
+    return dict(_ai_routing_policy.get() or {})
+
+
+def reset_ai_routing_policy() -> None:
+    _ai_routing_policy.set({})
 
 
 class _VancouverRefItemOut(BaseModel):
@@ -67,6 +96,29 @@ class GeminiRouter:
             )
         return models
 
+    def _resolve_candidates(self, role: str) -> Tuple[List[str], bool]:
+        """Resolve ordered model fallback chain, applying student daily Gemini 3.8 cap -> 3.5 relay."""
+        chains = self.settings.model_chains()
+        candidates = list(chains.get(role, chains["drafting"]))
+        policy = get_ai_routing_policy()
+        prefer_35 = bool(policy.get("prefer_fallback_35"))
+        if not prefer_35:
+            return candidates, False
+
+        fallback_model = (self.settings.gemini_fallback_reasoning_model or "gemini-3.5-flash").strip()
+        filtered = [m for m in candidates if "gemini-3.8" not in m.lower()]
+
+        if role == "layout_decision":
+            head = [m for m in filtered if "decision-1" in m.lower()]
+            tail = [m for m in filtered if "decision-1" not in m.lower() and m != fallback_model]
+            ordered = head + [fallback_model] + tail
+        else:
+            tail = [m for m in filtered if m != fallback_model]
+            ordered = [fallback_model] + tail
+
+        deduped = list(dict.fromkeys(m for m in ordered if m))
+        return deduped, True
+
     def generate_with_fallback(
         self,
         role: str,
@@ -74,12 +126,24 @@ class GeminiRouter:
         config: Optional[types.GenerateContentConfig] = None,
     ) -> Dict[str, Any]:
         """Run generate_content trying each model in the role's fallback chain."""
-        chains = self.settings.model_chains()
-        candidates = chains.get(role, chains["drafting"])
+        candidates, cap_fallback_active = self._resolve_candidates(role)
         client = self._get_client()
 
+        if candidates:
+            update_pipeline_model(
+                candidates[0],
+                fallback_triggered=cap_fallback_active,
+                note="",
+            )
+
         errors_log: List[str] = []
-        for model_id in candidates:
+        for idx, model_id in enumerate(candidates):
+            is_fallback_step = cap_fallback_active or idx > 0
+            update_pipeline_model(
+                model_id,
+                fallback_triggered=is_fallback_step,
+                note="",
+            )
             for attempt in range(2):
                 try:
                     response = client.models.generate_content(
@@ -87,11 +151,13 @@ class GeminiRouter:
                         contents=contents,
                         config=config,
                     )
+                    update_pipeline_model(model_id, fallback_triggered=is_fallback_step)
                     return {
                         "model_used": model_id,
                         "text": response.text or "",
                         "raw": response,
                         "fallback_errors": errors_log,
+                        "cap_fallback_active": cap_fallback_active,
                     }
                 except errors.APIError as exc:
                     if exc.code == 503 and attempt == 0:
@@ -373,23 +439,37 @@ class GeminiRouter:
         section_title: str,
         content_text: str,
         study_title: str = "",
+        lang: str = "fr",
     ) -> Dict[str, str]:
-        """Produce a brief working-memory summary of a modified section via Gemini 3.8 Live (`live_translate` chain)."""
+        """Produce a brief working-memory summary of a modified section via Gemini (`live_translate` chain)."""
         clean = re.sub(r"\s+", " ", (content_text or "")).strip()
         if not clean:
-            return {"summary": "(Section vide.)", "model_used": "none"}
+            return {"summary": "(Empty section.)" if lang == "en" else "(Section vide.)", "model_used": "none"}
 
-        prompt = (
-            "Tu es Gemini 3.8 Live, gestionnaire de la mémoire de travail d'un protocole médical FMSB.\n"
-            f"Thème du protocole : {study_title or 'Protocole FMSB'}\n"
-            f"Section modifiée : {section_title}\n\n"
-            "Résume en 3 à 4 phrases brèves et factuelles (max 90 mots) l'essentiel de cette section "
-            "pour que les rédactions suivantes soient harmonisées sans répétition :\n"
-            "- Faits clés, chiffres, définitions ou décisions méthodologiques posés ;\n"
-            "- Références [n] déjà citées dans cette section (si présentes).\n"
-            "Renvoie UNIQUEMENT le résumé brut en français, sans titre ni formule de politesse.\n\n"
-            f"CONTENU :\n{clean[:4500]}"
-        )
+        if str(lang).lower().startswith("en"):
+            prompt = (
+                "You are the working-memory manager for a CAMES/FMSB medical research protocol.\n"
+                f"Protocol topic: {study_title or 'Medical Research Protocol'}\n"
+                f"Updated section: {section_title}\n\n"
+                "Summarize in 3 to 4 brief factual sentences (max 90 words) the key facts of this section "
+                "so subsequent sections stay harmonized without repetition:\n"
+                "- Key facts, figures, definitions, or methodological choices made;\n"
+                "- References [n] already cited in this section (if present).\n"
+                "Return ONLY the raw summary in English, without any heading or greeting.\n\n"
+                f"CONTENT:\n{clean[:4500]}"
+            )
+        else:
+            prompt = (
+                "Tu es Gemini 3.8 Live, gestionnaire de la mémoire de travail d'un protocole médical FMSB.\n"
+                f"Thème du protocole : {study_title or 'Protocole FMSB'}\n"
+                f"Section modifiée : {section_title}\n\n"
+                "Résume en 3 à 4 phrases brèves et factuelles (max 90 mots) l'essentiel de cette section "
+                "pour que les rédactions suivantes soient harmonisées sans répétition :\n"
+                "- Faits clés, chiffres, définitions ou décisions méthodologiques posés ;\n"
+                "- Références [n] déjà citées dans cette section (si présentes).\n"
+                "Renvoie UNIQUEMENT le résumé brut en français, sans titre ni formule de politesse.\n\n"
+                f"CONTENU :\n{clean[:4500]}"
+            )
         try:
             res = self.generate_with_fallback(
                 role="live_translate",
@@ -397,7 +477,7 @@ class GeminiRouter:
                 config=types.GenerateContentConfig(
                     temperature=0.1,
                     max_output_tokens=260,
-                    http_options=types.HttpOptions(timeout=6000),
+                    http_options=types.HttpOptions(timeout=10000),
                 ),
             )
             out = (res.get("text") or "").strip()
@@ -541,7 +621,7 @@ class GeminiRouter:
             ]
             tokens = dres["total_tokens"]
             notes = (
-                f"Gemini Decision 1 (models/gemini-decision-1) : {len(questions)} décisions évaluées"
+                f"Centre de recherche Smart Research : {len(questions)} décisions évaluées"
                 + (f", {len(move_ids)} ajustement(s) A4" if move_ids else ", placement A4 confirmé")
                 + (f" ({tokens} tokens)." if tokens else ".")
             )
@@ -661,7 +741,7 @@ class GeminiRouter:
                 for row in references_payload
             ]
             summary = " · ".join(dict.fromkeys(notes_list))[:220] or (
-                f"{len(references_payload)} références auditées par Gemini Decision 1"
+                f"{len(references_payload)} références auditées par le Centre de recherche Smart Research"
                 + (f" ({decision1_tokens} tokens)." if decision1_tokens else " selon la norme Vancouver ICMJE.")
             )
             return {

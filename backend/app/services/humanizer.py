@@ -6,8 +6,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import get_language_prompt_directive, normalize_lang
 from app.schemas.protocol import ProtocolProject
 from app.services.gemini_client import gemini_router
+from app.services.pipeline_tracker import emit_pipeline_step
 from app.services.rich_formatter import markdown_to_clean_html, strip_ascii_diagrams
 from app.services.working_memory import update_section_working_memory
 
@@ -30,6 +32,20 @@ EXIGENCES DE PLUME CLINIQUE FMSB / STYLE ACADEMIQUE NATUREL (OBLIGATOIRE) :
 4. Aucune conclusion méta-discursive artificielle en fin de sous-section (ne résume pas ce que tu viens d'écrire).
 5. Typographie française standard : n'utilise pas de tirets cadratins anglais (« — ») ni de caractères invisibles ; utilise la virgule ou les parenthèses pour les incises, et les guillemets français « ... » si besoin.
 """
+
+HUMAN_ACADEMIC_STYLE_INSTRUCTIONS_EN = """
+ACADEMIC MEDICAL WRITING & NATURAL HUMAN PROSE STANDARDS (MANDATORY):
+1. Strictly ban AI phrasing clichés: NEVER write "It is important to note that", "It is worth noting that", "Crucially", "Delve into", "Plays a pivotal/crucial role", "In light of the above", "Constitutes a major public health challenge", or repetitive chains of "Moreover," / "Furthermore," / "In this context,".
+2. Natural rhythmic variation (high burstiness): intentionally mix concise, direct clinical sentences (8–14 words) with denser epidemiological or pathophysiological sentences (24–36 words). Avoid uniform 3-sentence symmetrical paragraphs.
+3. Concise academic medical voice: open paragraphs with specific clinical or empirical subjects ("Pathophysiologically, ...", "Hospital series in Cameroon demonstrate...", "Among patients presenting with...", "This local evidence gap warrants...").
+4. No artificial meta-discursive wrap-up sentences summarizing what was just written.
+5. Clean academic typography: avoid em-dashes ("—") and zero-width characters; use commas or parentheses for parenthetical clauses.
+"""
+
+
+def get_human_style_instructions(lang: str = "fr") -> str:
+    """Return natural academic prose guidelines localized to 'fr' or 'en'."""
+    return HUMAN_ACADEMIC_STYLE_INSTRUCTIONS_EN if normalize_lang(lang) == "en" else HUMAN_ACADEMIC_STYLE_INSTRUCTIONS
 
 _INVISIBLE_UNICODE_RE = re.compile(r"[\u200b\u200c\u200d\ufeff\u2060\u00ad]")
 
@@ -210,6 +226,69 @@ def sanitize_llm_french_typography(text: str) -> Tuple[str, int]:
     return restored.strip() if text.strip() else restored, changes
 
 
+_EN_OPENING_CLICHE_PATTERNS: List[Tuple[re.Pattern[str], str]] = [
+    (re.compile(r"(^|[\n>]|[.!?]\s+)It is (?:important|worth|crucial|essential|vital|imperative|noteworthy)\s+to\s+(?:note|mention|highlight|emphasize|underscore)\s+that\s+", re.I), ""),
+    (re.compile(r"(^|[\n>]|[.!?]\s+)In light of the above,\s*", re.I), ""),
+    (re.compile(r"(^|[\n>]|[.!?]\s+)In this context,\s*", re.I), ""),
+    (re.compile(r"(^|[\n>]|[.!?]\s+)As previously mentioned,\s*", re.I), ""),
+    (re.compile(r"(^|[\n>]|[.!?]\s+)Importantly,\s+", re.I), ""),
+    (re.compile(r"(^|[\n>]|[.!?]\s+)Crucially,\s+", re.I), ""),
+]
+
+_EN_MID_CLICHES: List[Tuple[re.Pattern[str], str]] = [
+    (re.compile(r"\bplays? a (?:crucial|pivotal|vital|key|paramount|major) role in\b", re.I), "contributes directly to"),
+    (re.compile(r"\bdelves? into\b", re.I), "examines"),
+    (re.compile(r"\bconstitutes a major public health challenge\b", re.I), "remains a priority public health burden"),
+]
+
+
+def sanitize_llm_english_typography(text: str) -> Tuple[str, int]:
+    """Deterministically strip invisible LLM Unicode, English AI clichés, and em-dashes."""
+    if not text:
+        return text, 0
+    changes = 0
+    cleaned_invis, n_invis = _INVISIBLE_UNICODE_RE.subn("", text)
+    changes += n_invis
+    masked, placeholders = _protect_sensitive_segments(cleaned_invis)
+    masked, n_num_em = re.subn(r"(\d)\s*[—]\s*(\d)", r"\1–\2", masked)
+    changes += n_num_em
+    masked, n_pair_em = re.subn(r"\s+—\s+([^—\n]{2,140}?)\s+—(?=\s|[,.;:!?]|$)", r", \1,", masked)
+    changes += n_pair_em
+    masked, n_iso_em = re.subn(r"\s*—\s*", ", ", masked)
+    changes += n_iso_em
+    masked = re.sub(r",\s*,", ",", masked)
+
+    for pattern, repl_prefix in _EN_OPENING_CLICHE_PATTERNS:
+        full_pat = re.compile(pattern.pattern + r"([^\s]+)", pattern.flags)
+
+        def _cap_en(m: re.Match[str], r_pre: str = repl_prefix) -> str:
+            nonlocal changes
+            changes += 1
+            lead = m.group(1)
+            tok = m.group(2)
+            if tok.startswith("@@SMRPROT"):
+                return f"{lead}{r_pre}{tok}" if r_pre else f"{lead}{tok}"
+            head = tok[0].upper() + tok[1:] if tok[0].isalpha() else tok
+            return f"{lead}{r_pre}{head}" if r_pre else f"{lead}{head}"
+
+        masked = full_pat.sub(_cap_en, masked)
+
+    for pat, repl in _EN_MID_CLICHES:
+        masked, n_mid = pat.subn(repl, masked)
+        changes += n_mid
+
+    masked = re.sub(r" {2,}", " ", masked)
+    restored = _restore_sensitive_segments(masked, placeholders)
+    return restored.strip() if text.strip() else restored, changes
+
+
+def sanitize_llm_typography(text: str, lang: str = "fr") -> Tuple[str, int]:
+    """Sanitize LLM output typography and clichés according to the active protocol language."""
+    if normalize_lang(lang) == "en":
+        return sanitize_llm_english_typography(text)
+    return sanitize_llm_french_typography(text)
+
+
 def _strip_markup_for_metrics(text: str) -> str:
     """Extract clean plain prose from Markdown/HTML to compute burstiness metrics."""
     s = re.sub(r"<[^>]+>", " ", text or "")
@@ -364,18 +443,20 @@ def verify_and_restore_scientific_invariants(
     }
 
 
-def _deterministic_humanize_prose(text: str) -> str:
+def _deterministic_humanize_prose(text: str, lang: str = "fr") -> str:
     """Apply zero-hallucination deterministic rhythm & lexical variation when AI rewrite isn't used."""
-    cleaned, _ = sanitize_llm_french_typography(text)
-    # Break monotonous transitional leads if repeated
-    cleaned = re.sub(r"(?m)^De plus,\s+", "", cleaned)
-    cleaned = re.sub(r"(?m)^En effet,\s+", "", cleaned)
-    # Capitalize start of paragraph lines if lowered after stripping "De plus, "/"En effet, "
-    cleaned = re.sub(
-        r"(?m)^([a-zà-ÿ])",
-        lambda m: m.group(1).upper(),
-        cleaned,
-    )
+    cleaned, _ = sanitize_llm_typography(text, lang=lang)
+    if normalize_lang(lang) == "fr":
+        cleaned = re.sub(r"(?m)^De plus,\s+", "", cleaned)
+        cleaned = re.sub(r"(?m)^En effet,\s+", "", cleaned)
+        cleaned = re.sub(
+            r"(?m)^([a-zà-ÿ])",
+            lambda m: m.group(1).upper(),
+            cleaned,
+        )
+    else:
+        cleaned = re.sub(r"(?m)^Moreover,\s+", "", cleaned)
+        cleaned = re.sub(r"(?m)^Furthermore,\s+", "", cleaned)
     return cleaned
 
 
@@ -385,6 +466,7 @@ def humanize_section_with_ai(
     use_ai: bool = True,
 ) -> Dict[str, Any]:
     """Humanize prose style of a single protocol section while preserving 100% of facts & citations."""
+    lang = normalize_lang(getattr(project, "language", "fr"))
     spec = next((s for s in FMSB_SECTIONS if s.id == section_id), None)
     sec = project.sections.get(section_id)
     if sec is None:
@@ -394,7 +476,7 @@ def humanize_section_with_ai(
         return {
             "section_id": section_id,
             "skipped": True,
-            "reason": "Section structurée automatique (non soumise à réécriture stylistique).",
+            "reason": "Structured auto-generated section." if lang == "en" else "Section structurée automatique (non soumise à réécriture stylistique).",
             "model_used": "none",
             "content_markdown": sec.content_markdown,
             "content_html": sec.content_html,
@@ -409,7 +491,7 @@ def humanize_section_with_ai(
         return {
             "section_id": section_id,
             "skipped": True,
-            "reason": "Section vide.",
+            "reason": "Empty section." if lang == "en" else "Section vide.",
             "model_used": "none",
             "content_markdown": sec.content_markdown,
             "content_html": sec.content_html,
@@ -419,6 +501,12 @@ def humanize_section_with_ai(
             "citations_preserved": True,
         }
 
+    emit_pipeline_step(
+        "analyze_style",
+        "Analyse stylistique & repérage des citations à préserver...",
+        "Analyzing prose rhythm & citations to preserve...",
+        progress_pct=20,
+    )
     before_metrics = compute_humanization_metrics(orig_md)
     section_title = f"{spec.chapter_title} — {spec.title}" if spec else section_id
     orig_cites = sorted({int(x) for x in re.findall(r"\[(\d+)\]", orig_md)})
@@ -428,7 +516,36 @@ def humanize_section_with_ai(
     adjustment_note = ""
 
     if use_ai:
-        prompt = f"""
+        emit_pipeline_step(
+            "llm_humanize",
+            "Réécriture fluide en plume médicale naturelle...",
+            "Rewriting in natural academic medical prose...",
+            progress_pct=55,
+        )
+        lang_dir = get_language_prompt_directive(lang)
+        if lang == "en":
+            prompt = f"""
+You are a senior medical researcher and scientific writer at a medical faculty.
+Rewrite the text below to give it an **authentic, natural, restrained human academic voice** indistinguishable from manual scholarly writing.
+
+SECTION: {section_title}
+
+IMPERATIVE STYLISTIC INSTRUCTIONS:
+1. Remove all AI clichés (never use "It is important to note that", "Crucially", "Delve into", "Plays a pivotal role", repetitive "Moreover/Furthermore", or artificial wrap-up conclusions).
+2. Create **natural rhythmic variation (burstiness)**: mix sharp, direct clinical sentences (8–14 words) with denser epidemiological sentences (24–36 words).
+3. Use active academic medical English phrasing.
+4. **ABSOLUTE SCIENTIFIC RULE (ZERO LOSS, ZERO ADDITION)**:
+   - Keep **ALL** bracketed citations verbatim: {', '.join(f'[{c}]' for c in orig_cites) if orig_cites else 'none'}.
+   - Keep **ALL** numbers, percentages, p-values, CIs, hospitals, `$...$` / `$$...$$` LaTeX formulas, Markdown `#`/`##` headings, and `[To be completed...]` markers intact.
+   - Never add fabricated statistics, references, or em-dashes (`—`).
+5. Maintain word count within ±15% of original.
+{lang_dir}
+
+ORIGINAL TEXT:
+{orig_md}
+"""
+        else:
+            prompt = f"""
 Tu es un médecin chercheur et rédacteur scientifique chevronné de la FMSB (Université de Yaoundé I).
 Réécris le texte ci-dessous pour lui donner une **plume humaine authentique, sobre et fluide**, indiscernable d'une rédaction académique manuelle.
 
@@ -443,6 +560,7 @@ CONSIGNES STYLISTIQUES IMPÉRATIVES :
    - Conserve à l'identique **TOUS** les nombres, pourcentages, p-values, intervalles de confiance, noms d'hôpitaux, formules mathématiques `$...$` / `$$...$$`, titres Markdown `#`/`##` et balises `[À compléter ...]`.
    - N'ajoute aucune statistique, aucune citation inventée et aucun tiret cadratin (`—`).
 5. Maintiens un volume de mots proche de l'original (±15 %).
+{lang_dir}
 
 TEXTE ORIGINAL À HUMANISER :
 {orig_md}
@@ -459,14 +577,20 @@ TEXTE ORIGINAL À HUMANISER :
             adjustment_note = (dto.style_adjustments_summary or "").strip()
             model_used = str(res.get("model_used") or "gemini-humanizer")
         except Exception:
-            candidate_md = _deterministic_humanize_prose(orig_md)
-            adjustment_note = "Humanisation typographique et rythmique déterministe appliquée (sans appel LLM)."
+            candidate_md = _deterministic_humanize_prose(orig_md, lang=lang)
+            adjustment_note = "Deterministic style & punctuation cleanup applied." if lang == "en" else "Humanisation typographique et rythmique déterministe appliquée (sans appel LLM)."
             model_used = "humanizer-deterministe-fmsb"
     else:
-        candidate_md = _deterministic_humanize_prose(orig_md)
+        candidate_md = _deterministic_humanize_prose(orig_md, lang=lang)
         adjustment_note = "Purge déterministe des tics de langage et artefacts typographiques LLM."
 
-    sanitized_md, sanitize_count = sanitize_llm_french_typography(candidate_md)
+    emit_pipeline_step(
+        "verify_citations",
+        "Vérification des invariants scientifiques & citations [n]...",
+        "Verifying scientific invariants & [n] citations...",
+        progress_pct=86,
+    )
+    sanitized_md, sanitize_count = sanitize_llm_typography(candidate_md, lang=lang)
     verified_md, invariants_report = verify_and_restore_scientific_invariants(orig_md, sanitized_md)
     final_md = strip_ascii_diagrams(verified_md)
     final_html = markdown_to_clean_html(final_md)

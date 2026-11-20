@@ -117,6 +117,7 @@ class UserAIQuotaORM(Base):
     )
     credits_total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     credits_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    daily_38_limit: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=None)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
