@@ -27,6 +27,7 @@ export interface SlideElement {
     | "breadcrumb"
     | "bullet_main"
     | "bullet_sub"
+    | "pill"
     | "stat_callout"
     | "procedure_step"
     | "media"

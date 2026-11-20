@@ -111,6 +111,12 @@ def update_section_working_memory(
         if section_id in memory_map:
             del memory_map[section_id]
         fpath = save_working_memory_file(project, memory_map)
+        try:
+            from app.services.coherence_sentinel import evaluate_project_coherence
+
+            evaluate_project_coherence(project, changed_section_id=section_id)
+        except Exception:
+            pass
         return {
             "updated": True,
             "decision_model": "section-vide",
@@ -170,6 +176,13 @@ def update_section_working_memory(
     memory_map[section_id] = new_summary
     fpath = save_working_memory_file(project, memory_map)
 
+    try:
+        from app.services.coherence_sentinel import evaluate_project_coherence
+
+        evaluate_project_coherence(project, changed_section_id=section_id)
+    except Exception:
+        pass
+
     return {
         "updated": True,
         "decision_model": decision_model,
@@ -179,30 +192,42 @@ def update_section_working_memory(
     }
 
 
+_INTERDEPENDENT_DOWNSTREAM_LINKS: Dict[str, List[str]] = {
+    "chap1_objectifs": ["chap3_type_site_duree", "chap3_analyse_donnees"],
+    "chap1_hypotheses": ["chap3_type_site_duree", "chap3_analyse_donnees"],
+    "chap1_variables": ["chap3_analyse_donnees"],
+    "chap3_type_site_duree": ["chap3_chronogramme", "chap3_population_echantillon"],
+}
+
+
 def get_upstream_and_current_memory(
     project: ProtocolProject,
     current_section_id: str,
 ) -> Tuple[str, int]:
-    """Read `memoire_travail.md` and return ONLY the summaries of sections ABOVE
-    `current_section_id` in canvas order PLUS the summary of `current_section_id` itself.
+    """Read `memoire_travail.md` and return summaries of sections ABOVE `current_section_id`,
+    the summary of `current_section_id` itself, PLUS any already-drafted interdependent downstream sections.
     """
     memory_map = load_working_memory_map(project)
     target_spec = next((s for s in FMSB_SECTIONS if s.id == current_section_id), None)
     target_order = target_spec.order if target_spec else 999
+    linked_downstream_ids = set(_INTERDEPENDENT_DOWNSTREAM_LINKS.get(current_section_id, []))
 
     upstream_lines: List[str] = []
+    downstream_lines: List[str] = []
     current_line: Optional[str] = None
     count = 0
 
     for spec in FMSB_SECTIONS:
         if spec.id in _SKIP_UPSTREAM_IDS:
             continue
-        if spec.order > target_order:
-            break
+        is_upstream_or_self = spec.order <= target_order
+        is_linked_downstream = spec.order > target_order and spec.id in linked_downstream_ids
+        if not (is_upstream_or_self or is_linked_downstream):
+            continue
 
         summary = (memory_map.get(spec.id) or "").strip()
         if not summary:
-            # Instant digest fallback if an upstream section has text not yet summarized
+            # Instant digest fallback if a section has text not yet summarized
             sec = project.sections.get(spec.id)
             if sec and (sec.content_markdown or "").strip():
                 words = sec.content_markdown.strip().split()
@@ -215,6 +240,9 @@ def get_upstream_and_current_memory(
 
         if spec.id == current_section_id:
             current_line = f"[SECTION EN COURS — {spec.title}] : {summary}"
+        elif is_linked_downstream:
+            count += 1
+            downstream_lines.append(f"- [{spec.order}] {spec.title} : {summary}")
         else:
             count += 1
             upstream_lines.append(f"- [{spec.order}] {spec.title} : {summary}")
@@ -223,6 +251,10 @@ def get_upstream_and_current_memory(
     if upstream_lines:
         blocks.append("RÉSUMÉS DES SECTIONS EN AMONT (À HARMONISER, NE PAS RÉPÉTER) :")
         blocks.extend(upstream_lines)
+    if downstream_lines:
+        blocks.append("")
+        blocks.append("SECTIONS INTERDÉPENDANTES DÉJÀ RÉDIGÉES (COHÉRENCE MÉTHODOLOGIQUE À VÉRIFIER) :")
+        blocks.extend(downstream_lines)
     if current_line:
         blocks.append("")
         blocks.append(current_line)

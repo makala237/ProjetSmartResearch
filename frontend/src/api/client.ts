@@ -9,6 +9,7 @@ import type {
   AdminResetPasswordResponse,
   AdminStudentStatsRow,
   AdminUpdateProjectIdentityRequest,
+  AdminUpdateUserCoverRequest,
   AdminUpdateUserRequest,
   AdminUserDetailOut,
   LicensePlanCreateRequest,
@@ -31,6 +32,7 @@ import type {
   EntryMode,
   FormattingRules,
   GlobalAuditReport,
+  HarmonizeSectionResult,
   HumanizeProtocolReport,
   HumanizeSectionResult,
   ImportReport,
@@ -235,6 +237,34 @@ export const api = {
       body: JSON.stringify(cover),
     }),
 
+  uploadCoverLogo: async (
+    projectId: string,
+    slot: "university" | "faculty",
+    file: File
+  ): Promise<ProtocolProject> => {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch(`/api/projects/${projectId}/cover/logo/${slot}`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: form,
+    });
+    if (!res.ok) {
+      const { message } = await parseApiError(res);
+      if (res.status === 401) {
+        clearAuthTokens();
+        _unauthorizedHandler?.(message);
+      }
+      throw new Error(message || `Erreur HTTP ${res.status}`);
+    }
+    return res.json();
+  },
+
+  deleteCoverLogo: (projectId: string, slot: "university" | "faculty") =>
+    request<ProtocolProject>(`/api/projects/${projectId}/cover/logo/${slot}`, {
+      method: "DELETE",
+    }),
+
   updateSection: (
     projectId: string,
     sectionId: string,
@@ -398,6 +428,15 @@ export const api = {
       }
     ),
 
+  harmonizeSection: (projectId: string, sectionId: string, alertId?: string) =>
+    request<{ project: ProtocolProject; result: HarmonizeSectionResult }>(
+      `/api/projects/${projectId}/sections/${sectionId}/harmonize`,
+      {
+        method: "POST",
+        body: JSON.stringify({ alert_id: alertId || null }),
+      }
+    ),
+
   humanizeProtocol: (projectId: string, useAi = true) =>
     request<{ project: ProtocolProject; report: HumanizeProtocolReport }>(
       `/api/projects/${projectId}/humanize-all`,
@@ -478,6 +517,25 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  updateSectionTable: (
+    projectId: string,
+    sectionId: string,
+    tableId: string,
+    payload: {
+      title?: string;
+      anchor_hint?: string;
+      headers?: string[];
+      rows?: string[][];
+    }
+  ) =>
+    request<ProtocolProject>(
+      `/api/projects/${projectId}/sections/${sectionId}/tables/${tableId}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      }
+    ),
+
   deleteSectionTable: (projectId: string, sectionId: string, tableId: string) =>
     request<ProtocolProject>(
       `/api/projects/${projectId}/sections/${sectionId}/tables/${tableId}`,
@@ -530,6 +588,27 @@ export const api = {
       `/api/projects/${projectId}/sections/${sectionId}/diagrams`,
       {
         method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  updateSectionDiagram: (
+    projectId: string,
+    sectionId: string,
+    diagramId: string,
+    payload: {
+      title?: string;
+      caption?: string;
+      anchor_hint?: string;
+      layout?: "vertical" | "horizontal";
+      nodes?: DiagramNode[];
+      connections?: DiagramConnection[];
+    }
+  ) =>
+    request<ProtocolProject>(
+      `/api/projects/${projectId}/sections/${sectionId}/diagrams/${diagramId}`,
+      {
+        method: "PATCH",
         body: JSON.stringify(payload),
       }
     ),
@@ -623,6 +702,7 @@ export const api = {
     text: string;
     source_lang: "fr" | "en";
     target_lang: "fr" | "en";
+    field_type?: "university" | "faculty" | "department";
   }) =>
     request<{ translated_text: string; model_used: string }>(
       "/api/translate-department",
@@ -881,6 +961,15 @@ export const api = {
     payload: AdminUpdateProjectIdentityRequest
   ) =>
     request<AdminStudentStatsRow>(`/api/admin/users/${userId}/project-identity`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  adminUpdateUserCover: (
+    userId: string,
+    payload: AdminUpdateUserCoverRequest
+  ) =>
+    request<AdminStudentStatsRow>(`/api/admin/users/${userId}/cover`, {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),

@@ -42,6 +42,18 @@ export interface SupervisorInfo {
 export interface CoverMetadata {
   title: string;
   degree_label: string;
+  university_fr?: string;
+  university_en?: string;
+  university_po_box?: string;
+  university_email?: string;
+  faculty_fr?: string;
+  faculty_en?: string;
+  faculty_po_box?: string;
+  faculty_email?: string;
+  university_logo_path?: string;
+  university_logo_url?: string;
+  faculty_logo_path?: string;
+  faculty_logo_url?: string;
   department_fr: string;
   department_en: string;
   author_name: string;
@@ -273,6 +285,7 @@ export interface ProtocolProject {
   study_type: string;
   cover: CoverMetadata;
   sections: Record<string, SectionState>;
+  coherence_alerts?: CoherenceAlert[];
   references: ReferenceItem[];
   article_segments: ArticleSegment[];
   images: ImageAsset[];
@@ -433,4 +446,29 @@ export interface HumanizeProtocolReport {
     cliches_removed: number;
     citations_preserved: boolean;
   }>;
+}
+
+export interface CoherenceAlert {
+  alert_id: string;
+  axis: string;
+  source_section_id: string;
+  source_section_title: string;
+  target_section_id: string;
+  target_section_title: string;
+  title: string;
+  message: string;
+  suggested_instruction: string;
+  suggested_study_type?: string | null;
+}
+
+export interface HarmonizeSectionResult {
+  harmonized: boolean;
+  section_id: string;
+  resolved_axis?: string;
+  model_used: string;
+  content_markdown: string;
+  content_html?: string;
+  study_type?: string;
+  remaining_alerts_count: number;
+  message: string;
 }

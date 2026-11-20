@@ -24,6 +24,8 @@ def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
     committees = c.ethics_committees or [
         "Comité Institutionnel d'Éthique et de la Recherche de la FMSB (CIER-FMSB)"
     ]
+    faculty_name = (getattr(c, "faculty_fr", "") or "Faculté de Médecine et des Sciences Biomédicales").strip()
+    university_name = (getattr(c, "university_fr", "") or "Université de Yaoundé I").strip()
 
     annexes: List[Dict[str, object]] = []
     idx = 1
@@ -73,7 +75,7 @@ def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
                 "kind": "letter",
                 "paragraphs": [
                     f"Titre de l'étude : {title}",
-                    f"Investigateur principal : {author} ({level}, FMSB - Université de Yaoundé I). Tél : {phone} | E-mail : {email}.",
+                    f"Investigateur principal : {author} ({level}, {faculty_name} - {university_name}). Tél : {phone} | E-mail : {email}.",
                     f"Encadrement scientifique : {director} ; Co-encadrement : {codirs}.",
                     f"But de l'étude : {goal}.",
                     f"Déroulement et confidentialité : Votre participation est strictement volontaire et confidentielle. Aucune donnée nominative ne figurera sur la fiche de collecte ni dans les publications issues de ce travail. Vous pouvez vous retirer à tout moment sans aucun préjudice sur votre prise en charge médicale.",
@@ -115,7 +117,7 @@ def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
                         "Objet : Demande de clairance éthique",
                         "Monsieur/Madame le Président(e),",
                         f"J'ai l'honneur de venir auprès de votre haute bienveillance solliciter une clairance éthique pour la réalisation de mon travail de recherche intitulé : « {title} ».",
-                        f"En effet, je suis {level} à la Faculté de Médecine et des Sciences Biomédicales de l'Université de Yaoundé I, sous la direction de {director}.",
+                        f"En effet, je suis {level} à la {faculty_name} de {university_name}, sous la direction de {director}.",
                         f"Le but de ce travail est de : {goal}. L'étude est prévue sur la période : {period}.",
                         "Dans l'attente d'une suite favorable, veuillez agréer, Monsieur/Madame le Président(e), l'expression de mon profond respect.",
                         "Pièces jointes : 01 copie du protocole de recherche ; reçu des droits universitaires / frais d'évaluation éthique ; fiche d'information et formulaire de consentement.",
@@ -139,7 +141,7 @@ def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
                         "Objet : Demande d'autorisation de recherche",
                         "Monsieur/Madame le Directeur,",
                         f"J'ai l'honneur de venir auprès de votre haute personnalité solliciter une autorisation de recherche au sein de votre structure hospitalière pour la période allant du {period}.",
-                        f"En effet, je suis {level} à la Faculté de Médecine et des Sciences Biomédicales de l'Université de Yaoundé I, et je mène une étude intitulée : « {title} », sous la supervision de {director}.",
+                        f"En effet, je suis {level} à la {faculty_name} de {university_name}, et je mène une étude intitulée : « {title} », sous la supervision de {director}.",
                         f"Objectif principal / but : {goal}.",
                         "Dans l'attente d'une suite favorable, veuillez agréer, Monsieur/Madame le Directeur, l'expression de mon profond respect.",
                         "Pièces jointes : 01 copie du protocole ; clairance éthique ; photocopie de la CNI / carte d'étudiant ; reçu des frais de recherche.",
@@ -156,7 +158,7 @@ def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
                 "title": f"ANNEXE {idx} : DÉCLARATION DE CONFIDENTIALITÉ DU CHERCHEUR",
                 "kind": "letter",
                 "paragraphs": [
-                    f"Je soussigné(e), {author} (Matricule : {matricule}), {level} à la Faculté de Médecine et des Sciences Biomédicales (FMSB) de l'Université de Yaoundé I, m'engage solennellement à :",
+                    f"Je soussigné(e), {author} (Matricule : {matricule}), {level} à la {faculty_name} de {university_name}, m'engage solennellement à :",
                     "1. Respecter la plus stricte confidentialité concernant toutes les informations médicales et personnelles recueillies dans le cadre de cette étude.",
                     f"2. N'utiliser ces données que dans le cadre exclusif de ce protocole de recherche, sous la supervision de mon équipe encadrante ({director} ; {codirs}).",
                     "3. Assurer la sécurité physique et numérique des données (anonymisation par code, accès protégé par mot de passe).",
@@ -176,7 +178,7 @@ def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
                 "title": f"ANNEXE {idx} : LETTRE D'ENGAGEMENT",
                 "kind": "letter",
                 "paragraphs": [
-                    f"Je soussigné(e), {author} (Matricule : {matricule}), {level} à la FMSB-UYI, m'engage à :",
+                    f"Je soussigné(e), {author} (Matricule : {matricule}), {level} à {faculty_name} ({university_name}), m'engage à :",
                     "• Préserver la confidentialité absolue des dossiers médicaux et des données des participants.",
                     "• N'utiliser les données recueillies exclusivement que dans le cadre de ce travail de recherche.",
                     f"• Citer les structures d'accueil ({', '.join(institutions)}) dans les remerciements du mémoire/thèse.",

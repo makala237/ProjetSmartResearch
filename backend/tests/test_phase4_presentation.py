@@ -45,6 +45,22 @@ def test_real_protocol_extraction_and_no_fake_oia():
     assert budget_slide.subtitle == "790 000 FCFA"
     assert len(budget_slide.elements) == 10
 
+    # Vérifier chronogramme dynamique & éditable (nouveau template + 7 pilules + 7 marches)
+    chrono_slide = next(s for s in deck.slides if s.slide_type == "chronogram")
+    assert chrono_slide.locked_as_is is False
+    assert chrono_slide.layout_mode == "chronogram_7pills"
+    assert "Tamplate diapositive chronogramme des activités .png" in (
+        chrono_slide.background_image_path or ""
+    )
+    assert len(chrono_slide.elements) == 7
+    pill_boxes = [b for b in chrono_slide.render_boxes if b.role == "chronogram_pill"]
+    step_boxes = [b for b in chrono_slide.render_boxes if b.role == "chronogram_step"]
+    assert len(pill_boxes) == 7 and len(step_boxes) == 7
+    assert step_boxes[0].text == "Juin 2027"
+    assert "Dépôt" in pill_boxes[0].text
+    assert step_boxes[-1].text == "Mai 2026"
+    assert "Rédaction du protocole" in pill_boxes[-1].text
+
     # Vérifier objectifs réels
     obj_gen = next(s for s in deck.slides if s.slide_type == "objective_general")
     assert "testiculaire" in obj_gen.elements[0].content.lower()
@@ -102,15 +118,17 @@ def test_pptx_compilation_com_pdf_and_png_previews(tmp_path: Path):
     assert len(prs.slides) == len(deck.slides)
     assert round(prs.slide_width.inches, 2) == round(SLIDE_WIDTH_IN, 2)
 
-    # Vérifier chaque diapositive : notes + textboxes individuelles sur contenu + chronogramme non déformé
+    # Vérifier chaque diapositive : notes + textboxes individuelles sur contenu + chronogramme non déformé éditable
     chrono_idx = next(s.slide_index for s in deck.slides if s.slide_type == "chronogram") - 1
     chrono_slide = prs.slides[chrono_idx]
     pics = [sh for sh in chrono_slide.shapes if sh.shape_type == 13]
-    assert len(pics) == 1, "La slide chronogramme ne doit contenir que son image déposée telle quelle"
+    assert len(pics) == 1, "La slide chronogramme doit contenir son image de fond fit-contain"
     pic = pics[0]
     ratio = pic.width.inches / pic.height.inches
     expected_ratio = 1345.0 / 1169.0
     assert abs(ratio - expected_ratio) < 0.03, f"Ratio chronogramme déformé : {ratio} vs {expected_ratio}"
+    chrono_tbs = [sh for sh in chrono_slide.shapes if sh.shape_type == 17 and sh.has_text_frame]
+    assert len(chrono_tbs) >= 14, "Chaque pilule et marche du chronogramme doit avoir sa TextBox éditable"
 
     # Vérifier police >= 24pt et textboxes individuelles sur la première slide Objectifs spécifiques
     os_idx = next(s.slide_index for s in deck.slides if s.slide_type == "objective_specific") - 1
@@ -228,6 +246,47 @@ def test_partial_protocol_welcome_first_and_no_foreign_data():
     assert r_gen.json()["status"] == "missing_source", r_gen.json()
 
 
+def test_legacy_chronogram_migration_and_timeline_update():
+    from app.schemas.protocol import TimelineGrid, TimelineGridRow
+    from app.data.pptx_canvas import TPL_CHRONOGRAM
+
+    project = project_storage.get("5221c9f3-65e")
+    orch = PresentationOrchestrator()
+    deck = orch.build_default_deck_from_protocol(project)
+
+    # Simuler un ancien deck en cache verrouillé sans éléments sur l'ancien template
+    for s in deck.slides:
+        if s.slide_type == "chronogram":
+            s.locked_as_is = True
+            s.layout_mode = "full_image_asis"
+            s.background_image_path = "tamplates/Diapositive..Chronogramme des activités 2026–2027 (1).png"
+            s.elements = []
+            s.render_boxes = []
+
+    migrated_deck, changed = orch.ensure_fresh_valid_deck(project, deck)
+    assert changed is True
+    chrono = next(s for s in migrated_deck.slides if s.slide_type == "chronogram")
+    assert chrono.locked_as_is is False
+    assert chrono.layout_mode == "chronogram_7pills"
+    assert chrono.background_image_path == TPL_CHRONOGRAM
+    assert len(chrono.elements) == 7
+
+    # Vérifier la propagation d'un chronogramme personnalisé (dates + activités éditées)
+    custom_proj = project.model_copy(deep=True)
+    custom_proj.timeline_grid = TimelineGrid(
+        periods=["Jan 2027", "Fév 2027"],
+        rows=[
+            TimelineGridRow(activity="Inclusion patients", active_periods=["Jan 2027"]),
+            TimelineGridRow(activity="Clôture et soutenance", active_periods=["Fév 2027"]),
+        ],
+    )
+    custom_deck = orch.build_default_deck_from_protocol(custom_proj)
+    c_chrono = next(s for s in custom_deck.slides if s.slide_type == "chronogram")
+    assert len(c_chrono.elements) == 2
+    assert c_chrono.elements[0].content == "Fév 2027 : Clôture et soutenance"
+    assert c_chrono.elements[1].content == "Jan 2027 : Inclusion patients"
+
+
 if __name__ == "__main__":
     test_real_protocol_extraction_and_no_fake_oia()
     print("[OK] test_real_protocol_extraction_and_no_fake_oia")
@@ -242,4 +301,6 @@ if __name__ == "__main__":
     print("[OK] test_api_presentation_endpoints")
     test_partial_protocol_welcome_first_and_no_foreign_data()
     print("[OK] test_partial_protocol_welcome_first_and_no_foreign_data")
+    test_legacy_chronogram_migration_and_timeline_update()
+    print("[OK] test_legacy_chronogram_migration_and_timeline_update")
     print("ALL PHASE 4 TESTS PASSED")

@@ -34,6 +34,7 @@ AI_ACTION_COSTS: Dict[str, int] = {
     "pptx_generate_slide": 1,
     "pptx_audit": 1,
     "humanize_section": 1,
+    "harmonize_section": 1,
     "research": 2,
     "segment": 2,
     "draft_section": 2,

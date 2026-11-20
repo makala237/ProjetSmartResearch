@@ -19,8 +19,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_name: str = "SmartResearch FMSB - Assistant Protocole"
-    app_version: str = "0.2.0"
+    app_name: str = "Smart Research"
+    app_version: str = "1.0.0"
 
     gemini_api_key: str = ""
 
@@ -47,6 +47,18 @@ class Settings(BaseSettings):
 
     storage_dir: Path = BASE_DIR / "storage"
     templates_dir: Path = BASE_DIR / "templates"
+
+    # Phase 5: Cloud Run Render Engine & Object Storage (GCS / Cloudflare R2 / S3)
+    render_engine: str = "auto"  # auto | com | libreoffice | cloud_api
+    cloud_render_api_url: str = ""
+    cloud_render_api_key: str = ""
+    storage_backend: str = "local"  # local | gcs | s3
+    cloud_storage_bucket: str = ""
+    cloud_storage_prefix: str = "smartresearch"
+    cloud_storage_endpoint_url: str = ""
+    cloud_storage_access_key: str = ""
+    cloud_storage_secret_key: str = ""
+    cloud_storage_region: str = "auto"
 
     def model_chains(self) -> Dict[str, List[str]]:
         """Return ordered model fallback chains per pipeline role."""

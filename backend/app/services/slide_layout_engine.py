@@ -6,7 +6,10 @@ against the 9 graphic PNG templates in tamplates/ and CAMES readability rules.
 """
 
 import math
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
+from PIL import Image as PILImage
 
 from app.data.pptx_canvas import (
     CAMES_MAX_LINES_PER_SLIDE,
@@ -26,7 +29,11 @@ from app.data.pptx_canvas import (
 )
 from app.schemas.presentation import LayoutBox, PresentationDeck, Slide, SlideElement
 from app.schemas.protocol import ProtocolProject, SupervisorInfo
-from app.services.cover_builder import _strip_dept_prefix
+from app.services.cover_builder import (
+    _resolve_cover_logo_path,
+    _strip_dept_prefix,
+    format_contact_tier_lines,
+)
 
 SLIDE_WIDTH_IN = 13.333
 SLIDE_HEIGHT_IN = 7.5
@@ -57,6 +64,31 @@ BUDGET_RIGHT_PILL_RECTS: List[Tuple[float, float, float, float]] = [
     (0.602, 0.838, 0.242, 0.079),
 ]
 BUDGET_TOTAL_RECT: Tuple[float, float, float, float] = (0.436, 0.535, 0.126, 0.063)
+
+# Coordinates relative to Tamplate diapositive chronogramme des activités .png (1345 x 1169)
+CHRONOGRAM_IMAGE_SIZE: Tuple[int, int] = (1345, 1169)
+
+# 7 white pill boxes on the left (top Pill 1 = green/latest -> bottom Pill 7 = yellow/earliest)
+CHRONOGRAM_PILL_RECTS: List[Tuple[float, float, float, float]] = [
+    (0.078, 0.234, 0.351, 0.065),  # Pill 1 (top, green dot)
+    (0.071, 0.341, 0.338, 0.064),  # Pill 2 (cyan dot)
+    (0.065, 0.445, 0.317, 0.064),  # Pill 3 (blue dot)
+    (0.059, 0.549, 0.310, 0.065),  # Pill 4 (purple dot)
+    (0.060, 0.655, 0.318, 0.065),  # Pill 5 (pink dot)
+    (0.065, 0.761, 0.333, 0.064),  # Pill 6 (orange dot)
+    (0.115, 0.865, 0.344, 0.061),  # Pill 7 (bottom, yellow dot)
+]
+
+# 7 colored 3D staircase steps on the right (top Step 1 = green -> bottom Step 7 = yellow)
+CHRONOGRAM_STEP_RECTS: List[Tuple[float, float, float, float]] = [
+    (0.570, 0.326, 0.175, 0.048),  # Step 1 (top green)
+    (0.515, 0.388, 0.170, 0.048),  # Step 2 (cyan)
+    (0.465, 0.462, 0.175, 0.048),  # Step 3 (blue)
+    (0.455, 0.546, 0.175, 0.048),  # Step 4 (purple)
+    (0.458, 0.630, 0.180, 0.048),  # Step 5 (pink)
+    (0.505, 0.710, 0.185, 0.048),  # Step 6 (orange)
+    (0.558, 0.785, 0.185, 0.048),  # Step 7 (bottom yellow)
+]
 
 # Safe zones for the 4 icon-header content templates
 TITLE_CAPSULE_RECT: Tuple[float, float, float, float] = (0.300, 0.038, 0.495, 0.170)
@@ -209,7 +241,7 @@ def _compute_welcome_boxes(slide: Slide, project: Optional[ProtocolProject]) -> 
 
 
 def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> List[LayoutBox]:
-    """Compute strict FMSB cover boxes matching backend/app/services/cover_builder.py rules."""
+    """Compute strict bilingual multi-university cover boxes matching cover_builder.py rules."""
     cover = project.cover if project else None
 
     raw_dept_fr = (
@@ -221,37 +253,74 @@ def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> Li
     dept_fr = _strip_dept_prefix(raw_dept_fr, is_french=True)
     dept_en = _strip_dept_prefix(raw_dept_en, is_french=False)
 
-    header_fr_text = (
-        "RÉPUBLIQUE DU CAMEROUN\n"
-        "Paix – Travail – Patrie\n"
-        "************\n"
-        "MINISTÈRE DE L'ENSEIGNEMENT SUPÉRIEUR\n"
-        "************\n"
-        "UNIVERSITÉ DE YAOUNDÉ I\n"
-        "************\n"
-        "FACULTÉ DE MÉDECINE ET DES SCIENCES BIOMÉDICALES\n"
-        "************\n"
-        f"DÉPARTEMENT DE {dept_fr}"
+    uni_fr = (getattr(cover, "university_fr", "") or "UNIVERSITÉ DE YAOUNDÉ I").strip().upper()
+    uni_en = (getattr(cover, "university_en", "") or "THE UNIVERSITY OF YAOUNDÉ I").strip().upper()
+    fac_fr = (getattr(cover, "faculty_fr", "") or "FACULTÉ DE MÉDECINE ET DES SCIENCES BIOMÉDICALES").strip().upper()
+    fac_en = (getattr(cover, "faculty_en", "") or "FACULTY OF MEDICINE AND BIOMEDICAL SCIENCES").strip().upper()
+
+    uni_fr_contacts, uni_en_contacts = (
+        format_contact_tier_lines(
+            getattr(cover, "university_po_box", ""),
+            getattr(cover, "university_email", ""),
+        )
+        if cover
+        else ([], [])
     )
-    header_en_text = (
-        "REPUBLIC OF CAMEROON\n"
-        "Peace – Work – Fatherland\n"
-        "************\n"
-        "MINISTRY OF HIGHER EDUCATION\n"
-        "************\n"
-        "THE UNIVERSITY OF YAOUNDÉ I\n"
-        "************\n"
-        "FACULTY OF MEDICINE AND BIOMEDICAL SCIENCES\n"
-        "************\n"
-        f"DEPARTMENT OF {dept_en}"
+    fac_fr_contacts, fac_en_contacts = (
+        format_contact_tier_lines(
+            getattr(cover, "faculty_po_box", ""),
+            getattr(cover, "faculty_email", ""),
+        )
+        if cover
+        else ([], [])
     )
+
+    fr_parts = [
+        "RÉPUBLIQUE DU CAMEROUN",
+        "Paix – Travail – Patrie",
+        "************",
+        "MINISTÈRE DE L'ENSEIGNEMENT SUPÉRIEUR",
+        "************",
+        uni_fr,
+        *uni_fr_contacts,
+        "************",
+        fac_fr,
+        "************",
+        f"DÉPARTEMENT DE {dept_fr}",
+    ]
+    if fac_fr_contacts:
+        fr_parts.extend(["************", *fac_fr_contacts])
+
+    en_parts = [
+        "REPUBLIC OF CAMEROON",
+        "Peace – Work – Fatherland",
+        "************",
+        "MINISTRY OF HIGHER EDUCATION",
+        "************",
+        uni_en,
+        *uni_en_contacts,
+        "************",
+        fac_en,
+        "************",
+        f"DEPARTMENT OF {dept_en}",
+    ]
+    if fac_en_contacts:
+        en_parts.extend(["************", *fac_en_contacts])
+
+    header_fr_text = "\n".join(fr_parts)
+    header_en_text = "\n".join(en_parts)
+
+    has_extra_tiers = bool(uni_fr_contacts or fac_fr_contacts)
+    header_strip_h = 0.285 if has_extra_tiers else 0.255
+    header_box_h = round(header_strip_h - 0.020, 4)
+    header_font_pt = 7.6 if has_extra_tiers else 9.0
 
     title_text = (
         (cover.title if cover and cover.title else slide.title)
         or "TITRE DU PROTOCOLE DE RECHERCHE"
     ).strip()
 
-    # Dynamic title box sizing (18-21 pt bold, height between 0.155 and 0.235)
+    # Dynamic title box sizing (16-21 pt bold)
     title_w_in = 0.86 * SLIDE_WIDTH_IN - 0.30
     title_pt = 21.0
     while title_pt > 16.0:
@@ -260,16 +329,17 @@ def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> Li
             break
         title_pt -= 1.5
     t_lines = estimate_text_lines(title_text, title_w_in, title_pt)
-    dyn_title_h = max(0.155, min(0.235, (t_lines * (title_pt * 1.25 / 72.0) + 0.36) / SLIDE_HEIGHT_IN))
-    title_top = 0.270
+    max_title_h = 0.215 if has_extra_tiers else 0.235
+    dyn_title_h = max(0.145, min(max_title_h, (t_lines * (title_pt * 1.25 / 72.0) + 0.36) / SLIDE_HEIGHT_IN))
+    title_top = header_strip_h + 0.015
     title_bottom = title_top + dyn_title_h
 
     degree_label = (cover.degree_label if cover and cover.degree_label else "Doctorat en Médecine Générale").strip()
     author_name = (cover.author_name if cover and cover.author_name else "À renseigner").strip()
     matricule = (cover.matricule if cover and cover.matricule else "—").strip()
 
-    cand_top = title_bottom + 0.016
-    cand_h = 0.132
+    cand_top = title_bottom + 0.014
+    cand_h = 0.128 if has_extra_tiers else 0.132
     cand_text = (
         f"Protocole de thèse de {degree_label} rédigé par :\n"
         f"{author_name}\n"
@@ -277,7 +347,7 @@ def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> Li
     )
 
     sup_top = cand_top + cand_h + 0.010
-    sup_h = max(0.155, 0.900 - sup_top)
+    sup_h = max(0.145, 0.900 - sup_top)
 
     if cover:
         dir_sups = [cover.director_info] if cover.director_info.has_content() else []
@@ -299,41 +369,79 @@ def _compute_cover_boxes(slide: Slide, project: Optional[ProtocolProject]) -> Li
     acad_year = (cover.academic_year if cover and cover.academic_year else "2025-2026").strip()
     year_text = f"Année académique {acad_year}"
 
+    custom_uni_logo = _resolve_cover_logo_path(getattr(cover, "university_logo_path", "")) if cover else None
+    custom_fac_logo = _resolve_cover_logo_path(getattr(cover, "faculty_logo_path", "")) if cover else None
+    uni_logo_path = str(custom_uni_logo) if custom_uni_logo else TPL_LOGO
+
+    logo_boxes: List[LayoutBox] = []
+    if custom_fac_logo is not None:
+        slot_h = round((header_strip_h - 0.032) / 2.0, 4)
+        logo_boxes.append(
+            LayoutBox(
+                box_id="cover-logo",
+                role="cover_logo",
+                image_path=uni_logo_path,
+                x_pct=0.448,
+                y_pct=0.012,
+                w_pct=0.104,
+                h_pct=slot_h,
+                align="center",
+                valign="middle",
+            )
+        )
+        logo_boxes.append(
+            LayoutBox(
+                box_id="cover-faculty-logo",
+                role="cover_faculty_logo",
+                image_path=str(custom_fac_logo),
+                x_pct=0.448,
+                y_pct=round(0.012 + slot_h + 0.008, 4),
+                w_pct=0.104,
+                h_pct=slot_h,
+                align="center",
+                valign="middle",
+            )
+        )
+    else:
+        logo_boxes.append(
+            LayoutBox(
+                box_id="cover-logo",
+                role="cover_logo",
+                image_path=uni_logo_path,
+                x_pct=0.448,
+                y_pct=0.015,
+                w_pct=0.104,
+                h_pct=round(header_strip_h - 0.027, 4),
+                align="center",
+                valign="middle",
+            )
+        )
+
     return [
         LayoutBox(
             box_id="cover-header-fr",
             role="cover_header_fr",
             text=header_fr_text,
             x_pct=0.03,
-            y_pct=0.015,
+            y_pct=0.012,
             w_pct=0.38,
-            h_pct=0.235,
-            font_size_pt=9.5,
+            h_pct=header_box_h,
+            font_size_pt=header_font_pt,
             bold=True,
             color_hex="#0F172A",
             align="center",
             valign="top",
         ),
-        LayoutBox(
-            box_id="cover-logo",
-            role="cover_logo",
-            image_path=TPL_LOGO,
-            x_pct=0.448,
-            y_pct=0.015,
-            w_pct=0.104,
-            h_pct=0.228,
-            align="center",
-            valign="middle",
-        ),
+        *logo_boxes,
         LayoutBox(
             box_id="cover-header-en",
             role="cover_header_en",
             text=header_en_text,
             x_pct=0.59,
-            y_pct=0.015,
+            y_pct=0.012,
             w_pct=0.38,
-            h_pct=0.235,
-            font_size_pt=9.5,
+            h_pct=header_box_h,
+            font_size_pt=header_font_pt,
             bold=True,
             color_hex="#0F172A",
             align="center",
@@ -464,6 +572,100 @@ def _compute_plan_boxes(slide: Slide) -> List[LayoutBox]:
     return boxes
 
 
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
+_TEMPLATE_SIZE_CACHE: Dict[str, Tuple[int, int]] = {}
+
+
+def _get_template_dimensions(rel_path: Optional[str]) -> Tuple[int, int]:
+    """Return actual (w, h) px dimensions for a template image, cached."""
+    key = rel_path or TPL_CHRONOGRAM
+    if key in _TEMPLATE_SIZE_CACHE:
+        return _TEMPLATE_SIZE_CACHE[key]
+    try:
+        p = Path(key)
+        if not p.is_absolute():
+            p = _WORKSPACE_ROOT / p
+        if p.exists():
+            with PILImage.open(p) as im:
+                _TEMPLATE_SIZE_CACHE[key] = im.size
+                return im.size
+    except Exception:
+        pass
+    return CHRONOGRAM_IMAGE_SIZE
+
+
+def _extract_chronogram_step_label(pill_text: str) -> str:
+    """Extract concise period/date label (before ':') to display on the colored staircase step."""
+    clean = (pill_text or "").strip()
+    if not clean:
+        return ""
+    if ":" in clean:
+        prefix = clean.split(":", 1)[0].strip()
+        return prefix[:22]
+    words = clean.split()
+    return " ".join(words[:2])[:22] if len(words) > 2 else clean[:22]
+
+
+def _compute_chronogram_boxes(slide: Slide) -> List[LayoutBox]:
+    """Compute fit-contain projected boxes for the 7 left pills and 7 colored staircase steps."""
+    img_w, img_h = _get_template_dimensions(slide.background_image_path or TPL_CHRONOGRAM)
+    dl, dt, dw, dh = compute_fit_contain_rect(
+        img_w, img_h, 0.0, 0.0, SLIDE_WIDTH_IN, SLIDE_HEIGHT_IN
+    )
+    off_x = dl / SLIDE_WIDTH_IN
+    off_y = dt / SLIDE_HEIGHT_IN
+    sc_w = dw / SLIDE_WIDTH_IN
+    sc_h = dh / SLIDE_HEIGHT_IN
+
+    boxes: List[LayoutBox] = []
+    pills = [el for el in slide.elements if el.element_type != "media"]
+    for idx in range(min(7, len(pills))):
+        el = pills[idx]
+        txt = (el.content or "").strip()
+        px_x, px_y, px_w, px_h = CHRONOGRAM_PILL_RECTS[idx]
+        f_pt = 9.5 if len(txt) <= 44 else 8.5
+        boxes.append(
+            LayoutBox(
+                box_id=f"chrono-pill-{idx + 1}",
+                role="chronogram_pill",
+                element_id=el.id,
+                text=txt,
+                x_pct=round(off_x + px_x * sc_w, 4),
+                y_pct=round(off_y + px_y * sc_h, 4),
+                w_pct=round(px_w * sc_w, 4),
+                h_pct=round(px_h * sc_h, 4),
+                font_size_pt=f_pt,
+                bold=True,
+                color_hex="#002060",
+                align="center",
+                valign="middle",
+                step_index=idx + 1,
+            )
+        )
+
+        sx, sy, sw, sh = CHRONOGRAM_STEP_RECTS[idx]
+        step_label = _extract_chronogram_step_label(txt)
+        boxes.append(
+            LayoutBox(
+                box_id=f"chrono-step-{idx + 1}",
+                role="chronogram_step",
+                element_id=el.id,
+                text=step_label,
+                x_pct=round(off_x + sx * sc_w, 4),
+                y_pct=round(off_y + sy * sc_h, 4),
+                w_pct=round(sw * sc_w, 4),
+                h_pct=round(sh * sc_h, 4),
+                font_size_pt=10.0 if len(step_label) <= 14 else 8.5,
+                bold=True,
+                color_hex="#FFFFFF",
+                align="center",
+                valign="middle",
+                step_index=idx + 1,
+            )
+        )
+    return boxes
+
+
 def _compute_budget_boxes(slide: Slide) -> List[LayoutBox]:
     total_text = (slide.subtitle or "0 FCFA").strip()
     total_font = 14.5 if len(total_text) <= 16 else 12.5
@@ -522,14 +724,23 @@ def _compute_acknowledgements_boxes(slide: Slide, project: Optional[ProtocolProj
         contact_parts.append(project.cover.student_phone)
     contact_line = " • ".join(contact_parts)
 
+    fac_lbl = (
+        (project.cover.faculty_fr if project and getattr(project.cover, "faculty_fr", "") else "")
+        or "Faculté de Médecine et des Sciences Biomédicales"
+    ).strip()
+    uni_lbl = (
+        (project.cover.university_fr if project and getattr(project.cover, "university_fr", "") else "")
+        or "Université de Yaoundé I"
+    ).strip()
+
     medallion_text = (
         slide.elements[0].content
         if slide.elements and slide.elements[0].content.strip()
         else (
             "QUESTIONS & DISCUSSIONS\n\n"
             f"{cand or 'Impétrant(e) FMSB'}\n"
-            "Faculté de Médecine et des Sciences Biomédicales\n"
-            "Université de Yaoundé I"
+            f"{fac_lbl}\n"
+            f"{uni_lbl}"
             + (f"\n{contact_line}" if contact_line else "")
         )
     )
@@ -883,13 +1094,18 @@ def compute_slide_layout(
         slide.estimated_lines = 6
         slide.cames_warnings = []
     elif stype == "chronogram":
-        slide.background_image_path = TPL_CHRONOGRAM
-        slide.layout_mode = "full_image_asis"
-        slide.locked_as_is = True
-        slide.elements = []
-        slide.render_boxes = []
-        slide.estimated_lines = 0
-        slide.cames_warnings = []
+        slide.background_image_path = slide.background_image_path or TPL_CHRONOGRAM
+        slide.locked_as_is = False
+        if slide.layout_mode in ("chronogram_7pills", "full_image_asis", "", None):
+            slide.layout_mode = "chronogram_7pills"
+            slide.render_boxes = _compute_chronogram_boxes(slide)
+            slide.estimated_lines = min(7, len(slide.elements))
+            slide.cames_warnings = []
+        else:
+            boxes, est_lines, warns = _compute_content_boxes(slide, total_slides=total_slides)
+            slide.render_boxes = boxes
+            slide.estimated_lines = est_lines
+            slide.cames_warnings = warns
     elif stype == "budget":
         slide.background_image_path = slide.background_image_path or TPL_BUDGET
         slide.layout_mode = "radial_budget"

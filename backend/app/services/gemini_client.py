@@ -180,11 +180,66 @@ class GeminiRouter:
         text: str,
         source_lang: str = "fr",
         target_lang: str = "en",
+        field_type: str = "department",
     ) -> Dict[str, str]:
-        """Translate a FMSB academic department name FR <-> EN using Gemini 3.8 Live/Flash."""
+        """Translate a CAMES/FMSB academic header item (university, faculty, or department) FR <-> EN."""
         clean = (text or "").strip()
         if not clean:
             return {"translated_text": "", "model_used": "none"}
+
+        ftype = (field_type or "department").strip().lower()
+        if ftype not in ("university", "faculty", "department"):
+            ftype = "department"
+
+        university_pairs = {
+            "UNIVERSITE DE YAOUNDE I": "THE UNIVERSITY OF YAOUNDÉ I",
+            "UNIVERSITÉ DE YAOUNDÉ I": "THE UNIVERSITY OF YAOUNDÉ I",
+            "UNIVERSITE DE YAOUNDE 1": "THE UNIVERSITY OF YAOUNDÉ I",
+            "UNIVERSITÉ DE YAOUNDÉ 1": "THE UNIVERSITY OF YAOUNDÉ I",
+            "UNIVERSITE DE DOUALA": "THE UNIVERSITY OF DOUALA",
+            "UNIVERSITÉ DE DOUALA": "THE UNIVERSITY OF DOUALA",
+            "UNIVERSITE DE DSCHANG": "UNIVERSITY OF DSCHANG",
+            "UNIVERSITÉ DE DSCHANG": "UNIVERSITY OF DSCHANG",
+            "UNIVERSITE DE BUEA": "UNIVERSITY OF BUEA",
+            "UNIVERSITÉ DE BUEA": "UNIVERSITY OF BUEA",
+            "UNIVERSITE DE BAMENDA": "THE UNIVERSITY OF BAMENDA",
+            "UNIVERSITÉ DE BAMENDA": "THE UNIVERSITY OF BAMENDA",
+            "UNIVERSITE DE NGAOUNDERE": "UNIVERSITY OF NGAOUNDÉRÉ",
+            "UNIVERSITÉ DE NGAOUNDÉRÉ": "UNIVERSITY OF NGAOUNDÉRÉ",
+            "UNIVERSITE DES MONTAGNES": "UNIVERSITÉ DES MONTAGNES (UNIVERSITY OF MOUNTAINS)",
+            "UNIVERSITÉ DES MONTAGNES": "UNIVERSITÉ DES MONTAGNES (UNIVERSITY OF MOUNTAINS)",
+            "UNIVERSITE DE MAROUA": "THE UNIVERSITY OF MAROUA",
+            "UNIVERSITÉ DE MAROUA": "THE UNIVERSITY OF MAROUA",
+            "UNIVERSITE DE GAROUA": "THE UNIVERSITY OF GAROUA",
+            "UNIVERSITÉ DE GAROUA": "THE UNIVERSITY OF GAROUA",
+            "UNIVERSITE D'EBOLOWA": "THE UNIVERSITY OF EBOLOWA",
+            "UNIVERSITÉ D'EBOLOWA": "THE UNIVERSITY OF EBOLOWA",
+            "UNIVERSITE DE BERTOUA": "THE UNIVERSITY OF BERTOUA",
+            "UNIVERSITÉ DE BERTOUA": "THE UNIVERSITY OF BERTOUA",
+            "UNIVERSITE CHEIKH ANTA DIOP DE DAKAR": "CHEIKH ANTA DIOP UNIVERSITY OF DAKAR",
+            "UNIVERSITÉ CHEIKH ANTA DIOP DE DAKAR": "CHEIKH ANTA DIOP UNIVERSITY OF DAKAR",
+            "UNIVERSITE FELIX HOUPHOUET-BOIGNY": "FÉLIX HOUPHOUËT-BOIGNY UNIVERSITY",
+            "UNIVERSITÉ FÉLIX HOUPHOUËT-BOIGNY": "FÉLIX HOUPHOUËT-BOIGNY UNIVERSITY",
+            "UNIVERSITE MARIEN NGOUABI": "MARIEN NGOUABI UNIVERSITY",
+            "UNIVERSITÉ MARIEN NGOUABI": "MARIEN NGOUABI UNIVERSITY",
+        }
+
+        faculty_pairs = {
+            "FACULTE DE MEDECINE ET DES SCIENCES BIOMEDICALES": "FACULTY OF MEDICINE AND BIOMEDICAL SCIENCES",
+            "FACULTÉ DE MÉDECINE ET DES SCIENCES BIOMÉDICALES": "FACULTY OF MEDICINE AND BIOMEDICAL SCIENCES",
+            "FACULTE DE MEDECINE ET DES SCIENCES PHARMACEUTIQUES": "FACULTY OF MEDICINE AND PHARMACEUTICAL SCIENCES",
+            "FACULTÉ DE MÉDECINE ET DES SCIENCES PHARMACEUTIQUES": "FACULTY OF MEDICINE AND PHARMACEUTICAL SCIENCES",
+            "FACULTE DES SCIENCES DE LA SANTE": "FACULTY OF HEALTH SCIENCES",
+            "FACULTÉ DES SCIENCES DE LA SANTÉ": "FACULTY OF HEALTH SCIENCES",
+            "FACULTE DE MEDECINE ET DE PHARMACIE": "FACULTY OF MEDICINE AND PHARMACY",
+            "FACULTÉ DE MÉDECINE ET DE PHARMACIE": "FACULTY OF MEDICINE AND PHARMACY",
+            "FACULTE DE MEDECINE": "FACULTY OF MEDICINE",
+            "FACULTÉ DE MÉDECINE": "FACULTY OF MEDICINE",
+            "INSTITUT SUPERIEUR DES SCIENCES DE LA SANTE": "HIGHER INSTITUTE OF HEALTH SCIENCES",
+            "INSTITUT SUPÉRIEUR DES SCIENCES DE LA SANTÉ": "HIGHER INSTITUTE OF HEALTH SCIENCES",
+            "FACULTE DE MEDECINE ET DES SCIENCES BIOMEDICALES DE GAROUA": "FACULTY OF MEDICINE AND BIOMEDICAL SCIENCES OF GAROUA",
+            "FACULTÉ DE MÉDECINE ET DES SCIENCES BIOMÉDICALES DE GAROUA": "FACULTY OF MEDICINE AND BIOMEDICAL SCIENCES OF GAROUA",
+        }
 
         fmsb_pairs = {
             "SANTE PUBLIQUE": "PUBLIC HEALTH",
@@ -207,14 +262,33 @@ class GeminiRouter:
 
         src_label = "French" if source_lang == "fr" else "English"
         tgt_label = "English" if target_lang == "en" else "French"
-        prompt = (
-            f"Translate this Cameroon FMSB medical school academic department name from {src_label} to {tgt_label}.\n"
-            "Rules:\n"
-            "- Return ONLY the translated department name in UPPERCASE.\n"
-            "- Do NOT include the words 'DEPARTMENT OF' or 'DEPARTEMENT DE'.\n"
-            "- No quotes, no explanation.\n\n"
-            f"Input: {clean}"
-        )
+        if ftype == "university":
+            prompt = (
+                f"Translate this official university name from {src_label} to {tgt_label} for a bilingual academic cover page.\n"
+                "Rules:\n"
+                "- Return ONLY the official translated university name in UPPERCASE.\n"
+                "- Keep proper city/person names and Roman numerals (I, II, etc.) intact.\n"
+                "- No quotes, no explanation.\n\n"
+                f"Input: {clean}"
+            )
+        elif ftype == "faculty":
+            prompt = (
+                f"Translate this medical/health faculty, school, or institute name from {src_label} to {tgt_label} for a bilingual academic cover page.\n"
+                "Rules:\n"
+                "- Return ONLY the official translated faculty or school name in UPPERCASE.\n"
+                "- Keep proper place names intact.\n"
+                "- No quotes, no explanation.\n\n"
+                f"Input: {clean}"
+            )
+        else:
+            prompt = (
+                f"Translate this Cameroon FMSB medical school academic department name from {src_label} to {tgt_label}.\n"
+                "Rules:\n"
+                "- Return ONLY the translated department name in UPPERCASE.\n"
+                "- Do NOT include the words 'DEPARTMENT OF' or 'DEPARTEMENT DE'.\n"
+                "- No quotes, no explanation.\n\n"
+                f"Input: {clean}"
+            )
 
         try:
             res = self.generate_with_fallback(
@@ -222,28 +296,76 @@ class GeminiRouter:
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.0,
-                    max_output_tokens=60,
+                    max_output_tokens=80,
                     http_options=types.HttpOptions(timeout=10000),
                 ),
             )
             out = (res["text"] or "").strip().splitlines()[0].strip().strip('"\' ')
-            if target_lang == "en":
-                out = re.sub(r"^departe?ment\s+(?:of\s+)?", "", out, flags=re.IGNORECASE)
-            else:
-                out = re.sub(r"^d[ée]partement\s+(?:de\s+la\s+|de\s+l'|du\s+|des\s+|d'|de\s+)?", "", out, flags=re.IGNORECASE)
+            if ftype == "department":
+                if target_lang == "en":
+                    out = re.sub(r"^departe?ment\s+(?:of\s+)?", "", out, flags=re.IGNORECASE)
+                else:
+                    out = re.sub(r"^d[ée]partement\s+(?:de\s+la\s+|de\s+l'|du\s+|des\s+|d'|de\s+)?", "", out, flags=re.IGNORECASE)
             if out:
                 return {"translated_text": out.upper(), "model_used": res["model_used"]}
         except Exception as exc:
-            logger.warning("Live department translation fallback (%s)", exc)
+            logger.warning("Live %s translation fallback (%s)", ftype, exc)
 
-        # Deterministic official FMSB lookup fallback
+        # Deterministic official CAMES/FMSB lookup fallback
         norm = re.sub(r"\s+", " ", clean.upper())
-        if source_lang == "fr" and norm in fmsb_pairs:
-            return {"translated_text": fmsb_pairs[norm], "model_used": "fmsb-glossary-fallback"}
+        active_pairs = (
+            university_pairs
+            if ftype == "university"
+            else faculty_pairs
+            if ftype == "faculty"
+            else fmsb_pairs
+        )
+        if source_lang == "fr" and norm in active_pairs:
+            return {"translated_text": active_pairs[norm], "model_used": "fmsb-glossary-fallback"}
         if source_lang == "en":
-            rev = {v: k for k, v in fmsb_pairs.items()}
+            rev = {v: k for k, v in active_pairs.items()}
             if norm in rev:
                 return {"translated_text": rev[norm], "model_used": "fmsb-glossary-fallback"}
+
+        # Rule-based prefix fallback for unlisted CAMES universities/faculties
+        if ftype == "university":
+            if target_lang == "en":
+                out_rb = re.sub(r"^UNIVERSIT[ÉE]\s+(?:DE\s+L'|DE\s+|DU\s+|DES\s+|D')?", "UNIVERSITY OF ", norm)
+                out_rb = re.sub(r"^UNIVERSIT[ÉE]\b", "UNIVERSITY", out_rb)
+                if out_rb != norm:
+                    return {"translated_text": out_rb, "model_used": "fmsb-glossary-fallback"}
+            else:
+                out_rb = re.sub(r"^(?:THE\s+)?UNIVERSITY\s+OF\s+", "UNIVERSITÉ DE ", norm)
+                if out_rb != norm:
+                    return {"translated_text": out_rb, "model_used": "fmsb-glossary-fallback"}
+        elif ftype == "faculty":
+            if target_lang == "en":
+                out_rb = (
+                    norm.replace("FACULTÉ DES SCIENCES DE LA SANTÉ", "FACULTY OF HEALTH SCIENCES")
+                    .replace("FACULTE DES SCIENCES DE LA SANTE", "FACULTY OF HEALTH SCIENCES")
+                    .replace("FACULTÉ DE MÉDECINE", "FACULTY OF MEDICINE")
+                    .replace("FACULTE DE MEDECINE", "FACULTY OF MEDICINE")
+                    .replace("ET DES SCIENCES BIOMÉDICALES", "AND BIOMEDICAL SCIENCES")
+                    .replace("ET DES SCIENCES BIOMEDICALES", "AND BIOMEDICAL SCIENCES")
+                    .replace("ET DES SCIENCES PHARMACEUTIQUES", "AND PHARMACEUTICAL SCIENCES")
+                    .replace("ET DE PHARMACIE", "AND PHARMACY")
+                    .replace("FACULTÉ DE ", "FACULTY OF ")
+                    .replace("FACULTE DE ", "FACULTY OF ")
+                )
+                if out_rb != norm:
+                    return {"translated_text": out_rb, "model_used": "fmsb-glossary-fallback"}
+            else:
+                out_rb = (
+                    norm.replace("FACULTY OF HEALTH SCIENCES", "FACULTÉ DES SCIENCES DE LA SANTÉ")
+                    .replace("FACULTY OF MEDICINE AND BIOMEDICAL SCIENCES", "FACULTÉ DE MÉDECINE ET DES SCIENCES BIOMÉDICALES")
+                    .replace("FACULTY OF MEDICINE AND PHARMACEUTICAL SCIENCES", "FACULTÉ DE MÉDECINE ET DES SCIENCES PHARMACEUTIQUES")
+                    .replace("FACULTY OF MEDICINE AND PHARMACY", "FACULTÉ DE MÉDECINE ET DE PHARMACIE")
+                    .replace("FACULTY OF MEDICINE", "FACULTÉ DE MÉDECINE")
+                    .replace("FACULTY OF ", "FACULTÉ DE ")
+                )
+                if out_rb != norm:
+                    return {"translated_text": out_rb, "model_used": "fmsb-glossary-fallback"}
+
         return {"translated_text": clean.upper(), "model_used": "passthrough"}
 
     def summarize_section_live(

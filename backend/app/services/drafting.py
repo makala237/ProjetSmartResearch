@@ -421,7 +421,7 @@ def audit_section_with_ai(project: ProtocolProject, section_id: str) -> Dict[str
 
     if not text.strip():
         extra_rec = (
-            f"Antigravity a préparé {orch_trace['added_references_count']} référence(s) Vancouver pour cette section. "
+            f"L'assistant documentaire a préparé {orch_trace['added_references_count']} référence(s) Vancouver pour cette section. "
             if orch_trace["added_references_count"] > 0
             else ""
         )

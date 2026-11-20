@@ -77,6 +77,18 @@ def _parse_legacy_supervisor(raw: str) -> SupervisorInfo:
 class CoverMetadata(BaseModel):
     title: str = "Titre du protocole de recherche"
     degree_label: str = "Doctorat en Médecine Générale"
+    university_fr: str = "UNIVERSITÉ DE YAOUNDÉ I"
+    university_en: str = "THE UNIVERSITY OF YAOUNDÉ I"
+    university_po_box: str = ""
+    university_email: str = ""
+    faculty_fr: str = "FACULTÉ DE MÉDECINE ET DES SCIENCES BIOMÉDICALES"
+    faculty_en: str = "FACULTY OF MEDICINE AND BIOMEDICAL SCIENCES"
+    faculty_po_box: str = ""
+    faculty_email: str = ""
+    university_logo_path: str = ""
+    university_logo_url: str = ""
+    faculty_logo_path: str = ""
+    faculty_logo_url: str = ""
     department_fr: str = "SANTE PUBLIQUE"
     department_en: str = "PUBLIC HEALTH"
     author_name: str = ""
@@ -352,6 +364,19 @@ class PatientRecord(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class CoherenceAlert(BaseModel):
+    alert_id: str
+    axis: str
+    source_section_id: str
+    source_section_title: str
+    target_section_id: str
+    target_section_title: str
+    title: str
+    message: str
+    suggested_instruction: str
+    suggested_study_type: Optional[str] = None
+
+
 class ProtocolProject(BaseModel):
     project_id: str = Field(default_factory=lambda: str(uuid4())[:12])
     owner_user_id: Optional[str] = None
@@ -365,6 +390,7 @@ class ProtocolProject(BaseModel):
     study_type: str = ""
     cover: CoverMetadata = Field(default_factory=CoverMetadata)
     sections: Dict[str, SectionState] = Field(default_factory=dict)
+    coherence_alerts: List[CoherenceAlert] = Field(default_factory=list)
     references: List[ReferenceItem] = Field(default_factory=list)
     article_segments: List[ArticleSegment] = Field(default_factory=list)
     images: List[ImageAsset] = Field(default_factory=list)

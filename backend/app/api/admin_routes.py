@@ -34,6 +34,7 @@ from app.schemas.admin import (
     AdminResetPasswordResponse,
     AdminStudentStatsRow,
     AdminUpdateProjectIdentityRequest,
+    AdminUpdateUserCoverRequest,
     AdminUpdateUserRequest,
     AdminUserDetailOut,
     LicensePlanCreateRequest,
@@ -42,7 +43,7 @@ from app.schemas.admin import (
     UsageEventOut,
 )
 from app.schemas.auth import AIQuotaOut, ModuleEntitlementOut
-from app.schemas.protocol import CoverMetadata, CreateProjectRequest
+from app.schemas.protocol import CoverMetadata, CreateProjectRequest, StepStatus
 from app.services.auth_service import create_user_account
 from app.services.licensing_service import (
     MODULE_KEYS,
@@ -51,6 +52,7 @@ from app.services.licensing_service import (
     recharge_user_ai_quota,
 )
 from app.services.storage import project_storage
+from app.services.working_memory import update_section_working_memory
 
 router = APIRouter(
     prefix="/api/admin",
@@ -247,6 +249,7 @@ def get_admin_dashboard(db: Session = Depends(get_db)) -> AdminDashboardStatsOut
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
+    total_admins = db.query(UserORM).filter(UserORM.role == "admin").count()
     students = db.query(UserORM).filter(UserORM.role == "student").all()
     student_rows = _build_student_rows(db, students)
 
@@ -276,6 +279,7 @@ def get_admin_dashboard(db: Session = Depends(get_db)) -> AdminDashboardStatsOut
     )
 
     return AdminDashboardStatsOut(
+        total_admins=total_admins,
         total_students=len(student_rows),
         active_students=active_cnt,
         expiring_soon_students=len(exp_soon_rows),
@@ -508,7 +512,7 @@ def admin_create_user(
     temp_pw = (payload.temporary_password or "").strip() or _generate_temp_password()
 
     plan: Optional[LicensePlanORM] = None
-    if payload.plan_id:
+    if role == "student" and payload.plan_id:
         plan = db.get(LicensePlanORM, payload.plan_id)
         if plan is None:
             raise HTTPException(status_code=404, detail="Plan de licence introuvable.")
@@ -530,7 +534,7 @@ def admin_create_user(
             raise HTTPException(status_code=409, detail="Un compte avec cet email existe déjà.") from exc
         raise
 
-    if plan is not None:
+    if plan is not None and role == "student":
         apply_license_plan_to_user(
             db=db,
             admin_user=admin_user,
@@ -542,24 +546,49 @@ def admin_create_user(
         )
 
     created_pid: Optional[str] = None
-    init_title = (payload.initial_protocol_title or "").strip()
-    if init_title and role == "student":
-        created_proj = project_storage.create(
-            CreateProjectRequest(
-                name=init_title,
-                study_type=payload.study_type.strip() or "Étude transversale analytique",
-                cover=CoverMetadata(
-                    title=init_title,
-                    author_name=user.full_name,
-                    matricule=user.matricule,
+    if role == "student":
+        init_title = (payload.initial_protocol_title or "").strip()
+        cov: Optional[CoverMetadata] = None
+        if payload.cover is not None:
+            cov = payload.cover.model_copy(deep=True)
+            if not cov.title.strip() and init_title:
+                cov.title = init_title
+        elif init_title:
+            cov = CoverMetadata(
+                title=init_title,
+                author_name=user.full_name,
+                matricule=user.matricule,
+                student_phone=user.phone,
+                student_email=user.email,
+            )
+
+        if cov is not None and cov.title.strip():
+            if not cov.author_name.strip():
+                cov.author_name = user.full_name
+            if not cov.matricule.strip() and user.matricule:
+                cov.matricule = user.matricule
+            if not cov.student_phone.strip() and user.phone:
+                cov.student_phone = user.phone
+            if not cov.student_email.strip() and user.email:
+                cov.student_email = user.email
+
+            created_proj = project_storage.create(
+                CreateProjectRequest(
+                    name=cov.title.strip(),
+                    study_type=payload.study_type.strip() or "Étude transversale analytique",
+                    cover=cov,
                 ),
-            ),
-            owner_user_id=user.id,
-            owner_role="student",
-            owner_full_name=user.full_name,
-            owner_matricule=user.matricule,
-        )
-        created_pid = created_proj.project_id
+                owner_user_id=user.id,
+                owner_role="student",
+                owner_full_name=cov.author_name or user.full_name,
+                owner_matricule=cov.matricule or user.matricule,
+            )
+            if "cover_page" in created_proj.sections:
+                created_proj.sections["cover_page"].status = StepStatus.VALIDATED
+                created_proj.sections["cover_page"].content_markdown = cov.title.strip()
+                created_proj = project_storage.save(created_proj)
+            update_section_working_memory(created_proj, "cover_page")
+            created_pid = created_proj.project_id
 
     db.add(
         AdminAuditLogORM(
@@ -569,7 +598,7 @@ def admin_create_user(
             details_json={
                 "email": user.email,
                 "role": role,
-                "plan_id": payload.plan_id,
+                "plan_id": payload.plan_id if role == "student" else None,
                 "created_project_id": created_pid,
             },
             created_at=utcnow(),
@@ -619,6 +648,7 @@ def get_user_detail(
     admin_ids = list({l.admin_id for l in logs if l.admin_id})
     admins = {a.id: a.email for a in db.query(UserORM).filter(UserORM.id.in_(admin_ids)).all()} if admin_ids else {}
     now = datetime.now(timezone.utc)
+    proj_obj = project_storage.get(row_out.project_id) if row_out.project_id else None
 
     return AdminUserDetailOut(
         user=row_out,
@@ -652,6 +682,8 @@ def get_user_detail(
             )
             for l in logs
         ],
+        project_cover=proj_obj.cover if proj_obj else None,
+        project_study_type=proj_obj.study_type if proj_obj else None,
     )
 
 
@@ -679,6 +711,20 @@ def update_user(
         user.phone = payload.phone.strip()
     if payload.role in ("student", "admin"):
         user.role = payload.role
+        if payload.role == "admin":
+            quota_row = db.get(UserAIQuotaORM, user.id)
+            if quota_row is None:
+                db.add(
+                    UserAIQuotaORM(
+                        user_id=user.id,
+                        credits_total=100000,
+                        credits_used=0,
+                        updated_at=utcnow(),
+                    )
+                )
+            else:
+                quota_row.credits_total = max(int(quota_row.credits_total or 0), 100000)
+                quota_row.updated_at = utcnow()
     if payload.is_active is not None:
         user.is_active = payload.is_active
         if not payload.is_active:
@@ -869,6 +915,107 @@ def override_student_project_identity(
                     "matricule": proj.cover.matricule,
                     "topic_locked": proj.topic_locked,
                 },
+                "reason": payload.reason.strip(),
+            },
+            created_at=utcnow(),
+        )
+    )
+    db.commit()
+    db.expire_all()
+    user = db.get(UserORM, user_id)
+    return _build_student_rows(db, [user])[0]
+
+
+@router.patch("/users/{user_id}/cover", response_model=AdminStudentStatsRow)
+def update_user_full_cover(
+    user_id: str,
+    payload: AdminUpdateUserCoverRequest,
+    admin_user: UserORM = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> AdminStudentStatsRow:
+    user = db.get(UserORM, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
+
+    next_cover = payload.cover.model_copy(deep=True)
+    if not next_cover.author_name.strip():
+        next_cover.author_name = user.full_name
+    if not next_cover.matricule.strip() and user.matricule:
+        next_cover.matricule = user.matricule
+    if not next_cover.student_phone.strip() and user.phone:
+        next_cover.student_phone = user.phone
+    if not next_cover.student_email.strip() and user.email:
+        next_cover.student_email = user.email
+
+    proj_row = (
+        db.query(ProjectORM)
+        .filter(ProjectORM.owner_user_id == user_id)
+        .order_by(ProjectORM.updated_at.desc())
+        .first()
+    )
+
+    if proj_row is None:
+        proj_title = (next_cover.title or "").strip() or f"Protocole de {user.full_name}"
+        next_cover.title = proj_title
+        proj = project_storage.create(
+            CreateProjectRequest(
+                name=proj_title,
+                study_type=(payload.study_type or "").strip() or "Étude transversale analytique",
+                cover=next_cover,
+            ),
+            owner_user_id=user.id,
+            owner_role="student" if user.role != "admin" else "admin",
+            owner_full_name=next_cover.author_name or user.full_name,
+            owner_matricule=next_cover.matricule or user.matricule,
+        )
+        if payload.topic_locked is not None:
+            proj.topic_locked = payload.topic_locked
+    else:
+        proj = project_storage.get(proj_row.project_id)
+        if proj is None:
+            raise HTTPException(status_code=404, detail="Protocole introuvable.")
+
+        existing_cover = proj.cover
+        for path_attr, url_attr in (
+            ("university_logo_path", "university_logo_url"),
+            ("faculty_logo_path", "faculty_logo_url"),
+        ):
+            if not getattr(next_cover, path_attr) and getattr(existing_cover, path_attr):
+                setattr(next_cover, path_attr, getattr(existing_cover, path_attr))
+            if not getattr(next_cover, url_attr) and getattr(existing_cover, url_attr):
+                setattr(next_cover, url_attr, getattr(existing_cover, url_attr))
+
+        proj.cover = next_cover
+        if (next_cover.title or "").strip():
+            proj.name = next_cover.title.strip()
+        proj.locked_title = (next_cover.title or proj.name or "").strip()
+        proj.locked_author_name = (next_cover.author_name or "").strip()
+        proj.locked_matricule = (next_cover.matricule or "").strip()
+        if payload.study_type is not None and payload.study_type.strip():
+            proj.study_type = payload.study_type.strip()
+        if payload.topic_locked is not None:
+            proj.topic_locked = payload.topic_locked
+
+    if "cover_page" in proj.sections:
+        proj.sections["cover_page"].status = StepStatus.VALIDATED
+        proj.sections["cover_page"].content_markdown = (proj.cover.title or proj.name or "").strip()
+
+    saved_proj = project_storage.save(proj)
+    update_section_working_memory(saved_proj, "cover_page")
+
+    db.add(
+        AdminAuditLogORM(
+            admin_id=admin_user.id,
+            target_user_id=user.id,
+            action="update_student_cover",
+            details_json={
+                "project_id": saved_proj.project_id,
+                "title": saved_proj.cover.title,
+                "author_name": saved_proj.cover.author_name,
+                "matricule": saved_proj.cover.matricule,
+                "university_fr": saved_proj.cover.university_fr,
+                "faculty_fr": saved_proj.cover.faculty_fr,
+                "department_fr": saved_proj.cover.department_fr,
                 "reason": payload.reason.strip(),
             },
             created_at=utcnow(),

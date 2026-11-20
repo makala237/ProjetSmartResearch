@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Activity,
   Airplay,
   ClipboardCheck,
   FileUp,
@@ -35,7 +34,6 @@ import type {
   CoverMetadata,
   EntryMode,
   FormattingRules,
-  ModelsStatus,
   ProtocolProject,
   StepStatus,
 } from "./types/protocol";
@@ -56,7 +54,6 @@ export default function App() {
   const [canvas, setCanvas] = useState<CanvasSectionSpec[]>([]);
   const [projects, setProjects] = useState<ProtocolProject[]>([]);
   const [activeProject, setActiveProject] = useState<ProtocolProject | null>(null);
-  const [modelsStatus, setModelsStatus] = useState<ModelsStatus | null>(null);
 
   const [activeModule, setActiveModule] = useState<ModuleKey>("module1");
   const [selectedSectionId, setSelectedSectionId] = useState<string>("cover_page");
@@ -75,10 +72,9 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      const [canvasRes, projectsRes, modelsRes] = await Promise.all([
+      const [canvasRes, projectsRes] = await Promise.all([
         api.getCanvas(),
         api.listProjects(),
-        api.getModelsStatus(),
       ]);
       setCanvas(canvasRes.sections);
       setProjects(projectsRes);
@@ -89,7 +85,6 @@ export default function App() {
         }
         return projectsRes[0] ?? null;
       });
-      setModelsStatus(modelsRes);
       if (canvasRes.sections.length > 0) {
         setSelectedSectionId((prev) => prev || canvasRes.sections[0].id);
       }
@@ -340,8 +335,13 @@ export default function App() {
 
   if (authLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-slate-50 text-sm text-slate-600">
-        Vérification de votre session SmartResearch FMSB...
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#F4F7FB] text-sm font-medium text-slate-600">
+        <img
+          src="/logo-smart-research.png"
+          alt="Smart Research"
+          className="h-24 w-auto animate-pulse object-contain"
+        />
+        <span>Vérification de votre session Smart Research...</span>
       </div>
     );
   }
@@ -372,20 +372,24 @@ export default function App() {
   const isModuleReadOnly = !isAdmin && !activeEntitlement?.is_active;
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-[#F4F7FB]">
       {/* Top Navbar */}
-      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-3.5 py-2.5 sm:px-6 sm:py-3">
+      <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/95 shadow-xs backdrop-blur">
+        <div className="h-1 w-full bg-gradient-to-r from-[#004A8F] via-[#0284C7] to-[#1FA84F]" />
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-3 px-3.5 py-2 sm:px-6 sm:py-2.5">
           <div className="flex min-w-0 items-center gap-2.5 sm:gap-3">
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#6C2826] text-sm font-bold text-white">
-              SR
-            </div>
+            <img
+              src="/logo-mark.png"
+              alt="Logo Smart Research"
+              className="h-10 w-10 shrink-0 rounded-xl border border-slate-200/80 bg-white object-contain p-0.5 shadow-xs"
+            />
             <div className="min-w-0">
-              <h1 className="truncate text-sm font-bold text-slate-900 sm:text-base">
-                SmartResearch <span className="text-[#6C2826]">FMSB</span>
+              <h1 className="truncate text-sm font-extrabold tracking-tight text-slate-900 sm:text-base">
+                <span className="text-[#004A8F]">Smart</span>{" "}
+                <span className="text-[#1FA84F]">Research</span>
               </h1>
-              <p className="hidden text-xs text-slate-500 sm:block">
-                Assistant de rédaction de protocole médical
+              <p className="hidden text-[11px] font-medium text-slate-500 sm:block">
+                Votre assistant intelligent de recherche scientifique
               </p>
             </div>
           </div>
@@ -416,25 +420,6 @@ export default function App() {
 
           {/* Desktop Controls (md+) */}
           <div className="hidden flex-wrap items-center gap-2.5 md:flex">
-            {/* Gemini Status Pill */}
-            <div
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
-                modelsStatus?.connected
-                  ? "bg-emerald-50 text-emerald-700"
-                  : "bg-amber-50 text-amber-800"
-              }`}
-              title={
-                modelsStatus?.connected
-                  ? `${modelsStatus.available_models.length} modèles Gemini détectés`
-                  : modelsStatus?.error || "Vérification en cours"
-              }
-            >
-              <Activity className="h-3.5 w-3.5" />
-              {modelsStatus?.connected
-                ? `Gemini OK (${modelsStatus.available_models.length})`
-                : "Gemini hors ligne"}
-            </div>
-
             {/* AI Credits Gauge */}
             <div
               className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${
@@ -444,7 +429,7 @@ export default function App() {
                   ? "bg-amber-100 text-amber-900"
                   : "bg-indigo-50 text-indigo-800"
               }`}
-              title="Solde de crédits d'appels IA Gemini"
+              title="Solde de crédits d'assistance IA"
             >
               <Sparkles className="h-3.5 w-3.5" />
               {isAdmin
@@ -475,7 +460,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setShowCreateModal(true)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
+                className="inline-flex items-center gap-1.5 rounded-xl bg-gradient-to-r from-[#004A8F] to-[#0284C7] px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs transition hover:brightness-105"
               >
                 <FolderPlus className="h-3.5 w-3.5" />
                 Nouveau protocole
@@ -487,10 +472,10 @@ export default function App() {
               <button
                 type="button"
                 onClick={activeView === "admin" ? exitAdminPortal : openAdminPortal}
-                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
                   activeView === "admin"
-                    ? "bg-slate-900 text-white"
-                    : "border border-[#6C2826]/30 bg-rose-50 text-[#6C2826] hover:bg-rose-100"
+                    ? "bg-slate-900 text-white shadow-xs"
+                    : "border border-[#004A8F]/25 bg-sky-50 text-[#004A8F] hover:bg-sky-100"
                 }`}
               >
                 <Shield className="h-3.5 w-3.5" />
@@ -608,7 +593,7 @@ export default function App() {
                     setShowCreateModal(true);
                     setMobileMenuOpen(false);
                   }}
-                  className="col-span-2 inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-3 text-xs font-semibold text-white"
+                  className="col-span-2 inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-[#004A8F] to-[#0284C7] px-3 text-xs font-semibold text-white shadow-xs"
                 >
                   <FolderPlus className="h-4 w-4" />
                   Nouveau protocole
@@ -622,7 +607,7 @@ export default function App() {
                     if (activeView === "admin") exitAdminPortal();
                     else openAdminPortal();
                   }}
-                  className="col-span-2 inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-lg bg-[#6C2826] px-3 text-xs font-semibold text-white"
+                  className="col-span-2 inline-flex min-h-[42px] items-center justify-center gap-1.5 rounded-xl bg-[#004A8F] px-3 text-xs font-semibold text-white"
                 >
                   <Shield className="h-4 w-4" />
                   {activeView === "admin" ? "Ouvrir le Studio" : "Ouvrir Portail Admin"}
@@ -653,15 +638,15 @@ export default function App() {
 
         {/* Four-Module Switcher (Desktop md+) */}
         {activeView === "studio" && activeProject && (
-          <div className="hidden border-t border-slate-100 bg-slate-50/80 md:block">
+          <div className="hidden border-t border-slate-100 bg-[#F4F7FB]/80 md:block">
             <div className="mx-auto flex max-w-7xl flex-wrap gap-2 px-4 py-2 sm:px-6">
               <button
                 type="button"
                 onClick={() => setActiveModule("module1")}
-                className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition ${
+                className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition ${
                   activeModule === "module1"
-                    ? "bg-white text-indigo-700 shadow-sm ring-1 ring-slate-200"
-                    : "text-slate-600 hover:text-slate-900"
+                    ? "bg-white text-[#004A8F] shadow-sm ring-1 ring-[#004A8F]/25"
+                    : "text-slate-600 hover:bg-white/60 hover:text-slate-900"
                 }`}
               >
                 <Layers className="h-3.5 w-3.5" />
@@ -671,10 +656,10 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActiveModule("module2")}
-                className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition ${
+                className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition ${
                   activeModule === "module2"
-                    ? "bg-white text-emerald-700 shadow-sm ring-1 ring-slate-200"
-                    : "text-slate-600 hover:text-slate-900"
+                    ? "bg-white text-[#1FA84F] shadow-sm ring-1 ring-[#1FA84F]/30"
+                    : "text-slate-600 hover:bg-white/60 hover:text-slate-900"
                 }`}
               >
                 <PenSquare className="h-3.5 w-3.5" />
@@ -684,15 +669,15 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActiveModule("module3")}
-                className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition ${
+                className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition ${
                   activeModule === "module3"
-                    ? "bg-white text-[#6C2826] shadow-sm ring-1 ring-[#6C2826]/30"
-                    : "text-slate-600 hover:text-slate-900"
+                    ? "bg-white text-[#0284C7] shadow-sm ring-1 ring-[#0284C7]/30"
+                    : "text-slate-600 hover:bg-white/60 hover:text-slate-900"
                 }`}
               >
                 <ClipboardCheck className="h-3.5 w-3.5" />
                 Module 3 : Masque &amp; Patients
-                <span className="rounded-full bg-[#6C2826]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#6C2826]">
+                <span className="rounded-full bg-[#0284C7]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#0284C7]">
                   {activeProject.patient_records?.length ?? 0}
                 </span>
                 {renderModuleBadge("module3")}
@@ -700,15 +685,15 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setActiveModule("module4")}
-                className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-semibold transition ${
+                className={`inline-flex items-center gap-2 rounded-xl px-3.5 py-1.5 text-xs font-semibold transition ${
                   activeModule === "module4"
-                    ? "bg-white text-[#6C2826] shadow-sm ring-1 ring-[#6C2826]/30"
-                    : "text-slate-600 hover:text-slate-900"
+                    ? "bg-white text-[#004A8F] shadow-sm ring-1 ring-[#004A8F]/25"
+                    : "text-slate-600 hover:bg-white/60 hover:text-slate-900"
                 }`}
               >
-                <Airplay className="h-3.5 w-3.5 text-[#6C2826]" />
+                <Airplay className="h-3.5 w-3.5 text-[#004A8F]" />
                 Module 4 : Diaporama PPTX
-                <span className="rounded-full bg-[#6C2826]/10 px-1.5 py-0.5 text-[10px] font-bold text-[#6C2826]">
+                <span className="rounded-full bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-bold text-[#1FA84F]">
                   CAMES
                 </span>
                 {renderModuleBadge("module4")}
@@ -751,13 +736,13 @@ export default function App() {
 
             {loading ? (
               <div className="py-20 text-center text-sm text-slate-500">
-                Chargement du canevas FMSB...
+                Chargement du canevas Smart Research...
               </div>
             ) : !activeProject || (showCreateModal && canCreateProject) ? (
               <div className="mx-auto max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-bold text-slate-900">
-                    Démarrer un protocole de recherche FMSB
+                    Démarrer un protocole de recherche
                   </h2>
                   {activeProject && (
                     <button
@@ -941,7 +926,7 @@ export default function App() {
             onClick={() => selectMobileModule("module1")}
             className={`relative flex min-h-[58px] flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-semibold transition ${
               activeView === "studio" && activeModule === "module1"
-                ? "text-indigo-700"
+                ? "text-[#004A8F]"
                 : "text-slate-600"
             } disabled:opacity-40`}
           >
@@ -960,7 +945,7 @@ export default function App() {
             onClick={() => selectMobileModule("module2")}
             className={`relative flex min-h-[58px] flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-semibold transition ${
               activeView === "studio" && activeModule === "module2"
-                ? "text-emerald-700"
+                ? "text-[#1FA84F]"
                 : "text-slate-600"
             } disabled:opacity-40`}
           >
@@ -979,7 +964,7 @@ export default function App() {
             onClick={() => selectMobileModule("module3")}
             className={`relative flex min-h-[58px] flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-semibold transition ${
               activeView === "studio" && activeModule === "module3"
-                ? "text-[#6C2826]"
+                ? "text-[#0284C7]"
                 : "text-slate-600"
             } disabled:opacity-40`}
           >
@@ -1001,7 +986,7 @@ export default function App() {
             onClick={() => selectMobileModule("module4")}
             className={`relative flex min-h-[58px] flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-semibold transition ${
               activeView === "studio" && activeModule === "module4"
-                ? "text-[#6C2826]"
+                ? "text-[#004A8F]"
                 : "text-slate-600"
             } disabled:opacity-40`}
           >
@@ -1022,7 +1007,7 @@ export default function App() {
                 openAdminPortal();
               }}
               className={`flex min-h-[58px] flex-col items-center justify-center gap-0.5 px-1 text-[11px] font-semibold transition ${
-                activeView === "admin" ? "text-[#6C2826]" : "text-slate-600"
+                activeView === "admin" ? "text-[#004A8F]" : "text-slate-600"
               }`}
             >
               <Shield className="h-4 w-4" />

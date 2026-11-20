@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 from app.schemas.auth import AIQuotaOut, ModuleEntitlementOut
+from app.schemas.protocol import CoverMetadata
 
 
 class LicensePlanCreateRequest(BaseModel):
@@ -56,6 +57,7 @@ class AdminCreateUserRequest(BaseModel):
     grant_notes: str = ""
     initial_protocol_title: Optional[str] = None
     study_type: str = "Étude transversale analytique"
+    cover: Optional[CoverMetadata] = None
 
 
 class AdminUpdateUserRequest(BaseModel):
@@ -104,6 +106,13 @@ class AdminUpdateProjectIdentityRequest(BaseModel):
     title: Optional[str] = None
     author_name: Optional[str] = None
     matricule: Optional[str] = None
+    topic_locked: Optional[bool] = None
+    reason: str = ""
+
+
+class AdminUpdateUserCoverRequest(BaseModel):
+    cover: CoverMetadata
+    study_type: Optional[str] = None
     topic_locked: Optional[bool] = None
     reason: str = ""
 
@@ -177,9 +186,12 @@ class AdminUserDetailOut(BaseModel):
     grants: List[AdminGrantRecordOut] = Field(default_factory=list)
     recent_events: List[UsageEventOut] = Field(default_factory=list)
     recent_audit_logs: List[AdminAuditLogOut] = Field(default_factory=list)
+    project_cover: Optional[CoverMetadata] = None
+    project_study_type: Optional[str] = None
 
 
 class AdminDashboardStatsOut(BaseModel):
+    total_admins: int = 0
     total_students: int = 0
     active_students: int = 0
     expiring_soon_students: int = 0

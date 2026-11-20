@@ -8,12 +8,14 @@ import {
   ClipboardCopy,
   CreditCard,
   Edit3,
+  FileText,
+  GraduationCap,
   KeyRound,
   Lock,
   Plus,
   RefreshCw,
   Search,
-  Shield,
+  ShieldCheck,
   Sparkles,
   Trash2,
   UserCheck,
@@ -23,6 +25,14 @@ import {
   Zap,
 } from "lucide-react";
 import { api } from "../api/client";
+import {
+  CoverPageForm,
+  createDefaultCoverMetadata,
+  emptySupervisor,
+  finalizeCoverMetadataPayload,
+  withStructuredSupervisors,
+} from "./CoverPageForm";
+import type { CoverMetadata, SupervisorInfo } from "../types/protocol";
 import type {
   AdminAuditLogOut,
   AdminDashboardStatsOut,
@@ -119,7 +129,14 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
   const [newPlanId, setNewPlanId] = useState("");
   const [newAmountFcfa, setNewAmountFcfa] = useState<string>("");
   const [newPaymentRef, setNewPaymentRef] = useState("");
-  const [newInitTitle, setNewInitTitle] = useState("");
+  const [newStudyType, setNewStudyType] = useState("Étude transversale analytique");
+  const [newCover, setNewCover] = useState<CoverMetadata>(() =>
+    createDefaultCoverMetadata()
+  );
+  const [newCoDirDraft, setNewCoDirDraft] =
+    useState<SupervisorInfo>(emptySupervisor);
+  const [stagedUniLogo, setStagedUniLogo] = useState<File | null>(null);
+  const [stagedFacLogo, setStagedFacLogo] = useState<File | null>(null);
   const [newTempPassInput, setNewTempPassInput] = useState("");
 
   // Revealed temp credentials banner (after create or reset-password)
@@ -137,11 +154,15 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
   const [rechargeCredits, setRechargeCredits] = useState<string>("50");
   const [rechargeNotes, setRechargeNotes] = useState("");
   const [confirmDeleteUserId, setConfirmDeleteUserId] = useState<string | null>(null);
+  const [confirmRoleChangeId, setConfirmRoleChangeId] = useState<string | null>(null);
 
-  // Protocol identity override form
-  const [ovrTitle, setOvrTitle] = useState("");
-  const [ovrAuthor, setOvrAuthor] = useState("");
-  const [ovrMatricule, setOvrMatricule] = useState("");
+  // Full Admin Cover Editor state
+  const [editCover, setEditCover] = useState<CoverMetadata>(() =>
+    createDefaultCoverMetadata()
+  );
+  const [editCoDirDraft, setEditCoDirDraft] =
+    useState<SupervisorInfo>(emptySupervisor);
+  const [editStudyType, setEditStudyType] = useState("Étude transversale analytique");
   const [ovrLocked, setOvrLocked] = useState(true);
   const [ovrReason, setOvrReason] = useState("");
 
@@ -199,12 +220,25 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
     try {
       const det = await api.adminGetUserDetail(uid);
       setUserDetail(det);
-      setOvrTitle(det.user.project_title || "");
-      setOvrAuthor(det.user.full_name || "");
-      setOvrMatricule(det.user.matricule || "");
+      if (det.project_cover) {
+        setEditCover(withStructuredSupervisors(det.project_cover));
+      } else {
+        setEditCover(
+          createDefaultCoverMetadata({
+            title: det.user.project_title || "",
+            author_name: det.user.full_name || "",
+            matricule: det.user.matricule || "",
+            student_phone: det.user.phone || "",
+            student_email: det.user.email || "",
+          })
+        );
+      }
+      setEditCoDirDraft(emptySupervisor());
+      setEditStudyType(det.project_study_type || "Étude transversale analytique");
       setOvrLocked(det.user.topic_locked);
       setOvrReason("");
       setConfirmDeleteUserId(null);
+      setConfirmRoleChangeId(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -253,7 +287,7 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
   }
 
   function copyCredentials(email: string, pw: string) {
-    const txt = `SmartResearch FMSB\nEmail : ${email}\nMot de passe temporaire : ${pw}`;
+    const txt = `Smart Research\nEmail : ${email}\nMot de passe temporaire : ${pw}`;
     navigator.clipboard?.writeText(txt).then(() => {
       setNotice("Identifiants copiés dans le presse-papiers.");
     });
@@ -265,22 +299,66 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
     setError(null);
     setNotice(null);
     try {
+      const isStudent = newRole === "student";
+      const finalCover = isStudent
+        ? finalizeCoverMetadataPayload(
+            {
+              ...newCover,
+              author_name: newCover.author_name.trim() || newFullName.trim(),
+              matricule: newCover.matricule.trim() || newMatricule.trim(),
+              student_phone: newCover.student_phone.trim() || newPhone.trim(),
+              student_email: newCover.student_email.trim() || newEmail.trim(),
+            },
+            newCoDirDraft
+          )
+        : undefined;
+
       const res = await api.adminCreateUser({
         email: newEmail.trim(),
         full_name: newFullName.trim(),
-        matricule: newMatricule.trim(),
+        matricule: isStudent ? newMatricule.trim() : "",
         phone: newPhone.trim(),
         role: newRole,
         temporary_password: newTempPassInput.trim() || undefined,
-        plan_id: newPlanId || undefined,
-        amount_paid_fcfa: newAmountFcfa ? Number(newAmountFcfa) : undefined,
-        payment_reference: newPaymentRef.trim(),
-        initial_protocol_title: newRole === "student" ? newInitTitle.trim() || undefined : undefined,
+        plan_id: isStudent && newPlanId ? newPlanId : undefined,
+        amount_paid_fcfa:
+          isStudent && newAmountFcfa ? Number(newAmountFcfa) : undefined,
+        payment_reference: isStudent ? newPaymentRef.trim() : "",
+        study_type: isStudent
+          ? newStudyType.trim() || "Étude transversale analytique"
+          : undefined,
+        cover: finalCover,
+        initial_protocol_title: isStudent
+          ? finalCover?.title.trim() || undefined
+          : undefined,
       });
+
+      if (isStudent && res.created_project_id) {
+        for (const [slot, file] of [
+          ["university", stagedUniLogo],
+          ["faculty", stagedFacLogo],
+        ] as const) {
+          if (file) {
+            try {
+              await api.uploadCoverLogo(res.created_project_id, slot, file);
+            } catch (logoErr) {
+              setError(
+                logoErr instanceof Error
+                  ? `Compte créé, mais erreur lors de l'import du logo (${slot}) : ${logoErr.message}`
+                  : `Compte créé, mais erreur d'import du logo (${slot}).`
+              );
+            }
+          }
+        }
+      }
+
       setRevealedCreds({
         email: res.user.email,
         password: res.temporary_password,
-        label: `Compte ${res.user.full_name} créé avec succès`,
+        label:
+          newRole === "admin"
+            ? `Compte Administrateur ${res.user.full_name} créé avec toutes les permissions`
+            : `Compte Étudiant ${res.user.full_name} créé avec page de garde verrouillée`,
       });
       setSelectedUserId(res.user.id);
       setShowCreateUser(false);
@@ -289,10 +367,37 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
       setNewMatricule("");
       setNewPhone("");
       setNewPaymentRef("");
-      setNewInitTitle("");
+      setNewStudyType("Étude transversale analytique");
+      setNewCover(createDefaultCoverMetadata());
+      setNewCoDirDraft(emptySupervisor());
+      setStagedUniLogo(null);
+      setStagedFacLogo(null);
       setNewTempPassInput("");
       await loadAllCore();
       await loadUserDetail(res.user.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleChangeUserRole(
+    u: AdminStudentStatsRow,
+    targetRole: "student" | "admin"
+  ) {
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await api.adminUpdateUser(u.id, { role: targetRole });
+      setConfirmRoleChangeId(null);
+      setNotice(
+        targetRole === "admin"
+          ? `${u.full_name} promu Administrateur avec accès complet.`
+          : `${u.full_name} repassé au rôle Étudiant.`
+      );
+      await refreshAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -406,20 +511,23 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
     }
   }
 
-  async function handleOverrideIdentity(e: React.FormEvent) {
+  async function handleSaveStudentCover(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedUserId) return;
     setBusy(true);
     setError(null);
+    setNotice(null);
     try {
-      await api.adminOverrideProjectIdentity(selectedUserId, {
-        title: ovrTitle.trim(),
-        author_name: ovrAuthor.trim(),
-        matricule: ovrMatricule.trim(),
+      const payloadCover = finalizeCoverMetadataPayload(editCover, editCoDirDraft);
+      setEditCoDirDraft(emptySupervisor());
+      setEditCover(payloadCover);
+      await api.adminUpdateUserCover(selectedUserId, {
+        cover: payloadCover,
+        study_type: editStudyType.trim() || undefined,
         topic_locked: ovrLocked,
-        reason: ovrReason.trim() || "Rectification administrative",
+        reason: ovrReason.trim() || "Mise à jour de la page de garde par l'administrateur",
       });
-      setNotice("Identité verrouillée du protocole mise à jour.");
+      setNotice("Page de garde du mémoire enregistrée et verrouillée côté étudiant.");
       await refreshAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -507,14 +615,16 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
   return (
     <div className="space-y-5">
       {/* Admin Header Strip */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200/90 bg-white px-5 py-4 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-[#6C2826] text-white">
-            <Shield className="h-5 w-5" />
-          </div>
+          <img
+            src="/logo-mark.png"
+            alt="Smart Research"
+            className="h-10 w-10 rounded-xl border border-slate-200 bg-white object-contain p-1 shadow-xs"
+          />
           <div>
             <h2 className="text-base font-bold text-slate-900">
-              Portail Administrateur &amp; Commercialisation
+              Smart Research — Portail Administrateur &amp; Commercialisation
             </h2>
             <p className="text-xs text-slate-500">
               Gestion des étudiants, licences par module, quotas IA et statistiques d'utilisation
@@ -562,7 +672,7 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
               onClick={() => setTab(t.id)}
               className={`inline-flex min-h-[40px] shrink-0 items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold transition ${
                 active
-                  ? "bg-[#6C2826] text-white shadow-sm"
+                  ? "bg-gradient-to-r from-[#004A8F] to-[#0284C7] text-white shadow-sm"
                   : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
               }`}
             >
@@ -634,13 +744,13 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
           {/* 6 KPI Cards */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
-              <div className="text-xs font-semibold text-slate-500">Étudiants actifs</div>
+              <div className="text-xs font-semibold text-slate-500">Utilisateurs actifs</div>
               <div className="mt-2 flex items-baseline gap-2">
                 <span className="text-2xl font-bold text-emerald-700">
                   {dashboard.active_students}
                 </span>
                 <span className="text-xs text-slate-500">
-                  / {dashboard.total_students} inscrits
+                  / {dashboard.total_students} étudiants · {dashboard.total_admins ?? 0} admin(s)
                 </span>
               </div>
             </div>
@@ -810,26 +920,112 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
               </select>
             </div>
 
-            <button
-              type="button"
-              onClick={() => setShowCreateUser((v) => !v)}
-              className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#571f1d]"
-            >
-              <UserPlus className="h-3.5 w-3.5" />
-              {showCreateUser ? "Fermer le formulaire" : "Créer un utilisateur"}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (showCreateUser && newRole === "student") {
+                    setShowCreateUser(false);
+                  } else {
+                    setNewRole("student");
+                    setShowCreateUser(true);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-[#004A8F] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#003b73]"
+              >
+                <UserPlus className="h-3.5 w-3.5" />
+                {showCreateUser && newRole === "student"
+                  ? "Fermer le formulaire"
+                  : "Créer un étudiant"}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (showCreateUser && newRole === "admin") {
+                    setShowCreateUser(false);
+                  } else {
+                    setNewRole("admin");
+                    setShowCreateUser(true);
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-700 px-3.5 py-2 text-xs font-semibold text-white hover:bg-indigo-800"
+              >
+                <ShieldCheck className="h-3.5 w-3.5" />
+                {showCreateUser && newRole === "admin"
+                  ? "Fermer le formulaire"
+                  : "Créer un administrateur"}
+              </button>
+            </div>
           </div>
 
           {/* Create User Form */}
           {showCreateUser && (
             <form
               onSubmit={handleCreateUser}
-              className="rounded-2xl border border-indigo-200 bg-white p-5 shadow-sm"
+              className="space-y-5 rounded-2xl border border-indigo-200 bg-white p-5 shadow-sm"
             >
-              <h3 className="text-sm font-bold text-slate-900">
-                Nouveau compte utilisateur (création manuelle administrateur)
-              </h3>
-              <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-bold text-slate-900">
+                  Nouveau compte utilisateur (création manuelle administrateur)
+                </h3>
+                <span className="text-[11px] text-slate-500">
+                  Mot de passe temporaire requis à la 1ʳᵉ connexion
+                </span>
+              </div>
+
+              {/* 2-Card Visual Role Selector */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => setNewRole("student")}
+                  className={`flex items-start gap-3 rounded-xl border p-3.5 text-left transition ${
+                    newRole === "student"
+                      ? "border-[#004A8F] bg-sky-50/70 ring-1 ring-[#004A8F]"
+                      : "border-slate-200 hover:bg-slate-50"
+                  }`}
+                >
+                  <GraduationCap
+                    className={`mt-0.5 h-5 w-5 shrink-0 ${
+                      newRole === "student" ? "text-[#004A8F]" : "text-slate-400"
+                    }`}
+                  />
+                  <div>
+                    <div className="text-xs font-bold text-slate-900">
+                      Utilisateur simple (Étudiant)
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-slate-600">
+                      1 protocole unique · Page de garde définie ici (verrouillée côté étudiant) · Licences modulaires.
+                    </div>
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setNewRole("admin")}
+                  className={`flex items-start gap-3 rounded-xl border p-3.5 text-left transition ${
+                    newRole === "admin"
+                      ? "border-indigo-600 bg-indigo-50/70 ring-1 ring-indigo-600"
+                      : "border-slate-200 hover:bg-slate-50"
+                  }`}
+                >
+                  <ShieldCheck
+                    className={`mt-0.5 h-5 w-5 shrink-0 ${
+                      newRole === "admin" ? "text-indigo-700" : "text-slate-400"
+                    }`}
+                  />
+                  <div>
+                    <div className="text-xs font-bold text-slate-900">
+                      Administrateur (Accès complet)
+                    </div>
+                    <div className="mt-0.5 text-[11px] text-slate-600">
+                      Toutes les permissions : Portail Admin, création de comptes, gestion des pages de garde et accès illimité.
+                    </div>
+                  </div>
+                </button>
+              </div>
+
+              {/* Account Credentials & General Fields */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600">
                     Email *
@@ -838,8 +1034,22 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                     type="email"
                     required
                     value={newEmail}
-                    onChange={(e) => setNewEmail(e.target.value)}
-                    placeholder="etudiant@fmsb.cm"
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setNewCover((prev) => ({
+                        ...prev,
+                        student_email:
+                          !prev.student_email || prev.student_email === newEmail
+                            ? val
+                            : prev.student_email,
+                      }));
+                      setNewEmail(val);
+                    }}
+                    placeholder={
+                      newRole === "admin"
+                        ? "admin@smartresearch.cm"
+                        : "etudiant@fmsb.cm"
+                    }
                     className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
                   />
                 </div>
@@ -851,23 +1061,45 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                     type="text"
                     required
                     value={newFullName}
-                    onChange={(e) => setNewFullName(e.target.value)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setNewCover((prev) => ({
+                        ...prev,
+                        author_name:
+                          !prev.author_name || prev.author_name === newFullName
+                            ? val
+                            : prev.author_name,
+                      }));
+                      setNewFullName(val);
+                    }}
                     placeholder="Ex. Kouayi Ngnamfa Duchelle"
                     className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
                   />
                 </div>
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600">
-                    Matricule
-                  </label>
-                  <input
-                    type="text"
-                    value={newMatricule}
-                    onChange={(e) => setNewMatricule(e.target.value)}
-                    placeholder="20M1493"
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
-                  />
-                </div>
+                {newRole === "student" && (
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-600">
+                      Matricule
+                    </label>
+                    <input
+                      type="text"
+                      value={newMatricule}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setNewCover((prev) => ({
+                          ...prev,
+                          matricule:
+                            !prev.matricule || prev.matricule === newMatricule
+                              ? val
+                              : prev.matricule,
+                        }));
+                        setNewMatricule(val);
+                      }}
+                      placeholder="20M1493"
+                      className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                    />
+                  </div>
+                )}
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600">
                     Téléphone
@@ -875,93 +1107,25 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                   <input
                     type="text"
                     value={newPhone}
-                    onChange={(e) => setNewPhone(e.target.value)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setNewCover((prev) => ({
+                        ...prev,
+                        student_phone:
+                          !prev.student_phone || prev.student_phone === newPhone
+                            ? val
+                            : prev.student_phone,
+                      }));
+                      setNewPhone(val);
+                    }}
                     placeholder="691 38 46 52"
                     className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
                   />
                 </div>
 
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600">Rôle</label>
-                  <select
-                    value={newRole}
-                    onChange={(e) => setNewRole(e.target.value as "student" | "admin")}
-                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                  >
-                    <option value="student">Étudiant (1 protocole max)</option>
-                    <option value="admin">Administrateur</option>
-                  </select>
-                </div>
-
-                <div>
+                <div className={newRole === "admin" ? "lg:col-span-1" : "sm:col-span-2"}>
                   <label className="block text-[11px] font-semibold text-slate-600">
-                    Plan de licence initial
-                  </label>
-                  <select
-                    value={newPlanId}
-                    onChange={(e) => {
-                      const pid = e.target.value;
-                      setNewPlanId(pid);
-                      const found = plans.find((p) => p.id === pid);
-                      if (found) setNewAmountFcfa(String(found.price_fcfa));
-                    }}
-                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
-                  >
-                    <option value="">-- Sans plan initial --</option>
-                    {plans
-                      .filter((p) => p.is_active)
-                      .map((p) => (
-                        <option key={p.id} value={p.id}>
-                          {p.name} ({p.price_fcfa.toLocaleString("fr-FR")} F)
-                        </option>
-                      ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600">
-                    Montant payé (FCFA)
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={newAmountFcfa}
-                    onChange={(e) => setNewAmountFcfa(e.target.value)}
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-600">
-                    Référence paiement
-                  </label>
-                  <input
-                    type="text"
-                    value={newPaymentRef}
-                    onChange={(e) => setNewPaymentRef(e.target.value)}
-                    placeholder="Ex. OM-2026-041"
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
-                  />
-                </div>
-
-                {newRole === "student" && (
-                  <div className="sm:col-span-2">
-                    <label className="block text-[11px] font-semibold text-slate-600">
-                      Titre initial du protocole (optionnel, pré-verrouillé dès la création)
-                    </label>
-                    <input
-                      type="text"
-                      value={newInitTitle}
-                      onChange={(e) => setNewInitTitle(e.target.value)}
-                      placeholder="Ex. Facteurs associés aux troubles du cycle menstruel..."
-                      className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
-                    />
-                  </div>
-                )}
-
-                <div className="sm:col-span-2">
-                  <label className="block text-[11px] font-semibold text-slate-600">
-                    Mot de passe temporaire (laisser vide = généré automatiquement)
+                    Mot de passe temporaire (laisser vide = auto)
                   </label>
                   <input
                     type="text"
@@ -972,9 +1136,118 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                     className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
                   />
                 </div>
+
+                {newRole === "student" && (
+                  <>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        Plan de licence initial
+                      </label>
+                      <select
+                        value={newPlanId}
+                        onChange={(e) => {
+                          const pid = e.target.value;
+                          setNewPlanId(pid);
+                          const found = plans.find((p) => p.id === pid);
+                          if (found) setNewAmountFcfa(String(found.price_fcfa));
+                        }}
+                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                      >
+                        <option value="">-- Sans plan initial --</option>
+                        {plans
+                          .filter((p) => p.is_active)
+                          .map((p) => (
+                            <option key={p.id} value={p.id}>
+                              {p.name} ({p.price_fcfa.toLocaleString("fr-FR")} F)
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        Montant payé (FCFA)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={newAmountFcfa}
+                        onChange={(e) => setNewAmountFcfa(e.target.value)}
+                        className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        Référence paiement
+                      </label>
+                      <input
+                        type="text"
+                        value={newPaymentRef}
+                        onChange={(e) => setNewPaymentRef(e.target.value)}
+                        placeholder="Ex. OM-2026-041"
+                        className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-600">
+                        Type d&apos;étude pressenti
+                      </label>
+                      <input
+                        type="text"
+                        value={newStudyType}
+                        onChange={(e) => setNewStudyType(e.target.value)}
+                        className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
+                      />
+                    </div>
+                  </>
+                )}
               </div>
 
-              <div className="mt-4 flex justify-end gap-2">
+              {newRole === "admin" ? (
+                <div className="rounded-xl border border-indigo-200 bg-indigo-50/70 p-4 text-xs text-indigo-950">
+                  <div className="flex items-center gap-2 font-bold">
+                    <ShieldCheck className="h-4 w-4 text-indigo-700" />
+                    Permissions complètes Administrateur attribuées automatiquement
+                  </div>
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-indigo-900">
+                    <li>Accès complet au Portail Administrateur (KPIs, comptes étudiants &amp; admins, plans, journaux).</li>
+                    <li>Création et modification de toutes les pages de garde officielles des mémoires/thèses.</li>
+                    <li>Accès illimité aux Modules 1 à 4 et crédits IA illimités, sans restriction de protocole.</li>
+                  </ul>
+                </div>
+              ) : (
+                <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/30 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200/70 pb-2.5">
+                    <div className="flex items-center gap-2 text-xs font-bold text-slate-900">
+                      <FileText className="h-4 w-4 text-[#004A8F]" />
+                      Page de garde du mémoire (définie à la création — non modifiable par l&apos;étudiant)
+                    </div>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-[10px] font-bold text-amber-900">
+                      <Lock className="h-3 w-3" /> Verrouillée côté étudiant dès la création
+                    </span>
+                  </div>
+                  <CoverPageForm
+                    value={newCover}
+                    onChange={setNewCover}
+                    titleRequired={true}
+                    stagedLogos={{
+                      university: stagedUniLogo,
+                      faculty: stagedFacLogo,
+                    }}
+                    onStageLogo={(slot, file) => {
+                      if (slot === "university") setStagedUniLogo(file);
+                      else setStagedFacLogo(file);
+                    }}
+                    onError={(msg) => setError(msg || null)}
+                    coDirDraft={newCoDirDraft}
+                    onCoDirDraftChange={setNewCoDirDraft}
+                  />
+                </div>
+              )}
+
+              <div className="flex justify-end gap-2">
                 <button
                   type="button"
                   onClick={() => setShowCreateUser(false)}
@@ -985,9 +1258,15 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                 <button
                   type="submit"
                   disabled={busy}
-                  className="rounded-lg bg-[#6C2826] px-4 py-1.5 text-xs font-semibold text-white hover:bg-[#571f1d] disabled:opacity-60"
+                  className={`rounded-lg px-4 py-1.5 text-xs font-semibold text-white disabled:opacity-60 ${
+                    newRole === "admin"
+                      ? "bg-indigo-700 hover:bg-indigo-800"
+                      : "bg-[#004A8F] hover:bg-[#003b73]"
+                  }`}
                 >
-                  Créer le compte &amp; générer identifiants
+                  {newRole === "admin"
+                    ? "Créer le compte Administrateur"
+                    : "Créer l'étudiant & verrouiller la page de garde"}
                 </button>
               </div>
             </form>
@@ -1106,6 +1385,41 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                       </button>
                       {userDetail.user.id !== currentAdminId && (
                         <>
+                          {confirmRoleChangeId === userDetail.user.id ? (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() =>
+                                handleChangeUserRole(
+                                  userDetail.user,
+                                  userDetail.user.role === "admin"
+                                    ? "student"
+                                    : "admin"
+                                )
+                              }
+                              className="inline-flex items-center gap-1 rounded-lg bg-indigo-700 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-800"
+                            >
+                              <ShieldCheck className="h-3.5 w-3.5" />
+                              {userDetail.user.role === "admin"
+                                ? "Confirmer passage Étudiant"
+                                : "Confirmer promotion Admin"}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() =>
+                                setConfirmRoleChangeId(userDetail.user.id)
+                              }
+                              className="inline-flex items-center gap-1 rounded-lg border border-indigo-200 bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100"
+                            >
+                              <ShieldCheck className="h-3.5 w-3.5" />
+                              {userDetail.user.role === "admin"
+                                ? "Passer Étudiant"
+                                : "Promouvoir Admin"}
+                            </button>
+                          )}
+
                           <button
                             type="button"
                             disabled={busy}
@@ -1338,16 +1652,29 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                     </div>
                   )}
 
-                  {/* Locked Protocol Identity Override */}
-                  {userDetail.user.project_id && (
+                  {/* Admin Privileges Card OR Student Full Cover Editor */}
+                  {userDetail.user.role === "admin" ? (
+                    <div className="rounded-xl border border-indigo-200 bg-indigo-50/70 p-4 text-xs text-indigo-950">
+                      <div className="flex items-center gap-2 font-bold">
+                        <ShieldCheck className="h-4 w-4 text-indigo-700" />
+                        Compte Administrateur — Toutes permissions actives
+                      </div>
+                      <p className="mt-1.5 text-[11px] text-indigo-900">
+                        Cet utilisateur dispose d&apos;un accès complet au Portail Administrateur, à la gestion des utilisateurs et des pages de garde, ainsi que d&apos;un accès illimité à tous les protocoles, modules et crédits IA.
+                      </p>
+                    </div>
+                  ) : (
                     <form
-                      onSubmit={handleOverrideIdentity}
-                      className="space-y-3 rounded-xl border border-amber-200 bg-amber-50/40 p-4"
+                      onSubmit={handleSaveStudentCover}
+                      className="space-y-4 rounded-xl border border-amber-200 bg-amber-50/30 p-4"
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200/70 pb-2.5">
                         <div className="flex items-center gap-1.5 text-xs font-bold text-slate-900">
                           <Lock className="h-3.5 w-3.5 text-amber-700" />
-                          Protocole verrouillé ({userDetail.user.project_id})
+                          Page de garde du mémoire (modifiable uniquement par l&apos;administrateur)
+                          {userDetail.user.project_id
+                            ? ` · ${userDetail.user.project_id}`
+                            : " · Protocole créé à l'enregistrement"}
                         </div>
                         <div className="text-[11px] font-medium text-slate-600">
                           {userDetail.user.sections_validated_count}/24 sections validées ·{" "}
@@ -1356,67 +1683,68 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-                        <div className="sm:col-span-2">
-                          <label className="block text-[11px] font-semibold text-slate-700">
-                            Titre officiel verrouillé
-                          </label>
-                          <input
-                            type="text"
-                            value={ovrTitle}
-                            onChange={(e) => setOvrTitle(e.target.value)}
-                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
-                          />
-                        </div>
+                      <CoverPageForm
+                        value={editCover}
+                        onChange={setEditCover}
+                        titleRequired={true}
+                        projectId={userDetail.user.project_id ?? null}
+                        onProjectUpdated={() => {
+                          if (selectedUserId) {
+                            void loadUserDetail(selectedUserId);
+                            void loadAllCore();
+                          }
+                        }}
+                        onError={(msg) => setError(msg || null)}
+                        coDirDraft={editCoDirDraft}
+                        onCoDirDraftChange={setEditCoDirDraft}
+                      />
+
+                      <div className="grid grid-cols-1 gap-2.5 border-t border-amber-200/70 pt-3 sm:grid-cols-3">
                         <div>
                           <label className="block text-[11px] font-semibold text-slate-700">
-                            Nom impétrant verrouillé
+                            Type d&apos;étude
                           </label>
                           <input
                             type="text"
-                            value={ovrAuthor}
-                            onChange={(e) => setOvrAuthor(e.target.value)}
+                            value={editStudyType}
+                            onChange={(e) => setEditStudyType(e.target.value)}
                             className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
                           />
                         </div>
-                        <div>
-                          <label className="block text-[11px] font-semibold text-slate-700">
-                            Matricule verrouillé
-                          </label>
-                          <input
-                            type="text"
-                            value={ovrMatricule}
-                            onChange={(e) => setOvrMatricule(e.target.value)}
-                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
-                          />
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <input
-                            id="ovr-locked-check"
-                            type="checkbox"
-                            checked={ovrLocked}
-                            onChange={(e) => setOvrLocked(e.target.checked)}
-                          />
-                          <label htmlFor="ovr-locked-check" className="text-xs font-medium text-slate-700">
+                        <div className="flex items-end pb-1.5">
+                          <label className="flex items-center gap-2 text-xs font-medium text-slate-700">
+                            <input
+                              id="ovr-locked-check"
+                              type="checkbox"
+                              checked={ovrLocked}
+                              onChange={(e) => setOvrLocked(e.target.checked)}
+                            />
                             Verrou actif (1 utilisateur = 1 protocole)
                           </label>
                         </div>
-                        <input
-                          type="text"
-                          value={ovrReason}
-                          onChange={(e) => setOvrReason(e.target.value)}
-                          placeholder="Motif de la rectification admin"
-                          className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
-                        />
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-700">
+                            Motif (journal d&apos;audit)
+                          </label>
+                          <input
+                            type="text"
+                            value={ovrReason}
+                            onChange={(e) => setOvrReason(e.target.value)}
+                            placeholder="Motif de la modification"
+                            className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs"
+                          />
+                        </div>
                       </div>
 
-                      <button
-                        type="submit"
-                        disabled={busy}
-                        className="rounded-lg bg-amber-700 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-amber-800"
-                      >
-                        Enregistrer la rectification administrateur
-                      </button>
+                      <div className="flex justify-end">
+                        <button
+                          type="submit"
+                          disabled={busy}
+                          className="rounded-lg bg-amber-700 px-4 py-2 text-xs font-semibold text-white hover:bg-amber-800 disabled:opacity-60"
+                        >
+                          Enregistrer la page de garde
+                        </button>
+                      </div>
                     </form>
                   )}
                 </div>
@@ -1717,8 +2045,7 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                         {ev.user_email} · {ev.action}
                       </div>
                       <div className="text-[11px] text-slate-500">
-                        {ev.module_key}
-                        {ev.model_used ? ` · ${ev.model_used}` : ""} · {fmtDateTime(ev.created_at)}
+                        {ev.module_key} · {fmtDateTime(ev.created_at)}
                       </div>
                     </div>
                     <span className="shrink-0 rounded bg-slate-100 px-2 py-0.5 font-semibold text-slate-700">

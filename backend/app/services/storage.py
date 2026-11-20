@@ -285,8 +285,8 @@ class ProjectStorage:
             if owner_role != "admin":
                 topic_locked = True
                 locked_title = (cover.title or payload.name).strip()
-                locked_author_name = (owner_full_name or cover.author_name or "").strip()
-                locked_matricule = (owner_matricule or cover.matricule or "").strip()
+                locked_author_name = (cover.author_name or owner_full_name or "").strip()
+                locked_matricule = (cover.matricule or owner_matricule or "").strip()
                 cover.title = locked_title
                 if locked_author_name:
                     cover.author_name = locked_author_name

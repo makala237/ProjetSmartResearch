@@ -11,7 +11,8 @@ TPL_OBJ_GEN = "tamplates/tamplate diapositive objectif générale.png"
 TPL_OBJ_SPEC = "tamplates/tamplate objectifs spécifiques.png"
 # Note: filename in tamplates/ has two consecutive spaces between "diapositive" and "méthodologie"
 TPL_METHODOLOGY = "tamplates/tamplate diapositive  méthodologie.png"
-TPL_CHRONOGRAM = "tamplates/Diapositive..Chronogramme des activités 2026–2027 (1).png"
+# Note: filename in tamplates/ has a space before ".png"
+TPL_CHRONOGRAM = "tamplates/Tamplate diapositive chronogramme des activités .png"
 TPL_BUDGET = "tamplates/Tamplate diapositive budget.png"
 TPL_THANKS = "tamplates/Merci pour votre attention !.png"
 
@@ -228,9 +229,13 @@ PPTX_CANVAS_BLOCKS: List[PptxBlockSpec] = [
         breadcrumb="5. CHRONOGRAMME",
         template_path=TPL_CHRONOGRAM,
         source_section_ids=["chap3_chronogramme"],
-        layout_mode="full_image_asis",
+        layout_mode="chronogram_7pills",
         dynamic_slides=False,
-        locked_as_is=True,
+        locked_as_is=False,
+        ai_guidance=(
+            "Synthétiser jusqu'à 7 étapes clés du chronogramme au format 'Période : Activité' "
+            "(ex. 'Mai 2026 : Rédaction du protocole'), ordonnées du jalon final en haut au jalon initial en bas."
+        ),
     ),
     PptxBlockSpec(
         block_id="budget",
@@ -289,7 +294,7 @@ SLIDE_TEMPLATE_CATALOG: List[Dict[str, str]] = [
     },
     {
         "id": "tpl-chronogram",
-        "label": "Chronogramme des activités (Image fixe)",
+        "label": "Chronogramme des activités (Gantt 7 étapes)",
         "slide_type": "chronogram",
         "path": TPL_CHRONOGRAM,
     },

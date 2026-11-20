@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 
 from docx import Document
 from docx.enum.table import WD_TABLE_ALIGNMENT
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_TAB_ALIGNMENT
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import nsdecls, qn
 from docx.shared import Cm, Pt, RGBColor
@@ -1304,23 +1304,136 @@ def _strip_header_page_numbers(doc: Document) -> None:
             sect_pr.remove(href)
 
 
-def _configure_fmsb_pagination(doc: Document, intro_anchor_p, fmt: FormattingRules) -> None:
-    """Split front matter (lowerRoman, hidden on cover) from body (Arabic starting at 1)."""
+def _compact_running_title(raw_title: str, max_len: int = 115) -> str:
+    """Normalize and cleanly truncate protocol title for page running headers."""
+    clean = re.sub(r"\s+", " ", (raw_title or "")).strip()
+    if not clean:
+        return "Protocole de recherche"
+    if len(clean) <= max_len:
+        return clean
+    cut = clean[: max_len - 1]
+    if " " in cut and cut.rfind(" ") >= max_len // 2:
+        cut = cut[: cut.rfind(" ")]
+    return cut.rstrip(" ,;:-") + "…"
+
+
+def _set_paragraph_rule(p, edge: str = "bottom", color_hex: str = "CBD5E1") -> None:
+    """Attach a subtle top/bottom hairline rule to a header or footer paragraph."""
+    pPr = p._p.get_or_add_pPr()
+    for existing in list(pPr.findall(qn("w:pBdr"))):
+        pPr.remove(existing)
+    pPr.append(
+        parse_xml(
+            f'<w:pBdr {nsdecls("w")}>'
+            f'  <w:{edge} w:val="single" w:sz="4" w:space="4" w:color="{color_hex}"/>'
+            f"</w:pBdr>"
+        )
+    )
+
+
+def _clear_header_footer_part(part) -> None:
+    try:
+        part.is_linked_to_previous = False
+    except Exception:
+        pass
+    part_el = part._element
+    for child in list(part_el):
+        part_el.remove(child)
+    part_el.append(OxmlElement("w:p"))
+
+
+def _configure_fmsb_pagination(
+    doc: Document,
+    intro_anchor_p,
+    fmt: FormattingRules,
+    project: Optional[ProtocolProject] = None,
+) -> None:
+    """Configure cover-free Page 1 + Page 2+ running header (protocol title) & footer (candidate + PAGE)."""
     if not doc.sections:
         return
     _strip_header_page_numbers(doc)
     base_sec = doc.sections[0]
     base_sec.different_first_page_header_footer = True
+    base_sec.header_distance = Cm(1.25)
+    base_sec.footer_distance = Cm(1.25)
 
+    # Keep Page 1 (Cover page) strictly empty for both header and footer
+    _clear_header_footer_part(base_sec.first_page_header)
+    _clear_header_footer_part(base_sec.first_page_footer)
+
+    raw_title = (
+        (project.cover.title or project.name)
+        if project is not None
+        else ""
+    ) or "Protocole de recherche"
+    running_title = _compact_running_title(raw_title, max_len=115)
+    candidate_name = (
+        (project.cover.author_name or "").strip()
+        if project is not None
+        else ""
+    )
+
+    # Running Header from Page 2+: Protocol Title aligned right with delicate bottom hairline
+    header = base_sec.header
+    header.is_linked_to_previous = False
+    hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
+    for extra_p in list(header.paragraphs[1:]):
+        extra_p._element.getparent().remove(extra_p._element)
+    hp.text = ""
+    hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    hp.paragraph_format.space_before = Pt(0)
+    hp.paragraph_format.space_after = Pt(2)
+    h_run = hp.add_run(running_title)
+    _apply_run_font(
+        h_run,
+        fmt,
+        size_pt=9,
+        bold=False,
+        italic=True,
+        color_rgb=RGBColor(71, 85, 105),
+    )
+    _set_paragraph_rule(hp, edge="bottom", color_hex="CBD5E1")
+
+    # Running Footer from Page 2+: Candidate Name on left + right-aligned PAGE field with top hairline
     footer = base_sec.footer
+    footer.is_linked_to_previous = False
     fp = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+    for extra_p in list(footer.paragraphs[1:]):
+        extra_p._element.getparent().remove(extra_p._element)
     fp.text = ""
-    fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    fp.paragraph_format.space_before = Pt(0)
+    fp.paragraph_format.space_before = Pt(2)
     fp.paragraph_format.space_after = Pt(0)
+    usable_w_cm = max(13.0, 21.0 - 2.0 * float(fmt.margin_cm or 2.5))
+    fp.paragraph_format.tab_stops.clear_all()
+    fp.paragraph_format.tab_stops.add_tab_stop(Cm(usable_w_cm), WD_TAB_ALIGNMENT.RIGHT)
+
+    if candidate_name:
+        fp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        c_run = fp.add_run(f"{candidate_name}\t")
+        _apply_run_font(
+            c_run,
+            fmt,
+            size_pt=9,
+            bold=False,
+            italic=True,
+            color_rgb=RGBColor(71, 85, 105),
+        )
+    else:
+        fp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
     _insert_field(fp, "PAGE")
-    for run in fp.runs:
-        _apply_run_font(run, fmt, size_pt=10)
+    for idx_r, run in enumerate(fp.runs):
+        if candidate_name and idx_r == 0:
+            continue
+        _apply_run_font(
+            run,
+            fmt,
+            size_pt=10,
+            bold=True,
+            italic=False,
+            color_rgb=RGBColor(30, 41, 59),
+        )
+    _set_paragraph_rule(fp, edge="top", color_hex="CBD5E1")
 
     sect2_pr = base_sec._sectPr
     if intro_anchor_p is not None:
@@ -1341,7 +1454,7 @@ def _configure_fmsb_pagination(doc: Document, intro_anchor_p, fmt: FormattingRul
         pPr.append(sect1_pr)
         break_p.append(pPr)
 
-        # Body section: remove cover border & titlePg so Introduction starts cleanly as page 1
+        # Body section: remove cover border & titlePg so Introduction starts as Arabic page 1 with running header/footer
         _set_sect_child(sect2_pr, "pgBorders", None)
         _set_sect_child(sect2_pr, "titlePg", None)
         _set_sect_child(sect2_pr, "type", parse_xml(f'<w:type {nsdecls("w")} w:val="nextPage"/>'))
@@ -1356,7 +1469,6 @@ def _configure_fmsb_pagination(doc: Document, intro_anchor_p, fmt: FormattingRul
             "pgNumType",
             parse_xml(f'<w:pgNumType {nsdecls("w")} w:fmt="decimal" w:start="1"/>'),
         )
-    _strip_header_page_numbers(doc)
 
 
 def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
@@ -1607,6 +1719,28 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
     table_counter = 1
     figure_counter = 1
 
+    def _normalize_anchor_probe(txt: str) -> str:
+        s = re.sub(r"[#*_`•]+", " ", txt or "")
+        return re.sub(r"\s+", " ", s).strip().lower()
+
+    def _match_paragraph_by_anchor_hint(paras: List[Any], hint: str):
+        norm_hint = _normalize_anchor_probe(hint)
+        if not norm_hint or not paras:
+            return None
+        for sp in paras:
+            norm_sp = _normalize_anchor_probe(getattr(sp, "text", "") or "")
+            if not norm_sp:
+                continue
+            if norm_hint in norm_sp or norm_sp in norm_hint:
+                return sp
+        if len(norm_hint) >= 20:
+            prefix = norm_hint[:35]
+            for sp in paras:
+                norm_sp = _normalize_anchor_probe(getattr(sp, "text", "") or "")
+                if prefix in norm_sp:
+                    return sp
+        return None
+
     def render_custom_tables(sec_state, base_cursor, section_paras=None):
         """Render any CustomTable items attached to a section and return updated cursor."""
         nonlocal table_counter
@@ -1619,13 +1753,10 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 continue
             target_c = cursor_out
             advance_main = True
-            clean_hint = (ct.anchor_hint or "").strip().lower()
-            if clean_hint:
-                for sp in paras:
-                    if clean_hint in (sp.text or "").lower():
-                        target_c = sp
-                        advance_main = False
-                        break
+            matched_sp = _match_paragraph_by_anchor_hint(paras, getattr(ct, "anchor_hint", ""))
+            if matched_sp is not None:
+                target_c = matched_sp
+                advance_main = False
             c_after = _insert_caption_with_seq(
                 doc,
                 target_c,
@@ -1657,13 +1788,10 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 continue
             target_c = cursor_out
             advance_main = True
-            clean_hint = (dg.anchor_hint or "").strip().lower()
-            if clean_hint:
-                for sp in paras:
-                    if clean_hint in (sp.text or "").lower():
-                        target_c = sp
-                        advance_main = False
-                        break
+            matched_sp = _match_paragraph_by_anchor_hint(paras, getattr(dg, "anchor_hint", ""))
+            if matched_sp is not None:
+                target_c = matched_sp
+                advance_main = False
             c_dg = target_c
             png_path = diag_dir / f"{dg.diagram_id}.png"
             clean_dg_title = clean_caption_title(dg.title, "Figure") or dg.title
@@ -1817,11 +1945,9 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             )
 
             def _resolve_hint(hint: str, fallback_cursor):
-                clean = (hint or "").strip().lower()
-                if clean:
-                    for sp in section_paras:
-                        if clean in (sp.text or "").lower():
-                            return sp, False
+                matched_sp = _match_paragraph_by_anchor_hint(section_paras, hint)
+                if matched_sp is not None:
+                    return matched_sp, False
                 return fallback_cursor, True
 
             # Render custom section tables (manual or AI-suggested)
@@ -2154,7 +2280,7 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         cursor = render_custom_tables(ann_sec, cursor)
         cursor = render_custom_diagrams(ann_sec, cursor)
 
-    _configure_fmsb_pagination(doc, anchors.get("introduction"), fmt)
+    _configure_fmsb_pagination(doc, anchors.get("introduction"), fmt, project=project)
     apply_human_author_metadata_docx(doc, project)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

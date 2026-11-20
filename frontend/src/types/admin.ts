@@ -1,4 +1,5 @@
 import type { AIQuotaOut, ModuleEntitlementOut } from "./auth";
+import type { CoverMetadata } from "./protocol";
 
 export interface LicensePlanOut {
   id: string;
@@ -51,6 +52,7 @@ export interface AdminCreateUserRequest {
   grant_notes?: string;
   initial_protocol_title?: string;
   study_type?: string;
+  cover?: CoverMetadata;
 }
 
 export interface AdminUpdateUserRequest {
@@ -89,6 +91,13 @@ export interface AdminUpdateProjectIdentityRequest {
   title?: string;
   author_name?: string;
   matricule?: string;
+  topic_locked?: boolean;
+  reason?: string;
+}
+
+export interface AdminUpdateUserCoverRequest {
+  cover: CoverMetadata;
+  study_type?: string;
   topic_locked?: boolean;
   reason?: string;
 }
@@ -168,9 +177,12 @@ export interface AdminUserDetailOut {
   grants: AdminGrantRecordOut[];
   recent_events: UsageEventOut[];
   recent_audit_logs: AdminAuditLogOut[];
+  project_cover?: CoverMetadata | null;
+  project_study_type?: string | null;
 }
 
 export interface AdminDashboardStatsOut {
+  total_admins?: number;
   total_students: number;
   active_students: number;
   expiring_soon_students: number;

@@ -1,6 +1,8 @@
 import copy
 import math
+from pathlib import Path
 import re
+from typing import List, Optional, Tuple
 from xml.sax.saxutils import escape
 
 from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
@@ -8,8 +10,11 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import nsdecls, qn
 from docx.shared import Cm, Pt, RGBColor
+from PIL import Image as PILImage
 
-from app.schemas.protocol import FormattingRules, ProtocolProject, SupervisorInfo
+from app.schemas.protocol import CoverMetadata, FormattingRules, ProtocolProject, SupervisorInfo
+
+WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 
 FMSB_BORDEAUX = "6C2826"
 A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
@@ -104,13 +109,186 @@ def _strip_dept_prefix(raw: str, is_french: bool) -> str:
     return (txt.strip() or "PUBLIC HEALTH").upper()
 
 
-def _rebuild_bilingual_header_table(doc, project: ProtocolProject) -> None:
-    """Condense side headers on 2 lines, stretch laterally, and enlarge centered UY1/FMSB logo."""
+def format_contact_tier_lines(po_box: str, email: str) -> Tuple[List[str], List[str]]:
+    """Format optional PO Box & Email tier lines in French and English; empty lists if both blank."""
+    clean_bp = (po_box or "").strip()
+    clean_bp = re.sub(r"^(?:b\.?\s*p\.?|p\.?\s*o\.?\s*box)\s*:?\s*", "", clean_bp, flags=re.IGNORECASE).strip()
+
+    clean_mail = (email or "").strip()
+    clean_mail = re.sub(r"^(?:courriel|e-?mail|mail)\s*:?\s*", "", clean_mail, flags=re.IGNORECASE).strip()
+
+    fr_lines: List[str] = []
+    en_lines: List[str] = []
+    if clean_bp:
+        clean_bp_en = re.sub(r"\bcameroun\b", "Cameroon", clean_bp, flags=re.IGNORECASE)
+        fr_lines.append(f"B.P. : {clean_bp}")
+        en_lines.append(f"P.O. Box: {clean_bp_en}")
+    if clean_mail:
+        fr_lines.append(f"Courriel : {clean_mail}")
+        en_lines.append(f"E-mail: {clean_mail}")
+    return fr_lines, en_lines
+
+
+def build_cover_header_lines(
+    cover: CoverMetadata,
+) -> Tuple[List[Tuple[str, float, bool, bool]], List[Tuple[str, float, bool, bool]]]:
+    """Build bilingual header lines for Word cover page with editable tiers 3-5 & optional contact tiers."""
+    dept_fr = _strip_dept_prefix(cover.department_fr, is_french=True)
+    dept_en = _strip_dept_prefix(cover.department_en, is_french=False)
+
+    uni_fr = (getattr(cover, "university_fr", "") or "UNIVERSITÉ DE YAOUNDÉ I").strip().upper()
+    uni_en = (getattr(cover, "university_en", "") or "THE UNIVERSITY OF YAOUNDÉ I").strip().upper()
+    fac_fr = (getattr(cover, "faculty_fr", "") or "FACULTÉ DE MÉDECINE ET DES SCIENCES BIOMÉDICALES").strip().upper()
+    fac_en = (getattr(cover, "faculty_en", "") or "FACULTY OF MEDICINE AND BIOMEDICAL SCIENCES").strip().upper()
+
+    uni_fr_contacts, uni_en_contacts = format_contact_tier_lines(
+        getattr(cover, "university_po_box", ""),
+        getattr(cover, "university_email", ""),
+    )
+    fac_fr_contacts, fac_en_contacts = format_contact_tier_lines(
+        getattr(cover, "faculty_po_box", ""),
+        getattr(cover, "faculty_email", ""),
+    )
+
+    has_extra_tiers = bool(uni_fr_contacts or fac_fr_contacts)
+    sz_head = 8.5 if has_extra_tiers else 9.0
+    sz_main = 8.0 if has_extra_tiers else 8.5
+    sz_fac = 7.5 if has_extra_tiers else 8.0
+    sz_star = 7.0 if has_extra_tiers else 8.0
+    sz_contact = 7.2 if has_extra_tiers else 7.5
+
+    left_lines: List[Tuple[str, float, bool, bool]] = [
+        ("RÉPUBLIQUE DU CAMEROUN", sz_head, True, False),
+        ("Paix – Travail – Patrie", sz_main, False, True),
+        ("************", sz_star, False, False),
+        ("MINISTÈRE DE L'ENSEIGNEMENT SUPÉRIEUR", sz_main, True, False),
+        ("**************", sz_star, False, False),
+        (uni_fr, sz_main, True, False),
+    ]
+    for c_line in uni_fr_contacts:
+        left_lines.append((c_line, sz_contact, False, False))
+    left_lines.extend(
+        [
+            ("**************", sz_star, False, False),
+            (fac_fr, sz_fac, True, False),
+            ("**************", sz_star, False, False),
+            ("DÉPARTEMENT DE", sz_main, True, False),
+            (dept_fr, sz_main, True, False),
+        ]
+    )
+    if fac_fr_contacts:
+        left_lines.append(("**************", sz_star, False, False))
+        for c_line in fac_fr_contacts:
+            left_lines.append((c_line, sz_contact, False, False))
+
+    right_lines: List[Tuple[str, float, bool, bool]] = [
+        ("REPUBLIC OF CAMEROON", sz_head, True, False),
+        ("Peace – Work – Fatherland", sz_main, False, True),
+        ("************", sz_star, False, False),
+        ("MINISTRY OF HIGHER EDUCATION", sz_main, True, False),
+        ("************", sz_star, False, False),
+        (uni_en, sz_main, True, False),
+    ]
+    for c_line in uni_en_contacts:
+        right_lines.append((c_line, sz_contact, False, False))
+    right_lines.extend(
+        [
+            ("************", sz_star, False, False),
+            (fac_en, sz_fac, True, False),
+            ("************", sz_star, False, False),
+            ("DEPARTMENT OF", sz_main, True, False),
+            (dept_en, sz_main, True, False),
+        ]
+    )
+    if fac_en_contacts:
+        right_lines.append(("************", sz_star, False, False))
+        for c_line in fac_en_contacts:
+            right_lines.append((c_line, sz_contact, False, False))
+
+    return left_lines, right_lines
+
+
+def _resolve_cover_logo_path(path_str: Optional[str]) -> Optional[Path]:
+    if not path_str or not path_str.strip():
+        return None
+    p = Path(path_str.strip())
+    if not p.is_absolute():
+        p = WORKSPACE_ROOT / p
+    return p if p.exists() and p.is_file() else None
+
+
+def _add_fitted_logo_paragraph(
+    cell,
+    img_path: Path,
+    max_w_cm: float,
+    max_h_cm: float,
+    space_after_pt: float = 0.0,
+) -> None:
+    try:
+        with PILImage.open(img_path) as im:
+            iw, ih = im.size
+        if iw <= 0 or ih <= 0:
+            raise ValueError("Invalid image size")
+        ratio = iw / ih
+        if (max_w_cm / max_h_cm) >= ratio:
+            draw_h = max_h_cm
+            draw_w = draw_h * ratio
+        else:
+            draw_w = max_w_cm
+            draw_h = draw_w / ratio
+    except Exception:
+        draw_w = min(max_w_cm, 2.2)
+        draw_h = min(max_h_cm, 2.2)
+
+    p_logo = cell.add_paragraph()
+    p_logo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_logo.paragraph_format.space_before = Pt(0)
+    p_logo.paragraph_format.space_after = Pt(space_after_pt)
+    p_logo.paragraph_format.line_spacing = 1.0
+    run_logo = p_logo.add_run()
+    run_logo.add_picture(str(img_path.resolve()), width=Cm(draw_w), height=Cm(draw_h))
+
+
+def _append_inline_graphic_el(
+    cell,
+    graphic_el,
+    logo_cx_emu: int,
+    logo_cy_emu: int,
+    space_after_pt: float = 0.0,
+) -> None:
+    g_copy = copy.deepcopy(graphic_el)
+    for ext in g_copy.iter(f"{{{A_NS}}}ext"):
+        ext.set("cx", str(logo_cx_emu))
+        ext.set("cy", str(logo_cy_emu))
+
+    p_logo = cell.add_paragraph()
+    p_logo.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p_logo.paragraph_format.space_before = Pt(0)
+    p_logo.paragraph_format.space_after = Pt(space_after_pt)
+    run_logo = p_logo.add_run()
+    inline_drawing = parse_xml(
+        f'<w:drawing xmlns:w="{W_NS}" xmlns:wp="{WP_NS}">'
+        f'  <wp:inline distT="0" distB="0" distL="0" distR="0">'
+        f'    <wp:extent cx="{logo_cx_emu}" cy="{logo_cy_emu}"/>'
+        f'    <wp:effectExtent l="19050" t="0" r="19050" b="19050"/>'
+        f'    <wp:docPr id="{_next_box_id()}" name="LogoUniversite"/>'
+        f'    <wp:cNvGraphicFramePr/>'
+        f'  </wp:inline>'
+        f'</w:drawing>'
+    )
+    inline_el = inline_drawing.find(f"{{{WP_NS}}}inline")
+    if inline_el is not None:
+        inline_el.append(g_copy)
+    run_logo._r.append(inline_drawing)
+
+
+def _rebuild_bilingual_header_table(doc, project: ProtocolProject) -> int:
+    """Build dynamic multi-university bilingual header tiers and 1 or 2 stacked center logos. Returns extra line count."""
     if not doc.tables:
-        return
+        return 0
     t0 = doc.tables[0]
     if len(t0.rows) < 1 or len(t0.rows[0].cells) < 3:
-        return
+        return 0
 
     t0.alignment = WD_TABLE_ALIGNMENT.CENTER
     t0.autofit = False
@@ -136,56 +314,24 @@ def _rebuild_bilingual_header_table(doc, project: ProtocolProject) -> None:
         _set_cell_width_dxa(cell, w_cm)
         _set_cell_margins(cell, top_dxa=20, bottom_dxa=20, left_dxa=35, right_dxa=35)
 
-    dept_fr = _strip_dept_prefix(project.cover.department_fr, is_french=True)
-    dept_en = _strip_dept_prefix(project.cover.department_en, is_french=False)
-
-    def _write_side_cell(cell, lines: list[tuple[str, float, bool, bool]]) -> None:
+    def _write_side_cell(cell, lines: List[Tuple[str, float, bool, bool]]) -> None:
         cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
         for p_el in list(cell._tc.findall(qn("w:p"))):
             cell._tc.remove(p_el)
-        for idx, (text, sz, is_bold, is_italic) in enumerate(lines):
-            p = cell.add_paragraph() if idx > 0 else cell.add_paragraph()
+        for text, sz, is_bold, is_italic in lines:
+            p = cell.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             p.paragraph_format.space_before = Pt(0)
-            p.paragraph_format.space_after = Pt(1)
+            p.paragraph_format.space_after = Pt(0.5 if len(lines) > 12 else 1.0)
             p.paragraph_format.line_spacing = 1.0
             r = p.add_run(text)
             _apply_cover_run_font(r, "Times New Roman", size_pt=sz, bold=is_bold, italic=is_italic)
 
-    left_lines = [
-        ("REPUBLIQUE DU CAMEROUN", 9.0, True, False),
-        ("Paix – Travail – Patrie", 8.5, False, True),
-        ("************", 8.0, False, False),
-        ("MINISTERE DE L’ENSEIGNEMENT", 8.5, True, False),
-        ("SUPERIEUR", 8.5, True, False),
-        ("**************", 8.0, False, False),
-        ("UNIVERSITE DE YAOUNDE I", 8.5, True, False),
-        ("**************", 8.0, False, False),
-        ("FACULTE DE MEDECINE ET DES", 8.0, True, False),
-        ("SCIENCES BIOMEDICALES", 8.0, True, False),
-        ("**************", 8.0, False, False),
-        ("DEPARTEMENT DE", 8.5, True, False),
-        (dept_fr, 8.5, True, False),
-    ]
-    right_lines = [
-        ("REPUBLIC OF CAMEROON", 9.0, True, False),
-        ("Peace – Work – Fatherland", 8.5, False, True),
-        ("************", 8.0, False, False),
-        ("MINISTRY OF HIGHER", 8.5, True, False),
-        ("EDUCATION", 8.5, True, False),
-        ("************", 8.0, False, False),
-        ("THE UNIVERSITY OF YAOUNDE I", 8.5, True, False),
-        ("************", 8.0, False, False),
-        ("FACULTY OF MEDICINE AND", 8.0, True, False),
-        ("BIOMEDICAL SCIENCES", 8.0, True, False),
-        ("************", 8.0, False, False),
-        ("DEPARTMENT OF", 8.5, True, False),
-        (dept_en, 8.5, True, False),
-    ]
+    left_lines, right_lines = build_cover_header_lines(project.cover)
     _write_side_cell(t0.rows[0].cells[0], left_lines)
     _write_side_cell(t0.rows[0].cells[2], right_lines)
 
-    # Center cell: enlarge and center the official UY1 logo inline cleanly
+    # Center cell: stack 1 or 2 logos cleanly (University on top/center, Faculty optionally below)
     center_cell = t0.rows[0].cells[1]
     center_cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
     graphic_el = None
@@ -193,35 +339,34 @@ def _rebuild_bilingual_header_table(doc, project: ProtocolProject) -> None:
         graphic_el = copy.deepcopy(g)
         break
 
-    if graphic_el is not None:
-        logo_cx = 1020000  # ~2.83 cm (up from 1.30 cm)
-        logo_cy = 1277000  # ~3.55 cm (up from 1.62 cm)
-        for ext in graphic_el.iter(f"{{{A_NS}}}ext"):
-            ext.set("cx", str(logo_cx))
-            ext.set("cy", str(logo_cy))
+    for p_el in list(center_cell._tc.findall(qn("w:p"))):
+        center_cell._tc.remove(p_el)
 
-        for p_el in list(center_cell._tc.findall(qn("w:p"))):
-            center_cell._tc.remove(p_el)
+    custom_uni_logo = _resolve_cover_logo_path(getattr(project.cover, "university_logo_path", ""))
+    custom_fac_logo = _resolve_cover_logo_path(getattr(project.cover, "faculty_logo_path", ""))
+    default_uni_logo = _resolve_cover_logo_path("tamplates/fmsb_uy1_logo.png")
 
-        p_logo = center_cell.add_paragraph()
-        p_logo.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p_logo.paragraph_format.space_before = Pt(0)
-        p_logo.paragraph_format.space_after = Pt(0)
-        run_logo = p_logo.add_run()
-        inline_drawing = parse_xml(
-            f'<w:drawing xmlns:w="{W_NS}" xmlns:wp="{WP_NS}">'
-            f'  <wp:inline distT="0" distB="0" distL="0" distR="0">'
-            f'    <wp:extent cx="{logo_cx}" cy="{logo_cy}"/>'
-            f'    <wp:effectExtent l="19050" t="0" r="19050" b="19050"/>'
-            f'    <wp:docPr id="{_next_box_id()}" name="LogoUY1"/>'
-            f'    <wp:cNvGraphicFramePr/>'
-            f'  </wp:inline>'
-            f'</w:drawing>'
-        )
-        inline_el = inline_drawing.find(f"{{{WP_NS}}}inline")
-        if inline_el is not None:
-            inline_el.append(graphic_el)
-        run_logo._r.append(inline_drawing)
+    has_two_logos = custom_fac_logo is not None
+    if has_two_logos:
+        if custom_uni_logo is not None:
+            _add_fitted_logo_paragraph(center_cell, custom_uni_logo, max_w_cm=2.3, max_h_cm=2.0, space_after_pt=4.0)
+        elif graphic_el is not None:
+            _append_inline_graphic_el(center_cell, graphic_el, logo_cx_emu=612000, logo_cy_emu=766000, space_after_pt=4.0)
+        elif default_uni_logo is not None:
+            _add_fitted_logo_paragraph(center_cell, default_uni_logo, max_w_cm=2.3, max_h_cm=2.0, space_after_pt=4.0)
+        _add_fitted_logo_paragraph(center_cell, custom_fac_logo, max_w_cm=2.3, max_h_cm=2.0, space_after_pt=0.0)
+    else:
+        if custom_uni_logo is not None:
+            _add_fitted_logo_paragraph(center_cell, custom_uni_logo, max_w_cm=2.9, max_h_cm=3.55, space_after_pt=0.0)
+        elif graphic_el is not None:
+            _append_inline_graphic_el(center_cell, graphic_el, logo_cx_emu=1020000, logo_cy_emu=1277000, space_after_pt=0.0)
+        elif default_uni_logo is not None:
+            _add_fitted_logo_paragraph(center_cell, default_uni_logo, max_w_cm=2.9, max_h_cm=3.55, space_after_pt=0.0)
+
+    if len(center_cell.paragraphs) == 0:
+        center_cell.add_paragraph()
+
+    return max(0, max(len(left_lines), len(right_lines)) - 12)
 
 
 def _create_inline_box_paragraph(
@@ -340,8 +485,8 @@ def build_fmsb_cover_page(
     for el in children[start_idx + 1 : end_idx]:
         body.remove(el)
 
-    # 2. Condense lateral headers & enlarge UY1/FMSB logo in center
-    _rebuild_bilingual_header_table(doc, project)
+    # 2. Condense lateral headers & enlarge UY1/FMSB logo(s) in center
+    extra_header_lines = _rebuild_bilingual_header_table(doc, project)
 
     cover = project.cover
     font_family = fmt.font_family or "Times New Roman"
@@ -471,7 +616,7 @@ def build_fmsb_cover_page(
     # 6. Academic year pushed toward the bottom of Page 1 inside a small matching bordered frame
     extra_codir_lines = max(0, len(codir_list) - 1) * 3
     approx_used_pt = (
-        130  # header table
+        130 + (extra_header_lines * 9)  # header table
         + (title_box_h_cm * 28.35)
         + 105  # degree + student + matricule
         + (95 + extra_codir_lines * 18)  # supervision table

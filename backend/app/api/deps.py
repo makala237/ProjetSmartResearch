@@ -147,50 +147,29 @@ def _norm_locked_str(value: Optional[str]) -> str:
     return re.sub(r"\s+", " ", (value or "")).strip().casefold()
 
 
+def assert_cover_admin_only(current_user: UserORM) -> None:
+    """Block any cover-page mutation when requested by a non-admin user."""
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "COVER_ADMIN_ONLY",
+                "message": "La page de garde du mémoire est définie et verrouillée par l'administrateur. Seul un administrateur peut la modifier.",
+            },
+        )
+
+
 def enforce_topic_lock_on_cover_update(
     project: ProtocolProject,
     incoming_cover: CoverMetadata,
     current_user: UserORM,
 ) -> None:
-    """Enforce immediate 1-user-1-protocol identity lock for students while allowing admin updates."""
-    if current_user.role == "admin":
-        if project.topic_locked:
-            project.locked_title = (incoming_cover.title or project.locked_title or "").strip()
-            project.locked_author_name = (incoming_cover.author_name or project.locked_author_name or "").strip()
-            project.locked_matricule = (incoming_cover.matricule or project.locked_matricule or "").strip()
+    """Enforce admin-only cover editing while synchronizing locked identity fields."""
+    if current_user.role != "admin":
+        assert_cover_admin_only(current_user)
         return
 
-    if not project.topic_locked:
-        return
-
-    if project.locked_title and _norm_locked_str(incoming_cover.title) != _norm_locked_str(project.locked_title):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "TOPIC_LOCKED",
-                "message": "Le titre du protocole est verrouillé pour garantir la règle « 1 utilisateur = 1 protocole ». Contactez un administrateur pour le modifier.",
-            },
-        )
-
-    if project.locked_author_name and _norm_locked_str(incoming_cover.author_name) != _norm_locked_str(
-        project.locked_author_name
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "TOPIC_LOCKED",
-                "message": "Le nom de l'impétrant est verrouillé sur ce protocole. Contactez un administrateur pour toute rectification.",
-            },
-        )
-
-    if project.locked_matricule:
-        if _norm_locked_str(incoming_cover.matricule) != _norm_locked_str(project.locked_matricule):
-            raise HTTPException(
-                status_code=403,
-                detail={
-                    "code": "TOPIC_LOCKED",
-                    "message": "Le matricule universitaire est verrouillé sur ce protocole. Contactez un administrateur pour toute rectification.",
-                },
-            )
-    elif (incoming_cover.matricule or "").strip():
-        project.locked_matricule = incoming_cover.matricule.strip()
+    if project.topic_locked:
+        project.locked_title = (incoming_cover.title or project.locked_title or "").strip()
+        project.locked_author_name = (incoming_cover.author_name or project.locked_author_name or "").strip()
+        project.locked_matricule = (incoming_cover.matricule or project.locked_matricule or "").strip()

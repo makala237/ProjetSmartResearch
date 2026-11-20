@@ -419,6 +419,61 @@ class PresentationOrchestrator:
                 steps.append((f"Étape {idx}", _truncate_words(b, 100)))
         return steps
 
+    def _extract_chronogram_pills(self, project: ProtocolProject) -> List[str]:
+        """Extract up to 7 chronological steps '<Period> : <Activity>' ordered top (latest) to bottom (earliest)."""
+        steps: List[Tuple[str, str]] = []
+        tg = project.timeline_grid
+        if tg and tg.rows:
+            matched_rows = set()
+            for p in tg.periods or []:
+                active_acts: List[str] = []
+                for idx, r in enumerate(tg.rows):
+                    if p in (r.active_periods or []):
+                        matched_rows.add(idx)
+                        act = _shorten_label(r.activity, 46)
+                        if act and act not in active_acts:
+                            active_acts.append(act)
+                if active_acts:
+                    steps.append((_clean_text_for_display(p), _truncate_words(" ; ".join(active_acts), 68)))
+
+            for idx, r in enumerate(tg.rows):
+                if idx not in matched_rows:
+                    p_lbl = ", ".join(r.active_periods or []) or f"Étape {idx + 1}"
+                    steps.append((_clean_text_for_display(p_lbl), _shorten_label(r.activity, 55)))
+
+        if not steps:
+            sec = project.sections.get("chap3_chronogramme")
+            if sec and sec.custom_tables:
+                tbl = sec.custom_tables[0]
+                for idx, row in enumerate(tbl.rows[:7]):
+                    cells = [_clean_text_for_display(c) for c in row if (c or "").strip()]
+                    if len(cells) >= 2:
+                        steps.append((cells[1], _shorten_label(cells[0], 55)))
+                    elif cells:
+                        steps.append((f"Phase {idx + 1}", _shorten_label(cells[0], 55)))
+            if not steps and sec and (sec.content_markdown or "").strip():
+                bullets = self._extract_bullets_from_markdown(sec.content_markdown, max_items=7)
+                for idx, b in enumerate(bullets):
+                    if ":" in b[:30]:
+                        p_lbl, act = b.split(":", 1)
+                        steps.append((p_lbl.strip(), _shorten_label(act.strip(), 55)))
+                    else:
+                        steps.append((f"Étape {idx + 1}", _shorten_label(b, 55)))
+
+        if not steps:
+            steps = [
+                ("Mai 2026", "Rédaction du protocole"),
+                ("Juil 2026", "Autorisations & clairance éthique"),
+                ("Oct 2026", "Collecte des données (Phase 1)"),
+                ("Mars 2027", "Collecte des données (Phase 2)"),
+                ("Avril 2027", "Analyse des données"),
+                ("Mai 2027", "Rédaction de thèse & corrections"),
+                ("Juin 2027", "Dépôt & soutenance publique"),
+            ]
+
+        kept = steps[:7]
+        return [f"{p} : {a}" if p else a for p, a in reversed(kept)]
+
     def _extract_chronogram_notes(self, project: ProtocolProject) -> str:
         if project.timeline_grid and project.timeline_grid.rows:
             lines = ["Chronogramme prévisionnel des activités du protocole :"]
@@ -578,6 +633,8 @@ class PresentationOrchestrator:
         cover = project.cover
         total_budget_str, budget_pills = self._extract_budget_pills(project)
 
+        chrono_pills = self._extract_chronogram_pills(project)
+
         s_chrono = Slide(
             id="slide-chrono",
             slide_index=1,
@@ -587,11 +644,19 @@ class PresentationOrchestrator:
             title="Chronogramme des activités",
             subtitle="Diagramme de Gantt prévisionnel",
             breadcrumb="5. CHRONOGRAMME",
-            layout_mode="full_image_asis",
+            layout_mode="chronogram_7pills",
             background_image_path=TPL_CHRONOGRAM,
-            elements=[],
+            elements=[
+                SlideElement(
+                    id=f"el-chrono-{idx + 1}",
+                    element_type="pill",
+                    content=pill_txt,
+                    order=idx + 1,
+                )
+                for idx, pill_txt in enumerate(chrono_pills)
+            ],
             presenter_notes=self._extract_chronogram_notes(project),
-            locked_as_is=True,
+            locked_as_is=False,
             is_validated=True,
         )
 
@@ -624,11 +689,13 @@ class PresentationOrchestrator:
 
         cand = (cover.author_name or "Impétrant(e) FMSB").strip()
         contact = " • ".join(x for x in (cover.student_email, cover.student_phone) if x)
+        fac_lbl = (getattr(cover, "faculty_fr", "") or "Faculté de Médecine et des Sciences Biomédicales").strip()
+        uni_lbl = (getattr(cover, "university_fr", "") or "Université de Yaoundé I").strip()
         medallion_msg = (
             "QUESTIONS & DISCUSSIONS\n\n"
             f"{cand}\n"
-            "Faculté de Médecine et des Sciences Biomédicales\n"
-            "Université de Yaoundé I"
+            f"{fac_lbl}\n"
+            f"{uni_lbl}"
             + (f"\n{contact}" if contact else "")
         )
 
@@ -843,13 +910,39 @@ class PresentationOrchestrator:
         project: ProtocolProject,
         deck: Optional[PresentationDeck],
     ) -> Tuple[PresentationDeck, bool]:
-        """Auto-migrate legacy cached decks (< v3.1.0) and enforce Welcome-first ordering."""
+        """Auto-migrate legacy cached decks (< v3.1.0 or legacy locked chronogram) and enforce Welcome-first ordering."""
         if deck is None or (deck.version or "") != CURRENT_DECK_VERSION:
             rebuilt = self.build_default_deck_from_protocol(project)
             return rebuilt, True
+
+        migrated_chrono = False
+        for s in deck.slides:
+            if s.slide_type == "chronogram" and (
+                s.locked_as_is
+                or "Diapositive..Chronogramme" in (s.background_image_path or "")
+                or (not s.elements and s.layout_mode in ("full_image_asis", "chronogram_7pills", "", None))
+            ):
+                s.background_image_path = TPL_CHRONOGRAM
+                s.layout_mode = "chronogram_7pills"
+                s.locked_as_is = False
+                if not s.elements:
+                    chrono_pills = self._extract_chronogram_pills(project)
+                    s.elements = [
+                        SlideElement(
+                            id=f"el-chrono-{idx + 1}",
+                            element_type="pill",
+                            content=pill_txt,
+                            order=idx + 1,
+                        )
+                        for idx, pill_txt in enumerate(chrono_pills)
+                    ]
+                if not (s.presenter_notes or "").strip():
+                    s.presenter_notes = self._extract_chronogram_notes(project)
+                migrated_chrono = True
+
         order_changed = self.enforce_opening_order(deck)
         compute_deck_layout(deck, project=project)
-        return deck, order_changed
+        return deck, (order_changed or migrated_chrono)
 
     # =========================================================================
     # PUBLIC ENTRYPOINT 1: DETERMINISTIC BUILD FROM REAL PROTOCOL DATA
@@ -1054,7 +1147,7 @@ class PresentationOrchestrator:
 
         # Stage 3: Gemini Decision 1 chooses optimal layout mode & figure placement
         directives_map: Dict[str, _LayoutDirectiveAI] = {}
-        overall_decision_notes = "Arbitrage spatial Gemini Decision 1 appliqué."
+        overall_decision_notes = "Mise en page CAMES optimisée automatiquement."
         try:
             queue_summary = [
                 f"- {bid}: {len(els)} éléments (types={[e.element_type for e in els]})"
@@ -1248,14 +1341,14 @@ class PresentationOrchestrator:
         if not target:
             raise ValueError(f"Diapositive {slide_index} introuvable.")
 
-        if target.slide_type == "chronogram" or target.locked_as_is:
+        if target.locked_as_is:
             compute_deck_layout(deck, project=project)
             return {
                 "status": "locked",
                 "slide": target,
                 "deck": deck,
                 "model_used": "locked_as_is",
-                "models_used": {"chronogram": "locked_as_is"},
+                "models_used": {"slide": "locked_as_is"},
             }
 
         sec_ids = list(target.source_section_ids or ([] if not target.section_key else [target.section_key]))
@@ -1264,6 +1357,14 @@ class PresentationOrchestrator:
             v_bullets = self._extract_variables_bullets(project)
             if v_bullets and not any("non encore rédigée" in b.lower() for b in v_bullets):
                 source_txt = "\n".join(v_bullets)
+        if target.slide_type == "chronogram":
+            chrono_pills = self._extract_chronogram_pills(project)
+            parts: List[str] = []
+            if chrono_pills:
+                parts.append("Étapes du chronogramme (Période : Activité) :\n" + "\n".join(chrono_pills))
+            if source_txt.strip():
+                parts.append(source_txt)
+            source_txt = "\n\n".join(parts)
         if not source_txt.strip() and target.slide_type == "budget":
             b_total, b_pills = self._extract_budget_pills(project)
             if b_pills:
@@ -1309,12 +1410,22 @@ class PresentationOrchestrator:
         elif any(e.element_type == "procedure_step" for e in els) and "schéma" in (user_instruction or "").lower():
             target.layout_mode = "procedure_flow"
 
-        if target.layout_mode == "split_media" and media_els:
+        if target.slide_type == "chronogram" and (target.layout_mode in ("chronogram_7pills", "", None)):
+            target.elements = [
+                SlideElement(
+                    id=el.id,
+                    element_type="pill",
+                    content=(f"{el.title} : {el.content}" if el.title and ":" not in el.content else el.content),
+                    order=i + 1,
+                )
+                for i, el in enumerate(els[:7])
+            ]
+        elif target.layout_mode == "split_media" and media_els:
             target.elements = [*els[:4], media_els[0]]
         elif target.layout_mode == "procedure_flow":
             target.elements = els[:4]
         else:
-            target.elements = els[:5]
+            target.elements = els[:7] if target.slide_type == "chronogram" else els[:5]
 
         target.presenter_notes = notes
         compute_deck_layout(deck, project=project)

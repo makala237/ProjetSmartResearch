@@ -568,12 +568,14 @@ def apply_human_author_metadata_docx(doc: Any, project: ProtocolProject) -> None
     title = (project.cover.title or project.name or "Protocole de recherche médicale").strip()
     degree = (project.cover.degree_label or "Doctorat en Médecine").strip()
     dept = (project.cover.department_fr or "Médecine").strip()
+    uni = (getattr(project.cover, "university_fr", "") or "Université de Yaoundé I").strip()
+    fac = (getattr(project.cover, "faculty_fr", "") or "FMSB").strip()
 
     props = doc.core_properties
     props.author = author
     props.last_modified_by = author
     props.title = title[:250]
-    props.subject = f"Protocole de thèse ({degree}) - FMSB / Université de Yaoundé I"
+    props.subject = f"Protocole de thèse ({degree}) - {fac} / {uni}"
     props.category = dept
     props.comments = ""
     props.keywords = f"Protocole de recherche, {dept}, FMSB"
@@ -589,6 +591,8 @@ def apply_human_author_metadata_pdf(pdf_path: Path, project: ProtocolProject) ->
     author = (project.cover.author_name or "Impétrant FMSB").strip()
     title = (project.cover.title or project.name or "Protocole de recherche médicale").strip()
     degree = (project.cover.degree_label or "Doctorat en Médecine").strip()
+    uni = (getattr(project.cover, "university_fr", "") or "Université de Yaoundé I").strip()
+    fac = (getattr(project.cover, "faculty_fr", "") or "FMSB").strip()
 
     reader = PdfReader(str(pdf_path))
     writer = PdfWriter()
@@ -597,7 +601,7 @@ def apply_human_author_metadata_pdf(pdf_path: Path, project: ProtocolProject) ->
         {
             "/Author": author,
             "/Title": title[:250],
-            "/Subject": f"Protocole de recherche ({degree}) - FMSB / Université de Yaoundé I",
+            "/Subject": f"Protocole de recherche ({degree}) - {fac} / {uni}",
             "/Creator": "Microsoft® Word",
             "/Producer": "Microsoft® Word",
         }

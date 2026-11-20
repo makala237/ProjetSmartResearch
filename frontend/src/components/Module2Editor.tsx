@@ -20,8 +20,11 @@ import type {
   GlobalAuditReport,
   HumanizeProtocolReport,
   ProtocolProject,
+  TimelineGrid,
 } from "../types/protocol";
 import { StructuredTablesEditor } from "./StructuredTablesEditor";
+import { TimelineGridEditor } from "./TimelineGridEditor";
+import { getFormattedCoverHeader } from "../utils/coverHeader";
 
 interface Module2Props {
   project: ProtocolProject;
@@ -60,12 +63,20 @@ export function Module2Editor({
   const [humanizingAll, setHumanizingAll] = useState(false);
   const [humanizeReport, setHumanizeReport] =
     useState<HumanizeProtocolReport | null>(null);
+  const [timelineDraft, setTimelineDraft] = useState<TimelineGrid>(
+    project.timeline_grid
+  );
+  const [savingTimeline, setSavingTimeline] = useState(false);
 
   const syncedTransportProjectRef = useRef<string | null>(null);
 
   useEffect(() => {
     setFmt(project.formatting);
   }, [project.formatting]);
+
+  useEffect(() => {
+    setTimelineDraft(project.timeline_grid);
+  }, [project.timeline_grid]);
 
   useEffect(() => {
     if (syncedTransportProjectRef.current === project.project_id) {
@@ -91,7 +102,7 @@ export function Module2Editor({
         setPaginationSummary(res.pagination_summary);
       }
       const pagesTxt = res.pagination_summary
-        ? ` — ${res.pagination_summary.total_roman_pages} p. romaines + ${res.pagination_summary.total_arabic_pages} p. A4 (${res.pagination_summary.model_used})`
+        ? ` — ${res.pagination_summary.total_roman_pages} p. romaines + ${res.pagination_summary.total_arabic_pages} p. A4`
         : "";
       const listCounts = [
         res.abbreviations_count != null ? `${res.abbreviations_count} abréviations` : "",
@@ -183,6 +194,25 @@ export function Module2Editor({
       );
     } finally {
       setHumanizingAll(false);
+    }
+  };
+
+  const handleSaveTimelineGrid = async (nextGrid: TimelineGrid) => {
+    setSavingTimeline(true);
+    onError("");
+    try {
+      const updated = await api.updateStructuredData(project.project_id, {
+        timeline_grid: nextGrid,
+      });
+      onProjectUpdated(updated);
+    } catch (err: unknown) {
+      onError(
+        err instanceof Error
+          ? err.message
+          : "Échec de la mise à jour du chronogramme des activités."
+      );
+    } finally {
+      setSavingTimeline(false);
     }
   };
 
@@ -378,9 +408,9 @@ export function Module2Editor({
 
               <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50/90 p-2.5 text-[11px] text-slate-700">
                 <div className="flex flex-wrap items-center justify-between gap-1 font-semibold text-[#6C2826]">
-                  <span>Gemini Decision 1 — Pagination A4 & Figures (≥ 12 pt)</span>
+                  <span>Contrôle de Pagination A4 &amp; Figures (≥ 12 pt)</span>
                   <span className="rounded bg-[#6C2826]/10 px-1.5 py-0.5 text-[10px]">
-                    {paginationSummary?.model_used || "A4 Prêt (21 × 29,7 cm)"}
+                    A4 Prêt (21 × 29,7 cm)
                   </span>
                 </div>
                 <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10.5px] text-slate-600">
@@ -809,39 +839,91 @@ export function Module2Editor({
                 }}
               >
                 <div>
-                  <div className="grid grid-cols-12 items-center gap-2 text-[10px] font-bold leading-tight text-slate-800">
-                    <div className="col-span-5 text-center">
-                      <div>REPUBLIQUE DU CAMEROUN</div>
-                      <div className="font-normal italic">Paix – Travail – Patrie</div>
-                      <div className="text-[8px]">************</div>
-                      <div>MINISTERE DE L&apos;ENSEIGNEMENT</div>
-                      <div>SUPERIEUR</div>
-                      <div className="text-[8px]">**************</div>
-                      <div>UNIVERSITE DE YAOUNDE I</div>
-                      <div className="text-[8px]">**************</div>
-                      <div>FACULTE DE MEDECINE ET DES SCIENCES BIOMEDICALES</div>
-                      <div className="mt-1">DEPARTEMENT DE</div>
-                      <div>{(project.cover.department_fr || "SANTE PUBLIQUE").toUpperCase()}</div>
-                    </div>
-                    <div className="col-span-2 flex flex-col items-center justify-center">
-                      <div className="flex h-20 w-16 items-center justify-center rounded border border-[#6C2826]/30 bg-[#6C2826]/5 text-[9px] font-bold text-[#6C2826]">
-                        LOGO UY1 / FMSB
+                  {(() => {
+                    const ch = getFormattedCoverHeader(project.cover);
+                    const uniLogoSrc = project.cover.university_logo_url
+                      ? withAuthToken(project.cover.university_logo_url)
+                      : "/tamplates/fmsb_uy1_logo.png";
+                    const facLogoSrc = project.cover.faculty_logo_url
+                      ? withAuthToken(project.cover.faculty_logo_url)
+                      : null;
+                    return (
+                      <div
+                        className={`grid grid-cols-12 items-center gap-2 font-bold leading-tight text-slate-800 ${
+                          ch.hasOptionalTiers ? "text-[9px]" : "text-[10px]"
+                        }`}
+                      >
+                        <div className="col-span-5 text-center">
+                          <div>RÉPUBLIQUE DU CAMEROUN</div>
+                          <div className="font-normal italic">Paix – Travail – Patrie</div>
+                          <div className="text-[8px]">************</div>
+                          <div>MINISTÈRE DE L&apos;ENSEIGNEMENT SUPÉRIEUR</div>
+                          <div className="text-[8px]">**************</div>
+                          <div>{ch.universityFr}</div>
+                          {ch.universityContactsFr.map((ln, idx) => (
+                            <div key={idx} className="text-[8.5px] font-normal text-slate-700">
+                              {ln}
+                            </div>
+                          ))}
+                          <div className="text-[8px]">**************</div>
+                          <div>{ch.facultyFr}</div>
+                          <div className="text-[8px]">**************</div>
+                          <div className="mt-0.5">DÉPARTEMENT DE {ch.departmentFr}</div>
+                          {ch.facultyContactsFr.length > 0 && (
+                            <>
+                              <div className="text-[8px]">**************</div>
+                              {ch.facultyContactsFr.map((ln, idx) => (
+                                <div key={idx} className="text-[8.5px] font-normal text-slate-700">
+                                  {ln}
+                                </div>
+                              ))}
+                            </>
+                          )}
+                        </div>
+                        <div className="col-span-2 flex flex-col items-center justify-center gap-1.5">
+                          <img
+                            src={uniLogoSrc}
+                            alt="Logo Université"
+                            className={`w-auto object-contain ${facLogoSrc ? "max-h-14" : "max-h-24"}`}
+                          />
+                          {facLogoSrc && (
+                            <img
+                              src={facLogoSrc}
+                              alt="Logo Faculté"
+                              className="max-h-14 w-auto object-contain"
+                            />
+                          )}
+                        </div>
+                        <div className="col-span-5 text-center">
+                          <div>REPUBLIC OF CAMEROON</div>
+                          <div className="font-normal italic">Peace – Work – Fatherland</div>
+                          <div className="text-[8px]">************</div>
+                          <div>MINISTRY OF HIGHER EDUCATION</div>
+                          <div className="text-[8px]">************</div>
+                          <div>{ch.universityEn}</div>
+                          {ch.universityContactsEn.map((ln, idx) => (
+                            <div key={idx} className="text-[8.5px] font-normal text-slate-700">
+                              {ln}
+                            </div>
+                          ))}
+                          <div className="text-[8px]">************</div>
+                          <div>{ch.facultyEn}</div>
+                          <div className="text-[8px]">************</div>
+                          <div className="mt-0.5">DEPARTMENT OF {ch.departmentEn}</div>
+                          {ch.facultyContactsEn.length > 0 && (
+                            <>
+                              <div className="text-[8px]">************</div>
+                              {ch.facultyContactsEn.map((ln, idx) => (
+                                <div key={idx} className="text-[8.5px] font-normal text-slate-700">
+                                  {ln}
+                                </div>
+                              ))}
+                            </>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                    <div className="col-span-5 text-center">
-                      <div>REPUBLIC OF CAMEROON</div>
-                      <div className="font-normal italic">Peace – Work – Fatherland</div>
-                      <div className="text-[8px]">************</div>
-                      <div>MINISTRY OF HIGHER</div>
-                      <div>EDUCATION</div>
-                      <div className="text-[8px]">************</div>
-                      <div>THE UNIVERSITY OF YAOUNDE I</div>
-                      <div className="text-[8px]">************</div>
-                      <div>FACULTY OF MEDICINE AND BIOMEDICAL SCIENCES</div>
-                      <div className="mt-1">DEPARTMENT OF</div>
-                      <div>{(project.cover.department_en || "PUBLIC HEALTH").toUpperCase()}</div>
-                    </div>
-                  </div>
+                    );
+                  })()}
                   <div
                     className="my-6 px-4 py-5 font-bold text-slate-900"
                     style={{
@@ -961,6 +1043,16 @@ export function Module2Editor({
                 </span>
                 <span>
                   {fmt.font_family} {fmt.body_font_size_pt}pt · Interligne {fmt.line_spacing}
+                </span>
+              </div>
+
+              {/* Preview of Running Header starting Page 2 */}
+              <div className="mb-4 flex items-center justify-between gap-4 border-b border-slate-300 pb-1.5 text-[11px] italic text-slate-500">
+                <span className="font-sans text-[10px] font-semibold not-italic uppercase tracking-wide text-slate-400">
+                  En-tête (pages 2+)
+                </span>
+                <span className="truncate text-right">
+                  {project.cover.title || project.name}
                 </span>
               </div>
 
@@ -1148,13 +1240,17 @@ export function Module2Editor({
                           }
                           if (
                             spec.id === "chap3_chronogramme" &&
-                            (project.timeline_grid?.rows?.length ?? 0) > 0
+                            (timelineDraft?.rows?.length ?? 0) > 0
                           ) {
-                            const periods = project.timeline_grid.periods || [];
                             return (
                               <div className="mt-3">
-                                <div className="mb-1 flex items-center justify-between text-left text-xs font-bold text-slate-800">
-                                  <span>Tableau : Chronogramme des activités</span>
+                                <div className="mb-1.5 flex items-center justify-between text-left text-xs font-bold text-slate-800">
+                                  <span>
+                                    Tableau : Chronogramme des activités{" "}
+                                    <span className="font-sans text-[11px] font-normal text-slate-500">
+                                      (dates, activités et jalons éditables)
+                                    </span>
+                                  </span>
                                   <button
                                     type="button"
                                     onClick={async () => {
@@ -1176,39 +1272,13 @@ export function Module2Editor({
                                     Retirer
                                   </button>
                                 </div>
-                                <div className="overflow-x-auto rounded border border-slate-200">
-                                  <table className="w-full text-left text-xs">
-                                    <thead className="bg-[#6C2826] text-white">
-                                      <tr>
-                                        <th className="p-1.5">Activité</th>
-                                        {periods.map((per) => (
-                                          <th key={per} className="p-1.5 text-center">
-                                            {per}
-                                          </th>
-                                        ))}
-                                      </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-100">
-                                      {project.timeline_grid.rows.map((row, idx) => (
-                                        <tr key={idx}>
-                                          <td className="p-1.5 font-medium">{row.activity}</td>
-                                          {periods.map((per) => (
-                                            <td
-                                              key={per}
-                                              className={`p-1.5 text-center ${
-                                                row.active_periods.includes(per)
-                                                  ? "bg-amber-100 font-bold text-[#6C2826]"
-                                                  : ""
-                                              }`}
-                                            >
-                                              {row.active_periods.includes(per) ? "■" : ""}
-                                            </td>
-                                          ))}
-                                        </tr>
-                                      ))}
-                                    </tbody>
-                                  </table>
-                                </div>
+                                <TimelineGridEditor
+                                  timelineGrid={timelineDraft}
+                                  onChange={setTimelineDraft}
+                                  onCommit={handleSaveTimelineGrid}
+                                  variant="preview"
+                                  saving={savingTimeline}
+                                />
                               </div>
                             );
                           }
@@ -1392,6 +1462,16 @@ export function Module2Editor({
                       </div>
                     );
                   })}
+              </div>
+
+              {/* Preview of Running Footer starting Page 2 */}
+              <div className="mt-8 flex items-center justify-between gap-4 border-t border-slate-300 pt-2 text-[11px] text-slate-500">
+                <span className="truncate italic">
+                  {project.cover.author_name || "Nom du candidat"}
+                </span>
+                <span className="shrink-0 font-bold text-slate-800">
+                  Page i / 1…
+                </span>
               </div>
             </div>
           </div>

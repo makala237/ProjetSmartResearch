@@ -60,6 +60,27 @@ const LAYOUT_MODE_OPTIONS = [
   { id: "stat_grid", label: "Grille Chiffres Clés" },
 ];
 
+const CHRONOGRAM_LAYOUT_MODE_OPTIONS = [
+  { id: "chronogram_7pills", label: "Gantt 7 étapes (Escalier)" },
+  ...LAYOUT_MODE_OPTIONS,
+];
+
+function extractChronogramDatePrefix(pillText: string): string {
+  const raw = pillText || "";
+  const colonIdx = raw.indexOf(":");
+  if (colonIdx >= 0) {
+    const rawPrefix =
+      colonIdx > 0 && raw[colonIdx - 1] === " "
+        ? raw.slice(0, colonIdx - 1)
+        : raw.slice(0, colonIdx);
+    return rawPrefix.slice(0, 22);
+  }
+  const clean = raw.trim();
+  if (!clean) return "";
+  const words = clean.split(/\s+/);
+  return (words.length > 2 ? words.slice(0, 2).join(" ") : clean).slice(0, 22);
+}
+
 const FALLBACK_TEMPLATES = [
   { id: "tpl-intro", label: "Introduction (Ampoule)", slide_type: "introduction", path: "tamplates/tamplate diapositive introduction.png" },
   { id: "tpl-obj-gen", label: "Objectif général (Cible)", slide_type: "objective_general", path: "tamplates/tamplate diapositive objectif générale.png" },
@@ -305,14 +326,40 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
     updateActiveSlide({ elements: newElements }, false);
   }
 
+  function handleUpdateChronogramDate(elId: string, newDate: string) {
+    if (!activeSlide) return;
+    const el = activeSlide.elements.find((e) => e.id === elId);
+    if (!el) return;
+    const raw = el.content || "";
+    const colonIdx = raw.indexOf(":");
+    const activityPart =
+      colonIdx >= 0 ? raw.slice(colonIdx + 1).trim() : raw.trim();
+    const updatedContent = activityPart ? `${newDate} : ${activityPart}` : newDate;
+    handleUpdateElement(elId, updatedContent);
+  }
+
   function handleAddBullet() {
     if (!activeSlide) return;
+    const isChronoPills =
+      activeSlide.slide_type === "chronogram" &&
+      ["chronogram_7pills", "full_image_asis", ""].includes(
+        activeSlide.layout_mode || ""
+      );
+    if (isChronoPills && activeSlide.elements.length >= 7) {
+      return;
+    }
     const isProc = activeSlide.layout_mode === "procedure_flow";
     const newEl: SlideElement = {
       id: `el-${activeSlide.slide_index}-${Date.now()}`,
-      element_type: isProc ? "procedure_step" : "bullet_main",
+      element_type: isChronoPills
+        ? "pill"
+        : isProc
+        ? "procedure_step"
+        : "bullet_main",
       title: isProc ? `Étape ${activeSlide.elements.length + 1}` : undefined,
-      content: "Nouveau point clé à présenter au jury...",
+      content: isChronoPills
+        ? "Nouvelle période : Activité clé du protocole"
+        : "Nouveau point clé à présenter au jury...",
       order: activeSlide.elements.length + 1,
     };
     updateActiveSlide({ elements: [...activeSlide.elements, newEl] }, true);
@@ -641,10 +688,10 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
             onClick={handleGenerateAllAi}
             disabled={aiGeneratingAll}
             className="inline-flex items-center gap-1.5 rounded-lg bg-[#004B87] px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-[#003a6b] disabled:opacity-50"
-            title="Synthétise toutes les sections avec Gemini 3.5 Flash Lite, audite avec 3.1 Flash Lite et met en page avec Decision 1"
+            title="Synthétise toutes les sections, vérifie la conformité CAMES et optimise la mise en page"
           >
             <Sparkles className={`h-3.5 w-3.5 ${aiGeneratingAll ? "animate-spin" : ""}`} />
-            {aiGeneratingAll ? "Orchestration 3 IA…" : "Générer tout par IA"}
+            {aiGeneratingAll ? "Génération du diaporama…" : "Générer tout par IA"}
           </button>
 
           <button
@@ -732,9 +779,6 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
               />
               <span className="text-sm font-bold text-slate-900">
                 Rapport d'Audit CAMES — Score : {auditReport.score} / 100
-              </span>
-              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">
-                {auditReport.model_used}
               </span>
             </div>
             <button
@@ -962,26 +1006,51 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
                   </div>
                 )}
 
-                {/* SLIDE TYPE: STRICT OFFICIAL FMSB COVER */}
+                {/* SLIDE TYPE: STRICT OFFICIAL CAMES MULTI-UNIVERSITY COVER */}
                 {activeSlide?.slide_type === "cover" && (
                   <div className="relative h-full w-full overflow-hidden bg-white">
-                    <img
-                      src={encodePublicAsset(activeSlide.background_image_path)}
-                      alt="Fond Couverture"
-                      className="absolute bottom-0 left-0 right-0 h-[74.5%] w-full object-cover"
-                    />
                     {(() => {
                       const hFr = findBox("cover_header_fr");
                       const hEn = findBox("cover_header_en");
+                      const logoBox = findBox("cover_logo");
+                      const facLogoBox = findBox("cover_faculty_logo");
                       const titleBox = findBox("cover_title");
                       const candBox = findBox("cover_candidate");
                       const dirBox = findBox("cover_director");
                       const codirBox = findBox("cover_codirector");
                       const yrBox = findBox("cover_year");
 
+                      const hdrBottom = Math.max(
+                        (hFr?.y_pct ?? 0.015) + (hFr?.h_pct ?? 0.235),
+                        (hEn?.y_pct ?? 0.015) + (hEn?.h_pct ?? 0.235)
+                      );
+                      const bgTopPct = Math.max(0.255, Math.min(0.305, hdrBottom + 0.008));
+                      const hasCompactHeader = (hFr?.font_size_pt ?? 9.0) < 8.5;
+
+                      const uniLogoSrc = project.cover.university_logo_url
+                        ? withAuthToken(project.cover.university_logo_url)
+                        : encodePublicAsset(
+                            logoBox?.image_path || "tamplates/fmsb_uy1_logo.png"
+                          );
+                      const facLogoSrc = project.cover.faculty_logo_url
+                        ? withAuthToken(project.cover.faculty_logo_url)
+                        : facLogoBox?.image_path
+                        ? encodePublicAsset(facLogoBox.image_path)
+                        : null;
+
                       return (
                         <>
-                          {/* Top Bilingual Headers + UY1 Emblem */}
+                          <img
+                            src={encodePublicAsset(activeSlide.background_image_path)}
+                            alt="Fond Couverture"
+                            style={{
+                              top: `${bgTopPct * 100}%`,
+                              height: `${(1 - bgTopPct) * 100}%`,
+                            }}
+                            className="absolute left-0 right-0 w-full object-cover"
+                          />
+
+                          {/* Top Bilingual Headers + 1 or 2 Stacked Logos */}
                           <div
                             style={{
                               left: `${(hFr?.x_pct ?? 0.03) * 100}%`,
@@ -989,21 +1058,48 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
                               width: `${(hFr?.w_pct ?? 0.38) * 100}%`,
                               height: `${(hFr?.h_pct ?? 0.235) * 100}%`,
                             }}
-                            className="absolute whitespace-pre-line text-center font-serif text-[8.5px] sm:text-[9.5px] font-bold leading-[1.15] text-slate-900"
+                            className={`absolute whitespace-pre-line text-center font-serif font-bold leading-[1.12] text-slate-900 ${
+                              hasCompactHeader
+                                ? "text-[7px] sm:text-[8px]"
+                                : "text-[8.5px] sm:text-[9.5px]"
+                            }`}
                           >
                             {hFr?.text}
                           </div>
 
                           <div
-                            style={{ left: "44.8%", top: "1.5%", width: "10.4%", height: "22.8%" }}
+                            style={{
+                              left: `${(logoBox?.x_pct ?? 0.448) * 100}%`,
+                              top: `${(logoBox?.y_pct ?? 0.015) * 100}%`,
+                              width: `${(logoBox?.w_pct ?? 0.104) * 100}%`,
+                              height: `${(logoBox?.h_pct ?? 0.228) * 100}%`,
+                            }}
                             className="absolute flex items-center justify-center"
                           >
                             <img
-                              src={encodePublicAsset("tamplates/fmsb_uy1_logo.png")}
-                              alt="Emblème UY1"
+                              src={uniLogoSrc}
+                              alt="Emblème Université"
                               className="max-h-full max-w-full object-contain"
                             />
                           </div>
+
+                          {facLogoSrc && (
+                            <div
+                              style={{
+                                left: `${(facLogoBox?.x_pct ?? 0.448) * 100}%`,
+                                top: `${(facLogoBox?.y_pct ?? 0.13) * 100}%`,
+                                width: `${(facLogoBox?.w_pct ?? 0.104) * 100}%`,
+                                height: `${(facLogoBox?.h_pct ?? 0.11) * 100}%`,
+                              }}
+                              className="absolute flex items-center justify-center"
+                            >
+                              <img
+                                src={facLogoSrc}
+                                alt="Emblème Faculté"
+                                className="max-h-full max-w-full object-contain"
+                              />
+                            </div>
+                          )}
 
                           <div
                             style={{
@@ -1012,7 +1108,11 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
                               width: `${(hEn?.w_pct ?? 0.38) * 100}%`,
                               height: `${(hEn?.h_pct ?? 0.235) * 100}%`,
                             }}
-                            className="absolute whitespace-pre-line text-center font-serif text-[8.5px] sm:text-[9.5px] font-bold leading-[1.15] text-slate-900"
+                            className={`absolute whitespace-pre-line text-center font-serif font-bold leading-[1.12] text-slate-900 ${
+                              hasCompactHeader
+                                ? "text-[7px] sm:text-[8px]"
+                                : "text-[8.5px] sm:text-[9.5px]"
+                            }`}
                           >
                             {hEn?.text}
                           </div>
@@ -1162,20 +1262,94 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
                   </div>
                 )}
 
-                {/* SLIDE TYPE: CHRONOGRAM (DEPOSITED AS-IS, FIT-CONTAIN) */}
-                {activeSlide?.slide_type === "chronogram" && (
-                  <div className="relative h-full w-full overflow-hidden bg-white">
-                    <img
-                      src={encodePublicAsset(activeSlide.background_image_path)}
-                      alt="Chronogramme des activités"
-                      className="absolute inset-0 h-full w-full object-contain"
-                    />
-                    <div className="absolute right-3 top-3 inline-flex items-center gap-1.5 rounded-full bg-slate-900/75 px-3 py-1 text-[11px] font-semibold text-white">
-                      <Lock className="h-3 w-3 text-amber-300" />
-                      Diapositive déposée telle quelle
+                {/* SLIDE TYPE: CHRONOGRAM (7 DYNAMIC EDITABLE PILLS + COLORED STAIRCASE STEPS) */}
+                {activeSlide?.slide_type === "chronogram" &&
+                  ["chronogram_7pills", "full_image_asis", ""].includes(
+                    activeSlide.layout_mode || ""
+                  ) && (
+                    <div className="relative h-full w-full overflow-hidden bg-white">
+                      <img
+                        src={encodePublicAsset(activeSlide.background_image_path)}
+                        alt="Chronogramme des activités"
+                        className="absolute inset-0 h-full w-full object-contain"
+                      />
+                      {(() => {
+                        const boxes = activeSlide.render_boxes || [];
+                        const pillBoxes = boxes.filter(
+                          (b) => b.role === "chronogram_pill"
+                        );
+                        const stepBoxes = boxes.filter(
+                          (b) => b.role === "chronogram_step"
+                        );
+                        return (
+                          <>
+                            {pillBoxes.map((b, idx) => {
+                              const el = activeSlide.elements[idx];
+                              if (!el) return null;
+                              return (
+                                <div
+                                  key={b.box_id}
+                                  style={{
+                                    left: `${b.x_pct * 100}%`,
+                                    top: `${b.y_pct * 100}%`,
+                                    width: `${b.w_pct * 100}%`,
+                                    height: `${b.h_pct * 100}%`,
+                                  }}
+                                  className="group absolute flex items-center justify-center rounded-full hover:ring-1 hover:ring-[#004B87]/40"
+                                >
+                                  <textarea
+                                    rows={2}
+                                    value={el.content}
+                                    onChange={(e) =>
+                                      handleUpdateElement(el.id, e.target.value)
+                                    }
+                                    onBlur={flushPendingSave}
+                                    title="Modifier l'étape et sa période (format Période : Activité)"
+                                    className="w-full resize-none border-none bg-transparent px-1 text-center text-[8.5px] sm:text-[9.5px] font-bold leading-tight text-[#002060] focus:bg-white/90 focus:outline-none rounded-full"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveElement(el.id)}
+                                    className="absolute -right-2 -top-1.5 hidden rounded-full bg-white p-0.5 text-slate-400 shadow-sm hover:text-rose-600 group-hover:flex"
+                                    title="Supprimer cette étape"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </button>
+                                </div>
+                              );
+                            })}
+                            {stepBoxes.map((b, idx) => {
+                              const el = activeSlide.elements[idx];
+                              if (!el) return null;
+                              return (
+                                <div
+                                  key={b.box_id}
+                                  style={{
+                                    left: `${b.x_pct * 100}%`,
+                                    top: `${b.y_pct * 100}%`,
+                                    width: `${b.w_pct * 100}%`,
+                                    height: `${b.h_pct * 100}%`,
+                                  }}
+                                  className="absolute flex items-center justify-center"
+                                >
+                                  <input
+                                    type="text"
+                                    value={extractChronogramDatePrefix(el.content)}
+                                    onChange={(e) =>
+                                      handleUpdateChronogramDate(el.id, e.target.value)
+                                    }
+                                    onBlur={flushPendingSave}
+                                    title="Modifier directement la date sur la marche"
+                                    className="w-full border-none bg-transparent text-center text-[8.5px] sm:text-[10px] font-black leading-tight text-white drop-shadow-xs placeholder:text-white/70 focus:bg-slate-900/40 focus:outline-none rounded px-0.5"
+                                  />
+                                </div>
+                              );
+                            })}
+                          </>
+                        );
+                      })()}
                     </div>
-                  </div>
-                )}
+                  )}
 
                 {/* SLIDE TYPE: BUDGET (RADIAL 10 PILLS + CENTRAL TOTAL EDITABLE) */}
                 {activeSlide?.slide_type === "budget" && (
@@ -1282,10 +1456,16 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
                   </div>
                 )}
 
-                {/* CONTENT SLIDES (INTRODUCTION, OBJECTIVES, METHODOLOGY, CONTENT) */}
+                {/* CONTENT SLIDES (INTRODUCTION, OBJECTIVES, METHODOLOGY, CONTENT, OR ADAPTED CHRONOGRAM) */}
                 {activeSlide &&
-                  !["welcome", "cover", "plan", "chronogram", "budget", "acknowledgements"].includes(
-                    activeSlide.slide_type
+                  !(
+                    ["welcome", "cover", "plan", "budget", "acknowledgements"].includes(
+                      activeSlide.slide_type
+                    ) ||
+                    (activeSlide.slide_type === "chronogram" &&
+                      ["chronogram_7pills", "full_image_asis", ""].includes(
+                        activeSlide.layout_mode || ""
+                      ))
                   ) && (
                     <div className="relative h-full w-full overflow-hidden">
                       <img
@@ -1518,30 +1698,56 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
               <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
                 <div className="flex flex-wrap items-center gap-2">
                   {!activeSlide.locked_as_is &&
-                    !["welcome", "cover", "chronogram"].includes(activeSlide.slide_type) && (
+                    !["welcome", "cover"].includes(activeSlide.slide_type) && (
                       <button
                         type="button"
                         onClick={handleAddBullet}
-                        className="inline-flex items-center gap-1 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-[#6C2826] hover:text-[#6C2826]"
+                        disabled={
+                          activeSlide.slide_type === "chronogram" &&
+                          ["chronogram_7pills", "full_image_asis", ""].includes(
+                            activeSlide.layout_mode || ""
+                          ) &&
+                          activeSlide.elements.length >= 7
+                        }
+                        title={
+                          activeSlide.slide_type === "chronogram" &&
+                          ["chronogram_7pills", "full_image_asis", ""].includes(
+                            activeSlide.layout_mode || ""
+                          ) &&
+                          activeSlide.elements.length >= 7
+                            ? "Le modèle Escalier comporte 7 pilules au maximum (passez en disposition Standard pour plus de points)"
+                            : "Ajouter un point ou une étape"
+                        }
+                        className="inline-flex items-center gap-1 rounded-lg border border-dashed border-slate-300 bg-slate-50 px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:border-[#6C2826] hover:text-[#6C2826] disabled:opacity-45"
                       >
                         <Plus className="h-3.5 w-3.5" />
-                        Ajouter un point
+                        {activeSlide.slide_type === "chronogram"
+                          ? "Ajouter une étape"
+                          : "Ajouter un point"}
                       </button>
                     )}
 
                   {!activeSlide.locked_as_is &&
-                    ["introduction", "objective_specific", "methodology"].includes(
+                    ["introduction", "objective_specific", "methodology", "chronogram"].includes(
                       activeSlide.slide_type
                     ) && (
                       <select
-                        value={activeSlide.layout_mode || "standard"}
+                        value={
+                          activeSlide.layout_mode ||
+                          (activeSlide.slide_type === "chronogram"
+                            ? "chronogram_7pills"
+                            : "standard")
+                        }
                         onChange={(e) =>
                           updateActiveSlide({ layout_mode: e.target.value }, true)
                         }
                         className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700"
                         title="Disposition de la diapositive"
                       >
-                        {LAYOUT_MODE_OPTIONS.map((opt) => (
+                        {(activeSlide.slide_type === "chronogram"
+                          ? CHRONOGRAM_LAYOUT_MODE_OPTIONS
+                          : LAYOUT_MODE_OPTIONS
+                        ).map((opt) => (
                           <option key={opt.id} value={opt.id}>
                             {opt.label}
                           </option>
@@ -1573,7 +1779,7 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
                   )}
 
                   {!activeSlide.locked_as_is &&
-                    !["welcome", "cover", "chronogram"].includes(activeSlide.slide_type) && (
+                    !["welcome", "cover"].includes(activeSlide.slide_type) && (
                       <select
                         value={activeSlide.background_image_path || ""}
                         onChange={(e) =>

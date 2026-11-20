@@ -171,7 +171,7 @@ export function ResearchPanel({
                 <Layers className="h-3.5 w-3.5" />
               )}
               {busySegment
-                ? "Segmentation 3.1-flash-lite..."
+                ? "Segmentation des articles en cours..."
                 : `Segmenter les articles (${project.references.length})`}
             </button>
           </div>
@@ -181,7 +181,7 @@ export function ResearchPanel({
               <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-indigo-900">
                 <span>
                   <Sparkles className="mr-1 inline h-3.5 w-3.5" />
-                  Planificateur ({researchReport.planner_model}) :{" "}
+                  Recherche documentaire :{" "}
                   {researchReport.added_references_count} nouvelles références ajoutées (total{" "}
                   {researchReport.total_references_count}) ·{" "}
                   {researchReport.added_images_count} figures Open Access
@@ -208,8 +208,7 @@ export function ResearchPanel({
           {segmentReport && (
             <div className="rounded-lg border border-amber-200 bg-amber-50/60 p-3 text-xs text-amber-950">
               <CheckCircle2 className="mr-1 inline h-3.5 w-3.5 text-emerald-700" />
-              <strong>{segmentReport.processed_articles}</strong> articles analysés par{" "}
-              <code>{segmentReport.models_used.join(", ") || "gemini-3.1-flash-lite"}</code> →{" "}
+              <strong>{segmentReport.processed_articles}</strong> articles analysés →{" "}
               <strong>{segmentReport.added_segments}</strong> segments classés dans les sections FMSB (total :{" "}
               {segmentReport.total_segments}).
             </div>
@@ -245,8 +244,7 @@ export function ResearchPanel({
           {importReport && (
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
               <div className="font-semibold">
-                Import réussi ({importReport.filename}) via{" "}
-                <code>{importReport.model_used}</code> :{" "}
+                Import réussi ({importReport.filename}) :{" "}
                 {importReport.mapped_sections_count} sections FMSB renseignées
                 {(importReport.extracted_images_count ?? 0) > 0
                   ? `, ${importReport.extracted_images_count} figure(s) extraite(s)`

@@ -1,6 +1,8 @@
 from datetime import datetime, timezone
 from pathlib import Path
 import re
+import shutil
+import time
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
@@ -13,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.api.admin_routes import router as admin_router
 from app.api.deps import (
+    assert_cover_admin_only,
     enforce_topic_lock_on_cover_update,
     get_active_user,
     get_active_user_allow_query_token,
@@ -64,6 +67,10 @@ from app.schemas.protocol import (
     UpsertPatientRecordRequest,
 )
 from app.services.annexes_generator import build_annexes_pack
+from app.services.coherence_sentinel import (
+    evaluate_project_coherence,
+    harmonize_section_with_working_memory,
+)
 from app.services.crf_builder import (
     ensure_project_crf_fields,
     export_patient_records_csv,
@@ -93,6 +100,7 @@ from app.services.importer import analyze_and_import_protocol
 from app.services.list_builder import generate_all_lists_and_toc
 from app.services.literature import run_research_pipeline
 from app.services.media_transport import (
+    build_structured_table_for_section,
     clear_structured_table_for_section,
     materialize_image_asset,
     synchronize_module1_to_module2_tables,
@@ -107,7 +115,12 @@ from app.services.working_memory import (
     update_section_working_memory,
 )
 from app.data.pptx_canvas import SLIDE_TEMPLATE_CATALOG
-from app.services.pdf_exporter import compile_protocol_pdf, update_docx_fields_via_word_com
+from app.services.blob_storage import build_object_key, get_blob_storage
+from app.services.pdf_exporter import (
+    compile_protocol_pdf,
+    resolve_render_engine,
+    update_docx_fields_via_word_com,
+)
 from app.services.presentation_orchestrator import PresentationOrchestrator
 from app.services.pptx_exporter import compile_presentation_pptx
 from app.services.pptx_renderer import export_pptx_to_pdf, render_pptx_previews
@@ -230,6 +243,7 @@ class TranslateDepartmentRequest(BaseModel):
     text: str
     source_lang: str = "fr"
     target_lang: str = "en"
+    field_type: str = "department"
 
 
 @app.on_event("startup")
@@ -251,6 +265,10 @@ def health_check() -> Dict[str, object]:
         "gemini_key_configured": bool(settings.gemini_api_key),
         "auth_enabled": True,
         "database_dialect": engine.dialect.name,
+        "render_engine": resolve_render_engine(),
+        "storage_backend": get_blob_storage().backend_name,
+        "soffice_available": bool(shutil.which("soffice") or shutil.which("libreoffice")),
+        "pdftoppm_available": bool(shutil.which("pdftoppm")),
         "model_chains": settings.model_chains(),
     }
 
@@ -366,6 +384,7 @@ def translate_department(
         text=payload.text,
         source_lang=payload.source_lang,
         target_lang=payload.target_lang,
+        field_type=payload.field_type,
     )
     model_used = res.get("model_used", "")
     is_real_ai = model_used not in ("none", "passthrough", "fmsb-glossary-fallback", "")
@@ -426,12 +445,149 @@ def update_cover(
     cover: CoverMetadata,
     current_user: UserORM = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
+    assert_cover_admin_only(current_user)
     project = get_authorized_project(project_id, current_user)
     enforce_topic_lock_on_cover_update(project, cover, current_user)
     project.cover = cover
+    if (cover.title or "").strip():
+        project.name = cover.title.strip()
+    if "cover_page" in project.sections:
+        cov_sec = project.sections["cover_page"]
+        cov_sec.status = StepStatus.VALIDATED
+        if (cover.title or "").strip():
+            cov_sec.content_markdown = cover.title.strip()
     saved = project_storage.save(project)
     update_section_working_memory(saved, "cover_page")
     return saved
+
+
+def _mirror_upload_to_blob(project_id: str, local_path: Path) -> None:
+    blob = get_blob_storage()
+    if blob.is_remote and local_path.exists():
+        blob.upload_file(build_object_key("uploads", project_id, local_path.name), local_path)
+
+
+def _ensure_local_or_blob(project_id: str, path_str: Optional[str]) -> Optional[Path]:
+    if not path_str:
+        return None
+    p = Path(path_str)
+    if not p.is_absolute():
+        p = WORKSPACE_DIR / p
+    if p.exists() and p.is_file():
+        return p
+    blob = get_blob_storage()
+    if blob.is_remote:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if blob.download_to_path(build_object_key("uploads", project_id, p.name), p):
+            return p
+    return None
+
+
+def _delete_local_and_blob(project_id: str, local_path: Optional[Path]) -> None:
+    if not local_path:
+        return
+    try:
+        local_path.unlink(missing_ok=True)
+    except Exception:
+        pass
+    blob = get_blob_storage()
+    if blob.is_remote:
+        blob.delete(build_object_key("uploads", project_id, local_path.name))
+
+
+@app.post("/api/projects/{project_id}/cover/logo/{slot}", response_model=ProtocolProject)
+async def upload_cover_logo(
+    project_id: str,
+    slot: str,
+    file: UploadFile = File(...),
+    current_user: UserORM = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    assert_cover_admin_only(current_user)
+    if slot not in ("university", "faculty"):
+        raise HTTPException(status_code=400, detail="Emplacement de logo invalide ('university' ou 'faculty').")
+    project = get_authorized_project(project_id, current_user)
+    suffix = Path(file.filename or "logo.png").suffix.lower()
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise HTTPException(
+            status_code=400,
+            detail="Format de logo non supporté (PNG, JPG, JPEG, WEBP uniquement).",
+        )
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Fichier logo vide.")
+
+    upload_dir = settings.storage_dir / "uploads" / project_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    for old_f in upload_dir.glob(f"cover_logo_{slot}.*"):
+        _delete_local_and_blob(project_id, old_f)
+    dest_path = upload_dir / f"cover_logo_{slot}{suffix}"
+    dest_path.write_bytes(content)
+    _mirror_upload_to_blob(project_id, dest_path)
+
+    logo_url = f"/api/projects/{project_id}/cover/logo/{slot}?v={int(time.time())}"
+    if slot == "university":
+        project.cover.university_logo_path = str(dest_path)
+        project.cover.university_logo_url = logo_url
+    else:
+        project.cover.faculty_logo_path = str(dest_path)
+        project.cover.faculty_logo_url = logo_url
+
+    saved = project_storage.save(project)
+    return saved
+
+
+@app.delete("/api/projects/{project_id}/cover/logo/{slot}", response_model=ProtocolProject)
+def delete_cover_logo(
+    project_id: str,
+    slot: str,
+    current_user: UserORM = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    assert_cover_admin_only(current_user)
+    if slot not in ("university", "faculty"):
+        raise HTTPException(status_code=400, detail="Emplacement de logo invalide ('university' ou 'faculty').")
+    project = get_authorized_project(project_id, current_user)
+    upload_dir = (settings.storage_dir / "uploads" / project_id).resolve()
+
+    existing_path_str = (
+        project.cover.university_logo_path if slot == "university" else project.cover.faculty_logo_path
+    )
+    if existing_path_str:
+        p = Path(existing_path_str).resolve()
+        if upload_dir in p.parents:
+            _delete_local_and_blob(project_id, p)
+
+    if slot == "university":
+        project.cover.university_logo_path = ""
+        project.cover.university_logo_url = ""
+    else:
+        project.cover.faculty_logo_path = ""
+        project.cover.faculty_logo_url = ""
+
+    return project_storage.save(project)
+
+
+@app.get("/api/projects/{project_id}/cover/logo/{slot}")
+def get_cover_logo_file(
+    project_id: str,
+    slot: str,
+    current_user: UserORM = Depends(get_active_user_allow_query_token),
+) -> FileResponse:
+    if slot not in ("university", "faculty"):
+        raise HTTPException(status_code=400, detail="Emplacement de logo invalide ('university' ou 'faculty').")
+    project = get_authorized_project(project_id, current_user)
+    path_str = (
+        project.cover.university_logo_path if slot == "university" else project.cover.faculty_logo_path
+    )
+    resolved = _ensure_local_or_blob(project_id, path_str)
+    if resolved is not None:
+        return FileResponse(path=str(resolved), headers={"Cache-Control": "no-store"})
+
+    if slot == "university":
+        default_logo = WORKSPACE_DIR / "tamplates" / "fmsb_uy1_logo.png"
+        if default_logo.exists():
+            return FileResponse(path=str(default_logo), headers={"Cache-Control": "no-store"})
+
+    raise HTTPException(status_code=404, detail="Logo introuvable pour cet emplacement.")
 
 
 @app.patch("/api/projects/{project_id}/sections/{section_id}", response_model=ProtocolProject)
@@ -441,6 +597,8 @@ def update_section(
     payload: UpdateSectionRequest,
     current_user: UserORM = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
+    if section_id == "cover_page":
+        assert_cover_admin_only(current_user)
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue dans le canevas FMSB.")
@@ -464,6 +622,7 @@ def update_section(
         sec.user_notes = payload.user_notes
 
     _sync_module2_queue(project)
+    evaluate_project_coherence(project, changed_section_id=section_id)
     saved = project_storage.save(project)
     if payload.content_markdown is not None or payload.content_html is not None:
         update_section_working_memory(saved, section_id)
@@ -672,6 +831,7 @@ async def upload_project_image(
     if not content:
         raise HTTPException(status_code=400, detail="Fichier image vide.")
     dest_path.write_bytes(content)
+    _mirror_upload_to_blob(project_id, dest_path)
 
     asset = ImageAsset(
         asset_id=asset_id,
@@ -697,13 +857,15 @@ def get_uploaded_image_file(
     project = get_authorized_project(project_id, current_user)
     for img in project.images:
         if img.asset_id == asset_id:
-            if not img.local_path or not Path(img.local_path).exists():
+            resolved = _ensure_local_or_blob(project_id, img.local_path)
+            if resolved is None:
                 if materialize_image_asset(project, img):
                     project_storage.save(project)
-            if img.local_path:
-                p = Path(img.local_path)
-                if p.exists():
-                    return FileResponse(path=p)
+                    if img.local_path:
+                        _mirror_upload_to_blob(project_id, Path(img.local_path))
+                resolved = _ensure_local_or_blob(project_id, img.local_path)
+            if resolved is not None:
+                return FileResponse(path=str(resolved))
     raise HTTPException(status_code=404, detail="Fichier image introuvable.")
 
 
@@ -720,10 +882,7 @@ def delete_image_asset(
         if img.asset_id == asset_id:
             found = True
             if img.local_path:
-                try:
-                    Path(img.local_path).unlink(missing_ok=True)
-                except Exception:
-                    pass
+                _delete_local_and_blob(project_id, Path(img.local_path))
         else:
             remaining.append(img)
     if not found:
@@ -794,9 +953,10 @@ def draft_section(
                 result["content_html"] = sec_ref.content_html
                 result["model_used"] = ref_report.get("decision_model", result.get("model_used"))
                 result["audit_notes"] = list(result.get("audit_notes") or []) + [
-                    f"Validation Vancouver ICMJE : {ref_report['references_count']} références ({ref_report['decision_model']})."
+                    f"Validation Vancouver ICMJE : {ref_report['references_count']} références."
                 ]
         _sync_module2_queue(project)
+        evaluate_project_coherence(project, changed_section_id=section_id)
         project_storage.save(project)
         record_usage_and_debit(
             db=db,
@@ -858,6 +1018,7 @@ def fix_section(
     try:
         result = fix_section_issues_with_ai(project, section_id=section_id)
         _sync_module2_queue(project)
+        evaluate_project_coherence(project, changed_section_id=section_id)
         project_storage.save(project)
         record_usage_and_debit(
             db=db,
@@ -878,6 +1039,11 @@ class HumanizeRequest(BaseModel):
     use_ai: bool = True
 
 
+class HarmonizeSectionRequest(BaseModel):
+    alert_id: Optional[str] = None
+    use_ai: bool = True
+
+
 @app.post("/api/projects/{project_id}/sections/{section_id}/humanize")
 def humanize_section(
     project_id: str,
@@ -895,6 +1061,7 @@ def humanize_section(
         use_ai = True if payload is None else bool(payload.use_ai)
         result = humanize_section_with_ai(project, section_id=section_id, use_ai=use_ai)
         _sync_module2_queue(project)
+        evaluate_project_coherence(project, changed_section_id=section_id)
         project_storage.save(project)
         model_used = str(result.get("model_used", ""))
         is_real_ai = model_used not in ("none", "humanizer-deterministe-fmsb", "")
@@ -909,6 +1076,47 @@ def humanize_section(
             ip_address=get_client_ip(request),
         )
         return {"project": project.model_dump(mode="json"), "result": result}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/projects/{project_id}/sections/{section_id}/harmonize")
+def harmonize_section(
+    project_id: str,
+    section_id: str,
+    request: Request,
+    payload: Optional[HarmonizeSectionRequest] = None,
+    current_user: UserORM = Depends(get_active_user),
+    db: Session = Depends(get_db),
+) -> Dict[str, object]:
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="harmonize_section")
+    try:
+        alert_id = payload.alert_id if payload is not None else None
+        use_ai = payload.use_ai if payload is not None else True
+        result = harmonize_section_with_working_memory(
+            project=project,
+            section_id=section_id,
+            alert_id=alert_id,
+            use_ai=use_ai,
+        )
+        _sync_module2_queue(project)
+        saved = project_storage.save(project)
+        model_used = str(result.get("model_used", ""))
+        is_real_ai = model_used not in ("none", "coherence-harmonizer-deterministe", "")
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="harmonize_section",
+            credits_cost=cost if (is_real_ai and result.get("harmonized")) else 0,
+            project_id=project_id,
+            model_used=model_used,
+            ip_address=get_client_ip(request),
+        )
+        return {"project": saved.model_dump(mode="json"), "result": result}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -1013,6 +1221,61 @@ def add_section_table(
         rows=payload.rows,
     )
     project.sections[section_id].custom_tables.append(tbl)
+    _sync_module2_queue(project)
+    return project_storage.save(project)
+
+
+class UpdateSectionTableRequest(BaseModel):
+    title: Optional[str] = None
+    anchor_hint: Optional[str] = None
+    headers: Optional[List[str]] = None
+    rows: Optional[List[List[str]]] = None
+
+
+@app.patch("/api/projects/{project_id}/sections/{section_id}/tables/{table_id}", response_model=ProtocolProject)
+def update_section_table(
+    project_id: str,
+    section_id: str,
+    table_id: str,
+    payload: UpdateSectionTableRequest,
+    current_user: UserORM = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+    sec = project.sections[section_id]
+
+    target = next((t for t in sec.custom_tables if t.table_id == table_id), None)
+    if target is None and table_id.startswith("__structured"):
+        structured = build_structured_table_for_section(project, section_id)
+        if structured is None:
+            raise HTTPException(status_code=404, detail="Tableau structuré introuvable.")
+        sec.suppress_structured_table = False
+        target = SectionTable(
+            table_id=f"tbl_{uuid.uuid4().hex[:8]}",
+            title=structured.title,
+            anchor_hint=structured.anchor_hint,
+            headers=structured.headers,
+            rows=structured.rows,
+        )
+        sec.custom_tables.append(target)
+
+    if target is None:
+        raise HTTPException(status_code=404, detail="Tableau introuvable.")
+
+    if payload.title is not None:
+        cleaned_title = payload.title.strip()
+        if cleaned_title:
+            target.title = cleaned_title
+    if payload.anchor_hint is not None:
+        target.anchor_hint = payload.anchor_hint.strip()
+    if payload.headers is not None:
+        cleaned_headers = [h.strip() for h in payload.headers if h.strip()]
+        if cleaned_headers:
+            target.headers = cleaned_headers
+    if payload.rows is not None:
+        target.rows = payload.rows
+
     _sync_module2_queue(project)
     return project_storage.save(project)
 
@@ -1136,6 +1399,50 @@ def add_section_diagram(
     return project_storage.save(project)
 
 
+class UpdateSectionDiagramRequest(BaseModel):
+    title: Optional[str] = None
+    caption: Optional[str] = None
+    anchor_hint: Optional[str] = None
+    layout: Optional[str] = None
+    nodes: Optional[List[DiagramNode]] = None
+    connections: Optional[List[DiagramConnection]] = None
+
+
+@app.patch("/api/projects/{project_id}/sections/{section_id}/diagrams/{diagram_id}", response_model=ProtocolProject)
+def update_section_diagram(
+    project_id: str,
+    section_id: str,
+    diagram_id: str,
+    payload: UpdateSectionDiagramRequest,
+    current_user: UserORM = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+    sec = project.sections[section_id]
+    target = next((d for d in sec.custom_diagrams if d.diagram_id == diagram_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Schéma introuvable.")
+
+    if payload.title is not None:
+        cleaned_title = payload.title.strip()
+        if cleaned_title:
+            target.title = cleaned_title
+    if payload.caption is not None:
+        target.caption = payload.caption.strip()
+    if payload.anchor_hint is not None:
+        target.anchor_hint = payload.anchor_hint.strip()
+    if payload.layout is not None and payload.layout in ("vertical", "horizontal"):
+        target.layout = payload.layout
+    if payload.nodes is not None:
+        target.nodes = payload.nodes
+    if payload.connections is not None:
+        target.connections = payload.connections
+
+    _sync_module2_queue(project)
+    return project_storage.save(project)
+
+
 @app.get("/api/projects/{project_id}/sections/{section_id}/diagrams/{diagram_id}/svg")
 def get_section_diagram_svg(
     project_id: str,
@@ -1182,11 +1489,12 @@ async def import_existing_protocol(
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="import_protocol")
-    locked_snapshot = (
-        project.name,
-        project.cover.title,
-        project.cover.author_name,
-        project.cover.matricule,
+    cover_snapshot = project.cover.model_copy(deep=True)
+    name_snapshot = project.name
+    cover_sec_snapshot = (
+        project.sections["cover_page"].model_copy(deep=True)
+        if "cover_page" in project.sections
+        else None
     )
     content = await file.read()
     try:
@@ -1195,16 +1503,11 @@ async def import_existing_protocol(
             filename=file.filename or "protocole.docx",
             content_bytes=content,
         )
-        if current_user.role != "admin" and project.topic_locked:
-            project.name = locked_snapshot[0]
-            if project.locked_title:
-                project.cover.title = project.locked_title
-            else:
-                project.cover.title = locked_snapshot[1]
-            if project.locked_author_name:
-                project.cover.author_name = project.locked_author_name
-            if project.locked_matricule:
-                project.cover.matricule = project.locked_matricule
+        if current_user.role != "admin":
+            project.name = name_snapshot
+            project.cover = cover_snapshot
+            if cover_sec_snapshot is not None:
+                project.sections["cover_page"] = cover_sec_snapshot
         project_storage.save(project)
         record_usage_and_debit(
             db=db,
@@ -1257,6 +1560,7 @@ def humanize_protocol(
     use_ai = True if payload is None else bool(payload.use_ai)
     report = humanize_entire_protocol(project, use_ai=use_ai)
     _sync_module2_queue(project)
+    evaluate_project_coherence(project)
     saved = project_storage.save(project)
     model_used = str(report.get("model_used", ""))
     is_real_ai = model_used not in ("none", "humanizer-deterministe-fmsb", "")

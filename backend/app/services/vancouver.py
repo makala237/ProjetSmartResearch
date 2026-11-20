@@ -395,7 +395,7 @@ def build_and_validate_vancouver_references(
     ref_sec.content_markdown = md_list
     ref_sec.content_html = html_list
     ref_sec.audit_notes = [
-        f"Liste Vancouver ({len(refs)} réf.) validée par {decision_model} : {decision_summary}"
+        f"Liste Vancouver ({len(refs)} réf.) validée : {decision_summary}"
     ]
     if mark_validated:
         ref_sec.status = StepStatus.VALIDATED

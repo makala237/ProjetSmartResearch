@@ -208,16 +208,11 @@ def test_saas_phase1_auth_isolation_and_topic_lock() -> None:
         assert r_del_a.status_code == 403
         assert r_del_a.json()["detail"]["code"] == "ADMIN_REQUIRED"
 
-        # Allowed cover update (director + academic_year only)
+        # Cover page is strictly admin-only for ANY student edit
         cover_ok = dict(proj_a["cover"])
-        cover_ok["director"] = "Pr. Test Jury"
-        cover_ok["academic_year"] = "2026-2027"
-        r_patch_ok = client_a2.patch(f"/api/projects/{proj_a_id}/cover", json=cover_ok)
-        assert r_patch_ok.status_code == 200, r_patch_ok.text
-        assert r_patch_ok.json()["cover"]["director"] == "Pr. Test Jury"
-
-        # Forbidden locked fields modifications
         for field_name, bad_val in [
+            ("director", "Pr. Test Jury"),
+            ("academic_year", "2026-2027"),
             ("title", "Sujet Détourné Pour Un Camarade"),
             ("author_name", "Autre Etudiant"),
             ("matricule", "99Z999"),
@@ -226,17 +221,19 @@ def test_saas_phase1_auth_isolation_and_topic_lock() -> None:
             bad_cover[field_name] = bad_val
             r_patch_bad = client_a2.patch(f"/api/projects/{proj_a_id}/cover", json=bad_cover)
             assert r_patch_bad.status_code == 403, f"Expected 403 changing {field_name}, got {r_patch_bad.status_code}"
-            assert r_patch_bad.json()["detail"]["code"] == "TOPIC_LOCKED"
+            assert r_patch_bad.json()["detail"]["code"] == "COVER_ADMIN_ONLY"
 
         # Admin override on locked cover field
         admin_client2 = TestClient(app)
         login_as_admin(admin_client2)
         admin_cover = dict(cover_ok)
         admin_cover["title"] = "Protocole Corrigé par Admin"
+        admin_cover["director"] = "Pr. Test Jury"
         r_admin_patch = admin_client2.patch(f"/api/projects/{proj_a_id}/cover", json=admin_cover)
         assert r_admin_patch.status_code == 200, r_admin_patch.text
         assert r_admin_patch.json()["locked_title"] == "Protocole Corrigé par Admin"
         assert r_admin_patch.json()["cover"]["title"] == "Protocole Corrigé par Admin"
+        assert r_admin_patch.json()["cover"]["director"] == "Pr. Test Jury"
     finally:
         # Clean up test users, audit logs & cascaded projects from DB
         cleanup_db = SessionLocal()

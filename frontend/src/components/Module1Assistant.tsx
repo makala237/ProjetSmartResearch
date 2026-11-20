@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AlertCircle,
+  AlertTriangle,
+  ArrowRight,
   BookOpen,
   CheckCircle2,
   Circle,
@@ -9,13 +11,11 @@ import {
   FileText,
   Globe,
   Loader2,
-  Lock,
   Menu,
   MessageSquarePlus,
-  Plus,
+  RefreshCw,
   ShieldCheck,
   Sparkles,
-  Trash2,
   Wand2,
   X,
 } from "lucide-react";
@@ -23,14 +23,20 @@ import { api } from "../api/client";
 import type {
   AuditResult,
   CanvasSectionSpec,
+  CoherenceAlert,
   CoverMetadata,
   DraftResult,
   HumanizeSectionResult,
   ProtocolProject,
-  SectionOrchestrationTrace,
   StepStatus,
   SupervisorInfo,
 } from "../types/protocol";
+import {
+  CoverPageForm,
+  emptySupervisor,
+  finalizeCoverMetadataPayload,
+  withStructuredSupervisors,
+} from "./CoverPageForm";
 import { ResearchPanel } from "./ResearchPanel";
 import { RichTextEditor } from "./RichTextEditor";
 import { SectionMediaPanel } from "./SectionMediaPanel";
@@ -76,36 +82,6 @@ const STATUS_BADGES: Record<
   },
 };
 
-function formatSupervisorSummary(sup: SupervisorInfo): string {
-  return [sup.name, sup.rank, sup.specialty]
-    .map((x) => x.trim())
-    .filter(Boolean)
-    .join(", ");
-}
-
-function emptySupervisor(): SupervisorInfo {
-  return { name: "", rank: "", specialty: "" };
-}
-
-function withStructuredSupervisors(cov: CoverMetadata): CoverMetadata {
-  const dirInfo: SupervisorInfo = cov.director_info ?? {
-    name: cov.director || "",
-    rank: "",
-    specialty: "",
-  };
-  const codirsInfo: SupervisorInfo[] =
-    cov.co_directors_info && cov.co_directors_info.length > 0
-      ? cov.co_directors_info
-      : (cov.co_directors || [])
-          .filter((x) => x.trim().length > 0)
-          .map((x) => ({ name: x.trim(), rank: "", specialty: "" }));
-  return {
-    ...cov,
-    director_info: dirInfo,
-    co_directors_info: codirsInfo,
-  };
-}
-
 export function Module1Assistant({
   project,
   canvas,
@@ -118,10 +94,6 @@ export function Module1Assistant({
   saving,
   isAdmin = false,
 }: Module1Props) {
-  const isIdentityLocked = Boolean(project.topic_locked) && !isAdmin;
-  const isTitleLocked = isIdentityLocked && Boolean(project.locked_title || project.name);
-  const isAuthorLocked = isIdentityLocked && Boolean(project.locked_author_name);
-  const isMatriculeLocked = isIdentityLocked && Boolean(project.locked_matricule);
   const activeSpec =
     canvas.find((s) => s.id === selectedSectionId) ?? canvas[0];
   const activeState = project.sections[activeSpec.id];
@@ -135,54 +107,12 @@ export function Module1Assistant({
     withStructuredSupervisors(project.cover)
   );
   const [coDirDraft, setCoDirDraft] = useState<SupervisorInfo>(emptySupervisor);
-  const [translatingDeptDir, setTranslatingDeptDir] = useState<"fr" | "en" | null>(null);
-  const [translateModelBadge, setTranslateModelBadge] = useState<string | null>(null);
-  const deptTimerRef = useRef<number | null>(null);
-  const deptReqSeqRef = useRef(0);
-
-  const scheduleDepartmentTranslation = (value: string, sourceLang: "fr" | "en") => {
-    if (deptTimerRef.current !== null) {
-      window.clearTimeout(deptTimerRef.current);
-    }
-    const trimmed = value.trim();
-    if (!trimmed) {
-      setTranslatingDeptDir(null);
-      return;
-    }
-    const seq = ++deptReqSeqRef.current;
-    const targetLang = sourceLang === "fr" ? "en" : "fr";
-    deptTimerRef.current = window.setTimeout(async () => {
-      setTranslatingDeptDir(sourceLang);
-      try {
-        const res = await api.translateDepartment({
-          text: trimmed,
-          source_lang: sourceLang,
-          target_lang: targetLang,
-        });
-        if (seq !== deptReqSeqRef.current) return;
-        setTranslateModelBadge(res.model_used);
-        if (res.translated_text) {
-          setCoverForm((prev) => ({
-            ...prev,
-            ...(targetLang === "en"
-              ? { department_en: res.translated_text }
-              : { department_fr: res.translated_text }),
-          }));
-        }
-      } catch {
-        // Keep user input untouched if live translation fails transiently
-      } finally {
-        if (seq === deptReqSeqRef.current) {
-          setTranslatingDeptDir(null);
-        }
-      }
-    }, 420);
-  };
 
   const [busyDraft, setBusyDraft] = useState(false);
   const [busyAudit, setBusyAudit] = useState(false);
   const [busyFix, setBusyFix] = useState(false);
   const [busyHumanize, setBusyHumanize] = useState(false);
+  const [busyHarmonize, setBusyHarmonize] = useState(false);
   const [busyToc, setBusyToc] = useState(false);
   const [busyRefs, setBusyRefs] = useState(false);
   const [busyAntigravity, setBusyAntigravity] = useState(false);
@@ -191,42 +121,7 @@ export function Module1Assistant({
   const [lastAuditResult, setLastAuditResult] = useState<AuditResult | null>(null);
   const [lastHumanizeResult, setLastHumanizeResult] =
     useState<HumanizeSectionResult | null>(null);
-  const [lastOrchestration, setLastOrchestration] =
-    useState<SectionOrchestrationTrace | null>(null);
-  const [showMemoryPanel, setShowMemoryPanel] = useState(false);
-  const [workingMemoryMd, setWorkingMemoryMd] = useState<string>("");
-  const [busyMemory, setBusyMemory] = useState(false);
-
-  async function handleToggleWorkingMemory() {
-    if (showMemoryPanel) {
-      setShowMemoryPanel(false);
-      return;
-    }
-    setBusyMemory(true);
-    try {
-      const res = await api.getWorkingMemory(project.project_id);
-      setWorkingMemoryMd(res.markdown);
-      setShowMemoryPanel(true);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyMemory(false);
-    }
-  }
-
-  async function handleRefreshWorkingMemory() {
-    setBusyMemory(true);
-    onError("");
-    try {
-      const res = await api.refreshWorkingMemory(project.project_id);
-      setWorkingMemoryMd(res.markdown);
-      setShowMemoryPanel(true);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyMemory(false);
-    }
-  }
+  const [lastHarmonizeNote, setLastHarmonizeNote] = useState<string | null>(null);
 
   const handleGenerateAutoToc = async () => {
     setBusyToc(true);
@@ -260,7 +155,7 @@ export function Module1Assistant({
         setDraftHtml(updatedRef.content_html);
       }
       setLastRefDecisionNote(
-        `${res.references_count} références numérotées (${res.corrected_count} normalisées) · ${res.decision_model} — ${res.decision_summary}`
+        `${res.references_count} références numérotées (${res.corrected_count} normalisées) — ${res.decision_summary}`
       );
     } catch (e: unknown) {
       onError(
@@ -277,16 +172,20 @@ export function Module1Assistant({
     setDraft(activeState?.content_markdown ?? "");
     setDraftHtml(activeState?.content_html ?? "");
     setNotes(activeState?.user_notes ?? "");
+  }, [activeSpec.id, activeState?.content_markdown, activeState?.content_html, activeState?.user_notes]);
+
+  useEffect(() => {
     setLastDraftResult(null);
     setLastAuditResult(null);
     setLastHumanizeResult(null);
     setLastRefDecisionNote(null);
-    setLastOrchestration(null);
-  }, [activeSpec.id, activeState?.content_markdown, activeState?.content_html, activeState?.user_notes]);
+    setLastHarmonizeNote(null);
+  }, [activeSpec.id]);
 
   useEffect(() => {
     setCoverForm(withStructuredSupervisors(project.cover));
-  }, [project.cover]);
+    setCoDirDraft(emptySupervisor());
+  }, [project.project_id, project.cover]);
 
   const chapters = canvas.reduce<
     Array<{ chapterId: string; chapterTitle: string; items: CanvasSectionSpec[] }>
@@ -313,6 +212,13 @@ export function Module1Assistant({
   const sectionSegments = project.article_segments.filter((seg) =>
     seg.target_section_ids.includes(activeSpec.id)
   );
+  const allCoherenceAlerts: CoherenceAlert[] = project.coherence_alerts ?? [];
+  const activeSectionAlerts = allCoherenceAlerts.filter(
+    (a) => a.target_section_id === activeSpec.id
+  );
+  const otherSectionAlerts = allCoherenceAlerts.filter(
+    (a) => a.target_section_id !== activeSpec.id
+  );
 
   async function handleDraftWithAI(instruction?: string) {
     setBusyDraft(true);
@@ -331,7 +237,6 @@ export function Module1Assistant({
           ""
       );
       setLastDraftResult(res.result);
-      setLastOrchestration(res.result.orchestration_trace ?? null);
       setAiInstruction("");
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -347,7 +252,6 @@ export function Module1Assistant({
       const res = await api.auditSection(project.project_id, activeSpec.id);
       onProjectUpdated(res.project);
       setLastAuditResult(res.result);
-      setLastOrchestration(res.result.orchestration_trace ?? null);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -366,7 +270,6 @@ export function Module1Assistant({
         true
       );
       onProjectUpdated(res.project);
-      setLastOrchestration(res.orchestration_trace);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -387,7 +290,6 @@ export function Module1Assistant({
           ""
       );
       setLastDraftResult(res.result);
-      setLastOrchestration(res.result.orchestration_trace ?? null);
       setLastAuditResult(null);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -416,6 +318,28 @@ export function Module1Assistant({
     }
   }
 
+  async function handleHarmonizeSection(targetSectionId: string, alertId?: string) {
+    setBusyHarmonize(true);
+    onError("");
+    try {
+      const res = await api.harmonizeSection(project.project_id, targetSectionId, alertId);
+      onProjectUpdated(res.project);
+      if (targetSectionId === activeSpec.id) {
+        setDraft(res.result.content_markdown);
+        setDraftHtml(
+          res.result.content_html ??
+            res.project.sections[targetSectionId]?.content_html ??
+            ""
+        );
+      }
+      setLastHarmonizeNote(res.result.message);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyHarmonize(false);
+    }
+  }
+
   const renderStepsList = (closeDrawer?: () => void) => (
     <div className="space-y-4">
       {chapters.map((chap) => (
@@ -429,6 +353,9 @@ export function Module1Assistant({
               const segCount = project.article_segments.filter(
                 (s) => s.approved && s.target_section_ids.includes(item.id)
               ).length;
+              const hasCoherenceAlert = allCoherenceAlerts.some(
+                (a) => a.target_section_id === item.id
+              );
               const isSelected = item.id === activeSpec.id;
               return (
                 <button
@@ -458,11 +385,21 @@ export function Module1Assistant({
                     </span>
                     <span className="line-clamp-2 leading-snug">{item.title}</span>
                   </span>
-                  {segCount > 0 && (
-                    <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
-                      {segCount}
-                    </span>
-                  )}
+                  <span className="flex shrink-0 items-center gap-1">
+                    {hasCoherenceAlert && (
+                      <span
+                        className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800"
+                        title="Des modifications dans une autre section impactent cette rubrique"
+                      >
+                        À harmoniser
+                      </span>
+                    )}
+                    {segCount > 0 && (
+                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                        {segCount}
+                      </span>
+                    )}
+                  </span>
                 </button>
               );
             })}
@@ -640,397 +577,43 @@ export function Module1Assistant({
               <h4 className="mb-4 text-base font-semibold text-slate-800">
                 Métadonnées officielles de la page de garde
               </h4>
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <div className="md:col-span-2">
-                  <label className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-600">
-                    <span>Titre complet du protocole (encadré 18 à 24 pt)</span>
-                    {isTitleLocked && (
-                      <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
-                        <Lock className="h-2.5 w-2.5" /> Verrouillé — 1 utilisateur = 1 protocole
-                      </span>
-                    )}
-                  </label>
-                  <input
-                    type="text"
-                    readOnly={isTitleLocked}
-                    value={coverForm.title}
-                    onChange={(e) => {
-                      if (!isTitleLocked) setCoverForm({ ...coverForm, title: e.target.value });
-                    }}
-                    className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
-                      isTitleLocked
-                        ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-600"
-                        : "border-slate-300 focus:border-indigo-500"
-                    }`}
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-600">
-                    Diplôme visé
-                  </label>
-                  <input
-                    type="text"
-                    value={coverForm.degree_label}
-                    onChange={(e) =>
-                      setCoverForm({ ...coverForm, degree_label: e.target.value })
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-medium text-slate-600">
-                    Année académique
-                  </label>
-                  <input
-                    type="text"
-                    value={coverForm.academic_year}
-                    onChange={(e) =>
-                      setCoverForm({
-                        ...coverForm,
-                        academic_year: e.target.value,
-                      })
-                    }
-                    className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-                  />
-                </div>
-                <div className="sm:col-span-2 grid grid-cols-1 gap-3 sm:grid-cols-2 rounded-lg border border-indigo-100 bg-indigo-50/40 p-3">
-                  <div className="sm:col-span-2 flex items-center justify-between text-[11px]">
-                    <span className="font-semibold text-indigo-950">
-                      Département académique (bilingue FR ↔ EN)
-                    </span>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2 py-0.5 font-medium text-indigo-800">
-                      <Sparkles className="h-3 w-3" />
-                      {translatingDeptDir
-                        ? "Traduction Gemini 3.8 Live..."
-                        : translateModelBadge
-                        ? `Auto FR ↔ EN (${translateModelBadge})`
-                        : "Gemini 3.8 Live · Traduction auto FR ↔ EN"}
-                    </span>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600">
-                      Département (FR)
-                    </label>
-                    <input
-                      type="text"
-                      value={coverForm.department_fr}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setCoverForm((prev) => ({ ...prev, department_fr: val }));
-                        scheduleDepartmentTranslation(val, "fr");
-                      }}
-                      className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600">
-                      Department (EN)
-                    </label>
-                    <input
-                      type="text"
-                      value={coverForm.department_en}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setCoverForm((prev) => ({ ...prev, department_en: val }));
-                        scheduleDepartmentTranslation(val, "en");
-                      }}
-                      className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none"
-                    />
-                  </div>
-                </div>
-                <div>
-                  <label className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-slate-600">
-                    <span>Noms & Prénoms de l'étudiant(e)</span>
-                    {isAuthorLocked && (
-                      <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
-                        <Lock className="h-2.5 w-2.5" /> Verrouillé
-                      </span>
-                    )}
-                  </label>
-                  <input
-                    type="text"
-                    readOnly={isAuthorLocked}
-                    value={coverForm.author_name}
-                    onChange={(e) => {
-                      if (!isAuthorLocked) setCoverForm({ ...coverForm, author_name: e.target.value });
-                    }}
-                    className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
-                      isAuthorLocked
-                        ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-600"
-                        : "border-slate-300 focus:border-indigo-500"
-                    }`}
-                  />
-                </div>
-                <div>
-                  <label className="flex flex-wrap items-center gap-1.5 text-xs font-medium text-slate-600">
-                    <span>Matricule</span>
-                    {isMatriculeLocked && (
-                      <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
-                        <Lock className="h-2.5 w-2.5" /> Verrouillé
-                      </span>
-                    )}
-                  </label>
-                  <input
-                    type="text"
-                    readOnly={isMatriculeLocked}
-                    value={coverForm.matricule}
-                    onChange={(e) => {
-                      if (!isMatriculeLocked) setCoverForm({ ...coverForm, matricule: e.target.value });
-                    }}
-                    className={`mt-1 w-full rounded-lg border px-3 py-2 text-sm focus:outline-none ${
-                      isMatriculeLocked
-                        ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-600"
-                        : "border-slate-300 focus:border-indigo-500"
-                    }`}
-                  />
-                </div>
-                <div className="sm:col-span-2 rounded-lg border border-slate-200 bg-slate-50/70 p-3.5">
-                  <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-700">
-                    Directeur de mémoire
-                  </div>
-                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-600">
-                        Nom (Times New Roman 14, gras)
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Ex : Pr ESSI Marie-José"
-                        value={coverForm.director_info?.name ?? ""}
-                        onChange={(e) => {
-                          const nextDir = {
-                            ...(coverForm.director_info ?? emptySupervisor()),
-                            name: e.target.value,
-                          };
-                          setCoverForm({
-                            ...coverForm,
-                            director_info: nextDir,
-                            director: formatSupervisorSummary(nextDir),
-                          });
-                        }}
-                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold focus:border-indigo-500 focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-600">
-                        Grade (Times New Roman 12)
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Ex : Professeure Titulaire"
-                        value={coverForm.director_info?.rank ?? ""}
-                        onChange={(e) => {
-                          const nextDir = {
-                            ...(coverForm.director_info ?? emptySupervisor()),
-                            rank: e.target.value,
-                          };
-                          setCoverForm({
-                            ...coverForm,
-                            director_info: nextDir,
-                            director: formatSupervisorSummary(nextDir),
-                          });
-                        }}
-                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-600">
-                        Spécialité (Times New Roman 12)
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Ex : Anthropologie médicale"
-                        value={coverForm.director_info?.specialty ?? ""}
-                        onChange={(e) => {
-                          const nextDir = {
-                            ...(coverForm.director_info ?? emptySupervisor()),
-                            specialty: e.target.value,
-                          };
-                          setCoverForm({
-                            ...coverForm,
-                            director_info: nextDir,
-                            director: formatSupervisorSummary(nextDir),
-                          });
-                        }}
-                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                <div className="sm:col-span-2 rounded-lg border border-slate-200 bg-slate-50/70 p-3.5">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="text-xs font-bold uppercase tracking-wide text-slate-700">
-                      Co-directeur(s) ({(coverForm.co_directors_info ?? []).length})
-                    </span>
-                    <span className="text-[11px] text-slate-500">
-                      Nom en 14 pt gras · Grade et Spécialité en 12 pt
-                    </span>
-                  </div>
-
-                  {(coverForm.co_directors_info ?? []).length > 0 && (
-                    <div className="mb-3 space-y-2">
-                      {(coverForm.co_directors_info ?? []).map((cd, idx) => (
-                        <div
-                          key={idx}
-                          className="flex items-start justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs"
-                        >
-                          <div>
-                            <div className="text-sm font-bold text-slate-900">
-                              {cd.name || "—"}
-                            </div>
-                            {cd.rank && (
-                              <div className="text-slate-700">{cd.rank}</div>
-                            )}
-                            {cd.specialty && (
-                              <div className="text-slate-600">{cd.specialty}</div>
-                            )}
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const nextList = (
-                                coverForm.co_directors_info ?? []
-                              ).filter((_, i) => i !== idx);
-                              setCoverForm({
-                                ...coverForm,
-                                co_directors_info: nextList,
-                                co_directors: nextList
-                                  .map(formatSupervisorSummary)
-                                  .filter(Boolean),
-                              });
-                            }}
-                            title="Retirer ce co-directeur"
-                            className="rounded p-1 text-rose-600 hover:bg-rose-50"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-600">
-                        Nom du Co-directeur
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Ex : Dr FOTSING Claire"
-                        value={coDirDraft.name}
-                        onChange={(e) =>
-                          setCoDirDraft({ ...coDirDraft, name: e.target.value })
-                        }
-                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm font-semibold focus:border-indigo-500 focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-600">
-                        Grade
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Ex : Chargée de cours"
-                        value={coDirDraft.rank}
-                        onChange={(e) =>
-                          setCoDirDraft({ ...coDirDraft, rank: e.target.value })
-                        }
-                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-[11px] font-medium text-slate-600">
-                        Spécialité
-                      </label>
-                      <input
-                        type="text"
-                        placeholder="Ex : Chirurgie Pédiatrique"
-                        value={coDirDraft.specialty}
-                        onChange={(e) =>
-                          setCoDirDraft({
-                            ...coDirDraft,
-                            specialty: e.target.value,
-                          })
-                        }
-                        className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm focus:border-indigo-500 focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                  <div className="mt-2.5 flex justify-end">
-                    <button
-                      type="button"
-                      disabled={
-                        !coDirDraft.name.trim() &&
-                        !coDirDraft.rank.trim() &&
-                        !coDirDraft.specialty.trim()
-                      }
-                      onClick={() => {
-                        const entry: SupervisorInfo = {
-                          name: coDirDraft.name.trim(),
-                          rank: coDirDraft.rank.trim(),
-                          specialty: coDirDraft.specialty.trim(),
-                        };
-                        if (!entry.name && !entry.rank && !entry.specialty) return;
-                        const nextList = [
-                          ...(coverForm.co_directors_info ?? []),
-                          entry,
-                        ];
-                        setCoverForm({
-                          ...coverForm,
-                          co_directors_info: nextList,
-                          co_directors: nextList
-                            .map(formatSupervisorSummary)
-                            .filter(Boolean),
-                        });
-                        setCoDirDraft(emptySupervisor());
-                      }}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-40"
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                      Ajouter un co-directeur
-                    </button>
-                  </div>
-                </div>
-              </div>
-              <div className="mt-4 flex flex-wrap justify-end gap-3">
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={async () => {
-                    let finalCodirs = [...(coverForm.co_directors_info ?? [])];
-                    if (
-                      coDirDraft.name.trim() ||
-                      coDirDraft.rank.trim() ||
-                      coDirDraft.specialty.trim()
-                    ) {
-                      finalCodirs.push({
-                        name: coDirDraft.name.trim(),
-                        rank: coDirDraft.rank.trim(),
-                        specialty: coDirDraft.specialty.trim(),
-                      });
+              <CoverPageForm
+                value={coverForm}
+                onChange={setCoverForm}
+                readOnly={!isAdmin}
+                projectId={project.project_id}
+                onProjectUpdated={onProjectUpdated}
+                onError={onError}
+                coDirDraft={coDirDraft}
+                onCoDirDraftChange={setCoDirDraft}
+              />
+              {isAdmin && (
+                <div className="mt-4 flex flex-wrap justify-end gap-3">
+                  <button
+                    type="button"
+                    disabled={saving}
+                    onClick={async () => {
+                      const payload = finalizeCoverMetadataPayload(
+                        coverForm,
+                        coDirDraft
+                      );
                       setCoDirDraft(emptySupervisor());
-                    }
-                    const dirInfo = coverForm.director_info ?? emptySupervisor();
-                    const payload: CoverMetadata = {
-                      ...coverForm,
-                      director_info: dirInfo,
-                      director: formatSupervisorSummary(dirInfo),
-                      co_directors_info: finalCodirs,
-                      co_directors: finalCodirs
-                        .map(formatSupervisorSummary)
-                        .filter(Boolean),
-                    };
-                    setCoverForm(payload);
-                    await onSaveCover(payload);
-                    await onSaveSection("cover_page", payload.title, "validated", notes);
-                  }}
-                  className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                >
-                  <CheckCircle2 className="h-4 w-4" />
-                  Enregistrer &amp; Valider la page de garde
-                </button>
-              </div>
+                      setCoverForm(payload);
+                      await onSaveCover(payload);
+                      await onSaveSection(
+                        "cover_page",
+                        payload.title,
+                        "validated",
+                        notes
+                      );
+                    }}
+                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    Enregistrer &amp; Valider la page de garde
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -1109,7 +692,7 @@ export function Module1Assistant({
                 )}
               </div>
 
-              {/* Segments assigned to this section by 3.1-flash-lite */}
+              {/* Segments assigned to this section */}
               {sectionSegments.length > 0 && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50/40 p-3">
                   <div className="mb-2 text-xs font-semibold text-amber-950">
@@ -1210,7 +793,7 @@ export function Module1Assistant({
                       )}
                       {busyRefs
                         ? "Validation Vancouver..."
-                        : "Valider & Formater en Liste Vancouver (Gemini Decision 1)"}
+                        : "Valider & Formater en Liste Vancouver"}
                     </button>
                   )}
                   <button
@@ -1272,7 +855,7 @@ export function Module1Assistant({
                       disabled={busyAntigravity}
                       onClick={() => handleMobilizeAntigravity()}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-[#6C2826] hover:bg-rose-100 disabled:opacity-50"
-                      title="Charger Antigravity de rechercher des références Vancouver et figures pour cette section"
+                      title="Rechercher des références Vancouver et figures pertinentes pour cette section"
                     >
                       {busyAntigravity ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -1280,74 +863,97 @@ export function Module1Assistant({
                         <Globe className="h-3.5 w-3.5" />
                       )}
                       {busyAntigravity
-                        ? "Antigravity en cours..."
-                        : "Antigravity (Réf. Vancouver & Figures)"}
+                        ? "Enrichissement en cours..."
+                        : "Enrichir (Réf. Vancouver & Figures)"}
                     </button>
                   )}
-                  <button
-                    type="button"
-                    disabled={busyMemory}
-                    onClick={handleToggleWorkingMemory}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-200 bg-indigo-50/70 px-3 py-1.5 text-xs font-semibold text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
-                    title="Consulter le fichier de Mémoire de Travail (résumés Gemini 3.8 Live)"
-                  >
-                    <BookOpen className="h-3.5 w-3.5" />
-                    {showMemoryPanel ? "Masquer Mémoire" : "Mémoire de Travail"}
-                  </button>
                 </div>
               </div>
 
-              {showMemoryPanel && (
-                <div className="rounded-xl border border-indigo-200 bg-indigo-50/40 p-3.5 text-xs text-slate-800">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div>
-                      <strong className="text-indigo-950">
-                        Mémoire de Travail Persistante (Gemini Decision 1 → Gemini 3.8 Live)
-                      </strong>
-                      <p className="text-[11px] text-slate-600">
-                        À chaque modification, le résumé de la section est régénéré et écrase le précédent ; les résumés en amont guident toutes les sections suivantes.
-                      </p>
+              {/* Cas A : Section courante ciblée par une alerte de cohérence inter-sections */}
+              {activeSectionAlerts.map((alert) => (
+                <div
+                  key={alert.alert_id}
+                  className="rounded-xl border border-amber-300 bg-gradient-to-r from-amber-50 to-orange-50/60 p-3.5 text-xs text-amber-950 shadow-xs"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
+                      <div>
+                        <div className="font-bold text-amber-950">{alert.title}</div>
+                        <p className="mt-1 leading-relaxed text-amber-900">
+                          {alert.message}
+                        </p>
+                        <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-amber-800">
+                          <span>
+                            Source de divergence :{" "}
+                            <strong>{alert.source_section_title}</strong>
+                          </span>
+                          {alert.suggested_study_type && (
+                            <span className="rounded bg-white px-2 py-0.5 font-semibold text-amber-900 ring-1 ring-amber-200">
+                              Qualification proposée : {alert.suggested_study_type}
+                            </span>
+                          )}
+                        </div>
+                      </div>
                     </div>
                     <button
                       type="button"
-                      disabled={busyMemory}
-                      onClick={handleRefreshWorkingMemory}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                      disabled={busyHarmonize}
+                      onClick={() =>
+                        handleHarmonizeSection(alert.target_section_id, alert.alert_id)
+                      }
+                      className="inline-flex min-h-[38px] shrink-0 items-center gap-1.5 rounded-lg bg-amber-700 px-3.5 py-1.5 text-xs font-semibold text-white shadow-xs hover:bg-amber-800 disabled:opacity-50"
                     >
-                      {busyMemory && <Loader2 className="h-3 w-3 animate-spin" />}
-                      Actualiser toute la mémoire (Gemini 3.8 Live)
+                      {busyHarmonize ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="h-3.5 w-3.5" />
+                      )}
+                      {busyHarmonize
+                        ? "Harmonisation en cours..."
+                        : "Reformuler automatiquement cette section pour l'harmoniser"}
                     </button>
                   </div>
-                  <pre className="mt-2.5 max-h-64 overflow-y-auto whitespace-pre-wrap rounded-lg border border-indigo-100 bg-white p-3 font-mono text-[11px] text-slate-700">
-                    {workingMemoryMd || "(Aucun résumé enregistré pour le moment.)"}
-                  </pre>
+                </div>
+              ))}
+
+              {/* Cas B : Autres sections déjà rédigées impactées par une modification récente */}
+              {otherSectionAlerts.length > 0 && (
+                <div className="rounded-xl border border-indigo-200 bg-indigo-50/60 p-3 text-xs text-indigo-950">
+                  <div className="font-semibold text-indigo-900">
+                    Impact détecté sur d'autres sections déjà rédigées :
+                  </div>
+                  <div className="mt-2 space-y-2">
+                    {otherSectionAlerts.map((alert) => (
+                      <div
+                        key={alert.alert_id}
+                        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-indigo-100 bg-white px-3 py-2"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="font-semibold text-slate-900">
+                            {alert.target_section_title}
+                          </div>
+                          <div className="text-[11px] text-slate-600">{alert.title}</div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onSelectSection(alert.target_section_id)}
+                          className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-700"
+                        >
+                          <span>Examiner &amp; harmoniser</span>
+                          <ArrowRight className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
 
-              {lastOrchestration && (
-                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800">
-                  <div className="flex flex-wrap items-center gap-2 font-semibold text-[#6C2826]">
-                    <span>Orchestration Tri-Moteur :</span>
-                    <span className="rounded bg-white px-2 py-0.5 text-[11px] text-slate-700 ring-1 ring-slate-200">
-                      {lastOrchestration.initial_text_present
-                        ? "Texte initial présent"
-                        : "Section vide"}
-                    </span>
-                    <span className="rounded bg-white px-2 py-0.5 text-[11px] text-indigo-700 ring-1 ring-indigo-200">
-                      Mémoire : {lastOrchestration.memory_sections_count} section(s)
-                    </span>
-                    <span className="rounded bg-white px-2 py-0.5 text-[11px] text-emerald-700 ring-1 ring-emerald-200">
-                      {lastOrchestration.decision_model}
-                    </span>
-                    {lastOrchestration.antigravity_called && (
-                      <span className="rounded bg-[#6C2826] px-2 py-0.5 text-[11px] text-white">
-                        Antigravity (+{lastOrchestration.added_references_count} réf. Vancouver, +{lastOrchestration.added_images_count} fig.)
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-1.5 text-[11px] text-slate-600">
-                    {lastOrchestration.routing_summary}
-                  </p>
+              {lastHarmonizeNote && (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
+                  <CheckCircle2 className="mr-1.5 inline h-4 w-4 text-emerald-700" />
+                  <strong>Cohérence rétablie :</strong> {lastHarmonizeNote}
                 </div>
               )}
 
@@ -1359,7 +965,7 @@ export function Module1Assistant({
 
               {lastDraftResult && (
                 <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3 text-xs text-indigo-950">
-                  <strong>Modèle ({lastDraftResult.model_used}) :</strong>{" "}
+                  <strong>Assistant méthodologique FMSB :</strong>{" "}
                   {lastDraftResult.assistant_commentary}
                 </div>
               )}
@@ -1367,9 +973,7 @@ export function Module1Assistant({
               {lastHumanizeResult && !lastHumanizeResult.skipped && (
                 <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-950">
                   <div className="flex flex-wrap items-center justify-between gap-2 font-semibold">
-                    <span>
-                      Humanisation académique ({lastHumanizeResult.model_used})
-                    </span>
+                    <span>Humanisation académique FMSB</span>
                     <span className="rounded-full bg-emerald-700 px-2 py-0.5 text-[11px] text-white">
                       Style naturel : {lastHumanizeResult.before_metrics.human_style_score} % →{" "}
                       {lastHumanizeResult.after_metrics.human_style_score} %
@@ -1421,7 +1025,11 @@ export function Module1Assistant({
                   <ul className="mt-1 list-inside list-disc space-y-0.5">
                     {(lastAuditResult?.issues ?? activeState.audit_notes).map(
                       (n, i) => (
-                        <li key={i}>{n}</li>
+                        <li key={i}>
+                          {n
+                            .replace(/\s+par\s+Gemini Decision 1\s*\([^)]*\)/gi, "")
+                            .replace(/\bAntigravity\b/gi, "L'assistant documentaire")}
+                        </li>
                       )
                     )}
                   </ul>
@@ -1453,6 +1061,7 @@ export function Module1Assistant({
                 project={project}
                 sectionId={activeSpec.id}
                 sectionText={draft}
+                sectionHtml={draftHtml}
                 onProjectUpdated={onProjectUpdated}
                 onError={onError}
               />

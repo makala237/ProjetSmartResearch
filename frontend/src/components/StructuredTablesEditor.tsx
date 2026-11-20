@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Calendar,
   CheckCircle2,
@@ -21,6 +21,7 @@ import type {
   TimelineGrid,
   VariableItem,
 } from "../types/protocol";
+import { TimelineGridEditor } from "./TimelineGridEditor";
 
 interface StructuredTablesEditorProps {
   project: ProtocolProject;
@@ -86,6 +87,12 @@ export function StructuredTablesEditor({
   );
 
   const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (project.timeline_grid) {
+      setTimelineGrid(project.timeline_grid);
+    }
+  }, [project.timeline_grid]);
 
   async function handleSaveStructured(customPayload?: Record<string, any>) {
     setSaving(true);
@@ -476,51 +483,13 @@ export function StructuredTablesEditor({
       {activeTab === "timeline" && (
         <div className="mt-4 space-y-3">
           <span className="text-xs text-slate-600">
-            Matrice de Gantt insérée dans <strong>Chapitre III (Section 9)</strong>. Cochez les périodes actives pour chaque activité.
+            Matrice de Gantt insérée dans <strong>Chapitre III (Section 9)</strong>. Modifiez les dates, les activités et cochez les périodes actives.
           </span>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-[#6C2826] text-white">
-                <tr>
-                  <th className="p-2">Activité FMSB</th>
-                  {timelineGrid.periods.map((per, pi) => (
-                    <th key={pi} className="p-2 text-center">
-                      {per}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {timelineGrid.rows.map((row, ri) => (
-                  <tr key={ri} className="hover:bg-slate-50">
-                    <td className="p-2 font-medium text-slate-800">{row.activity}</td>
-                    {timelineGrid.periods.map((per, pi) => {
-                      const isChecked = row.active_periods.includes(per);
-                      return (
-                        <td key={pi} className="p-2 text-center">
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={(e) => {
-                              const copy = { ...timelineGrid };
-                              const r = copy.rows[ri];
-                              if (e.target.checked) {
-                                r.active_periods = Array.from(new Set([...r.active_periods, per]));
-                              } else {
-                                r.active_periods = r.active_periods.filter((p) => p !== per);
-                              }
-                              setTimelineGrid(copy);
-                            }}
-                            className="h-4 w-4 rounded text-[#6C2826] focus:ring-[#6C2826]"
-                          />
-                        </td>
-                      );
-                    })}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <TimelineGridEditor
+            timelineGrid={timelineGrid}
+            onChange={setTimelineGrid}
+            variant="tables"
+          />
         </div>
       )}
 

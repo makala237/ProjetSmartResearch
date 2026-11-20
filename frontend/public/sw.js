@@ -1,5 +1,5 @@
-const CACHE_NAME = "smartresearch-fmsb-shell-v1";
-const STATIC_ASSETS = ["/icon.svg", "/manifest.webmanifest"];
+const CACHE_NAME = "smart-research-shell-v2";
+const STATIC_ASSETS = ["/logo-mark.png", "/logo-smart-research.png", "/icon-192.png", "/icon-512.png", "/manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

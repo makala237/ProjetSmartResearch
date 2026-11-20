@@ -199,20 +199,32 @@ def _render_welcome_slide(pptx_slide, slide: Slide) -> None:
 
 
 def _render_cover_slide(pptx_slide, slide: Slide) -> None:
+    hdr_bottom = max(
+        (
+            b.y_pct + b.h_pct
+            for b in slide.render_boxes
+            if b.role in ("cover_header_fr", "cover_header_en")
+        ),
+        default=0.250,
+    )
+    bg_top_pct = max(0.255, min(0.305, hdr_bottom + 0.008))
+
     bg_path = _resolve_asset_path(slide.background_image_path or TPL_COVER_BG)
     if bg_path:
-        # Leave pure white strip on top (y=0..0.255) for official bilingual UY1/FMSB headers & emblem
+        # Leave pure white strip on top for official bilingual institutional headers & 1 or 2 stacked logos
         pptx_slide.shapes.add_picture(
             str(bg_path.resolve()),
             Inches(0),
-            Inches(SLIDE_HEIGHT_IN * 0.255),
+            Inches(SLIDE_HEIGHT_IN * bg_top_pct),
             Inches(SLIDE_WIDTH_IN),
-            Inches(SLIDE_HEIGHT_IN * 0.745),
+            Inches(SLIDE_HEIGHT_IN * (1.0 - bg_top_pct)),
         )
 
     for box in slide.render_boxes:
-        if box.role == "cover_logo":
-            logo_p = _resolve_asset_path(box.image_path or TPL_LOGO)
+        if box.role in ("cover_logo", "cover_faculty_logo"):
+            logo_p = _resolve_asset_path(
+                box.image_path or (TPL_LOGO if box.role == "cover_logo" else None)
+            )
             if logo_p:
                 _add_picture_fit_contain(
                     pptx_slide,
@@ -235,12 +247,20 @@ def _render_cover_slide(pptx_slide, slide: Slide) -> None:
             tf.word_wrap = True
             tf.vertical_anchor = MSO_ANCHOR.TOP
             tf.margin_left = tf.margin_right = tf.margin_top = tf.margin_bottom = Inches(0.02)
+            base_pt = float(box.font_size_pt or 9.0)
             for idx, ln in enumerate(box.text.splitlines()):
                 p = tf.paragraphs[0] if idx == 0 else tf.add_paragraph()
                 p.text = ln
                 p.font.name = "Times New Roman"
-                p.font.size = Pt(9.5 if idx == 0 else 8.5)
-                p.font.bold = (idx != 1 and "*" not in ln)
+                is_contact_ln = ln.startswith(("B.P.", "P.O. Box", "Courriel", "E-mail"))
+                is_star_ln = "*" in ln
+                if idx == 0:
+                    p.font.size = Pt(base_pt)
+                elif is_contact_ln or is_star_ln:
+                    p.font.size = Pt(max(6.2, base_pt - 1.6))
+                else:
+                    p.font.size = Pt(max(6.8, base_pt - 0.8))
+                p.font.bold = (idx != 1 and not is_star_ln and not is_contact_ln)
                 p.font.italic = (idx == 1)
                 p.font.color.rgb = RGBColor(15, 23, 42)
                 p.alignment = PP_ALIGN.CENTER
@@ -325,12 +345,18 @@ def _render_plan_slide(pptx_slide, slide: Slide) -> None:
 
 
 def _render_chronogram_slide(pptx_slide, slide: Slide) -> None:
-    """Deposit the chronogram slide image as-is with exact proportional scaling (never stretched)."""
+    """Render dynamic chronogram with proportional fit-contain background and editable pill/step textboxes."""
+    if slide.layout_mode not in ("chronogram_7pills", "full_image_asis", "", None):
+        _render_content_slide(pptx_slide, slide)
+        return
+
     bg_path = _resolve_asset_path(slide.background_image_path or TPL_CHRONOGRAM)
     if bg_path:
         _add_picture_fit_contain(
             pptx_slide, bg_path, 0.0, 0.0, SLIDE_WIDTH_IN, SLIDE_HEIGHT_IN
         )
+    for box in slide.render_boxes:
+        _add_borderless_textbox(pptx_slide, box, font_name="Arial")
 
 
 def _render_budget_slide(pptx_slide, slide: Slide) -> None:
