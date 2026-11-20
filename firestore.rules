@@ -1,0 +1,231 @@
+rules_version = '2';
+
+// =============================================================================
+// Smart Research FMSB — Cloud Firestore Security Rules
+// =============================================================================
+// Project:          smart-research-fmsb
+// Database Edition: Cloud Firestore Enterprise Edition
+// Database ID:      smartresearch-db (region: europe-west1)
+//
+// SECURITY POSTURE: FAIL-CLOSED / SERVER-ONLY ACCESS
+// -----------------------------------------------------------------------------
+// Why all client-side access is unconditionally denied (`if false`):
+//   1. Backend-Only Access Pattern:
+//      All Firestore reads and writes are executed exclusively by the Python
+//      FastAPI backend (`backend/app/db/datastore.py` -> `FirestoreDataStore`)
+//      via the official Google Cloud Server SDK (`google-cloud-firestore`)
+//      authenticating with Application Default Credentials (IAM role
+//      `roles/datastore.user`). Server SDK / GCP IAM credentials bypass
+//      client-facing Firestore Security Rules at the administrative layer.
+//   2. Self-Hosted JWT Authentication (No Firebase Auth / No Client SDK):
+//      The React web frontend (`frontend/src`) does NOT bundle or call the
+//      Firebase Client SDK or Firebase Authentication. Users authenticate via
+//      FastAPI endpoints issuing self-hosted HS256 JWT Bearer tokens verified
+//      server-side before any `FirestoreDataStore` operation runs.
+//   3. Zero Client Trust & PII Protection:
+//      Collections contain sensitive credentials (`password_hash`,
+//      `active_session_id`), PII (`email`, `full_name`, `phone`, `matricule`,
+//      `last_login_ip`, `ip_address`), licensing/payment grants, AI credit
+//      quotas, and administrative audit logs. Denying every client `read`
+//      (`get`, `list`) and `write` (`create`, `update`, `delete`) guarantees
+//      defense-in-depth against direct unauthenticated or Firebase Client SDK
+//      queries against the project's Firestore endpoints.
+//
+// IMPORTANT:
+//   Do NOT relax any `if false` rule here unless the architecture explicitly
+//   adopts Firebase Client SDK + Firebase Authentication with full schema,
+//   ownership, RBAC, and size validation in both `create` and `update` rules.
+// =============================================================================
+//
+// =============================================================================
+// Assumed Data Model (Backend-Managed via FastAPI `FirestoreDataStore`)
+// =============================================================================
+//
+// Collection: users
+// Document ID: {userId} (UUID v4 string)
+// Fields:
+//   - id: string (UUID v4, immutable)
+//   - email: string (lowercase normalized, PII)
+//   - full_name: string (PII)
+//   - matricule: string (PII / institutional ID)
+//   - phone: string (PII)
+//   - password_hash: string (Argon2id hash, sensitive)
+//   - role: string ("student" | "admin")
+//   - is_active: bool
+//   - must_change_password: bool
+//   - active_session_id: string | null (single-session enforcement)
+//   - session_switch_count: int
+//   - last_login_at: timestamp | null
+//   - last_login_ip: string | null (PII)
+//   - created_at: timestamp
+//   - created_by_admin_id: string | null
+//
+// Collection: user_emails
+// Document ID: {emailHash} (SHA-256 hex digest of normalized lowercase email)
+// Fields:
+//   - user_id: string (references users/{userId})
+//   - email: string (lowercase normalized, PII)
+//   - created_at: timestamp
+//
+// Collection: user_ai_quotas
+// Document ID: {userId} (matches users/{userId})
+// Fields:
+//   - user_id: string
+//   - credits_total: int
+//   - credits_used: int
+//   - daily_38_limit: int | null
+//   - updated_at: timestamp
+//
+// Collection: user_module_entitlements
+// Document ID: {userId}__{moduleKey} (moduleKey in module1..module4)
+// Fields:
+//   - user_id: string
+//   - module_key: string ("module1" | "module2" | "module3" | "module4")
+//   - starts_at: timestamp
+//   - expires_at: timestamp
+//   - updated_at: timestamp
+//
+// Collection: license_plans
+// Document ID: {planId} (UUID v4 string)
+// Fields:
+//   - id: string
+//   - name: string
+//   - description: string
+//   - price_fcfa: int
+//   - module1_days: int
+//   - module2_days: int
+//   - module3_days: int
+//   - module4_days: int
+//   - ai_quota_included: int
+//   - is_active: bool
+//   - created_at: timestamp
+//
+// Collection: user_license_grants
+// Document ID: {grantId} (UUID v4 string)
+// Fields:
+//   - id: string
+//   - user_id: string
+//   - plan_id: string | null
+//   - granted_by_admin_id: string | null
+//   - amount_paid_fcfa: int
+//   - payment_reference: string
+//   - notes: string
+//   - granted_at: timestamp
+//
+// Collection: projects
+// Document ID: {projectId} (string; large JSON payload stored in BlobStorage/GCS)
+// Fields:
+//   - project_id: string
+//   - owner_user_id: string
+//   - name: string
+//   - locked_title: string
+//   - locked_author_name: string (PII)
+//   - locked_matricule: string (PII)
+//   - topic_locked: bool
+//   - sections_validated_count: int
+//   - patients_count: int
+//   - created_at: timestamp
+//   - updated_at: timestamp
+//   - blob_key: string
+//
+// Collection: presentations
+// Document ID: {projectId} (1:1 with projects/{projectId}; deck JSON in BlobStorage/GCS)
+// Fields:
+//   - project_id: string
+//   - owner_user_id: string
+//   - version: string
+//   - slides_count: int
+//   - updated_at: timestamp
+//   - blob_key: string
+//
+// Collection: usage_events
+// Document ID: {eventId} (UUID v4 string)
+// Fields:
+//   - id: string
+//   - user_id: string
+//   - project_id: string | null
+//   - module_key: string
+//   - action: string
+//   - model_used: string
+//   - credits_cost: int
+//   - status: string
+//   - ip_address: string (PII)
+//   - created_at: timestamp
+//
+// Collection: admin_audit_logs
+// Document ID: {logId} (UUID v4 string)
+// Fields:
+//   - id: string
+//   - admin_id: string | null
+//   - target_user_id: string | null
+//   - action: string
+//   - details_json: map
+//   - created_at: timestamp
+//
+// =============================================================================
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // -------------------------------------------------------------------------
+    // Explicit Backend-Only Collection Denials (`read` = get, list; `write` = create, update, delete)
+    // -------------------------------------------------------------------------
+
+    // User accounts, credentials, and single-session tracking (backend-only)
+    match /users/{userId} {
+      allow read, write: if false;
+    }
+
+    // Email uniqueness lock index (backend-only)
+    match /user_emails/{emailHash} {
+      allow read, write: if false;
+    }
+
+    // AI credit balances and per-user daily Gemini 3.8 limits (backend-only)
+    match /user_ai_quotas/{userId} {
+      allow read, write: if false;
+    }
+
+    // Per-module timed access entitlements (backend-only)
+    match /user_module_entitlements/{entitlementId} {
+      allow read, write: if false;
+    }
+
+    // Commercial license plan definitions (backend-only)
+    match /license_plans/{planId} {
+      allow read, write: if false;
+    }
+
+    // Historical user license grant & payment records (backend-only)
+    match /user_license_grants/{grantId} {
+      allow read, write: if false;
+    }
+
+    // Protocol project metadata and GCS blob pointers (backend-only)
+    match /projects/{projectId} {
+      allow read, write: if false;
+    }
+
+    // Presentation deck metadata and GCS blob pointers (backend-only)
+    match /presentations/{projectId} {
+      allow read, write: if false;
+    }
+
+    // AI & export telemetry / usage audit events (backend-only)
+    match /usage_events/{eventId} {
+      allow read, write: if false;
+    }
+
+    // Administrative action audit trail (backend-only)
+    match /admin_audit_logs/{logId} {
+      allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // Fail-Closed Catch-All Default (All collections, subcollections, & paths)
+    // -------------------------------------------------------------------------
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

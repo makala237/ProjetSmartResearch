@@ -2,21 +2,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import HTTPException
-from sqlalchemy import func
-from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.security import ensure_utc
-from app.db.models import (
-    AdminAuditLogORM,
-    LicensePlanORM,
-    UsageEventORM,
-    UserAIQuotaORM,
-    UserLicenseGrantORM,
-    UserModuleEntitlementORM,
-    UserORM,
-    utcnow,
+from app.db.datastore import (
+    UserAIQuotaRecord,
+    UserLicenseGrantRecord,
+    UserModuleEntitlementRecord,
+    as_store,
 )
+from app.db.models import utcnow
 from app.services.gemini_client import set_ai_routing_policy
 
 MODULE_KEYS: Tuple[str, ...] = ("module1", "module2", "module3", "module4")
@@ -52,21 +47,15 @@ AI_ACTION_COSTS: Dict[str, int] = {
 
 
 def is_module_active(
-    db: Session,
-    user: UserORM,
+    db: Any,
+    user: Any,
     module_key: str,
 ) -> Tuple[bool, Optional[datetime]]:
     """Return (is_active, expires_at) for the given user and module key."""
     if user.role == "admin":
         return True, None
-    ent = (
-        db.query(UserModuleEntitlementORM)
-        .filter(
-            UserModuleEntitlementORM.user_id == user.id,
-            UserModuleEntitlementORM.module_key == module_key,
-        )
-        .first()
-    )
+    store = as_store(db)
+    ent = store.get_entitlement(user.id, module_key)
     if ent is None:
         return False, None
     exp = ensure_utc(ent.expires_at)
@@ -74,16 +63,13 @@ def is_module_active(
     return bool(exp and exp > now), exp
 
 
-def assert_any_module_active(db: Session, user: UserORM) -> None:
+def assert_any_module_active(db: Any, user: Any) -> None:
     """Require at least one currently active module license for students."""
     if user.role == "admin":
         return
+    store = as_store(db)
     now = datetime.now(timezone.utc)
-    ents = (
-        db.query(UserModuleEntitlementORM)
-        .filter(UserModuleEntitlementORM.user_id == user.id)
-        .all()
-    )
+    ents = store.list_entitlements(user.id)
     for ent in ents:
         exp = ensure_utc(ent.expires_at)
         if exp and exp > now:
@@ -97,7 +83,7 @@ def assert_any_module_active(db: Session, user: UserORM) -> None:
     )
 
 
-def assert_module_write_allowed(db: Session, user: UserORM, module_key: str) -> None:
+def assert_module_write_allowed(db: Any, user: Any, module_key: str) -> None:
     """Block mutations/AI on expired modules while preserving read-only + export access."""
     if module_key not in MODULE_KEYS:
         raise ValueError(f"Module inconnu : {module_key}")
@@ -124,8 +110,9 @@ def assert_module_write_allowed(db: Session, user: UserORM, module_key: str) -> 
     )
 
 
-def get_student_daily_38_usage(db: Session, user: UserORM) -> Dict[str, Any]:
+def get_student_daily_38_usage(db: Any, user: Any) -> Dict[str, Any]:
     """Compute today's Gemini 3.8 usage for a user and whether student 3.5 relay is active."""
+    store = as_store(db)
     settings = get_settings()
     primary = (settings.gemini_primary_reasoning_model or "gemini-3.8-flash").strip()
     fallback = (settings.gemini_fallback_reasoning_model or "gemini-3.5-flash").strip()
@@ -133,22 +120,11 @@ def get_student_daily_38_usage(db: Session, user: UserORM) -> Dict[str, Any]:
     now = datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
-    quota = db.get(UserAIQuotaORM, user.id)
+    quota = store.get_quota(user.id)
     configured_limit = quota.daily_38_limit if (quota and quota.daily_38_limit is not None) else None
     limit = int(configured_limit if configured_limit is not None else settings.student_daily_gemini38_limit)
 
-    events = (
-        db.query(UsageEventORM)
-        .filter(
-            UsageEventORM.user_id == user.id,
-            UsageEventORM.status == "ok",
-            func.lower(UsageEventORM.model_used).contains("gemini-3.8"),
-        )
-        .all()
-    )
-    used_today = sum(
-        1 for ev in events if (ensure_utc(ev.created_at) or now) >= day_start
-    )
+    used_today = store.count_user_gemini38_today(user.id, day_start)
 
     if user.role == "admin":
         return {
@@ -171,21 +147,22 @@ def get_student_daily_38_usage(db: Session, user: UserORM) -> Dict[str, Any]:
 
 
 def assert_ai_quota_available(
-    db: Session,
-    user: UserORM,
+    db: Any,
+    user: Any,
     module_key: str,
     action: str,
     credits_cost: Optional[int] = None,
 ) -> int:
     """Verify both active module write entitlement and sufficient AI credits before Gemini calls."""
+    store = as_store(db)
     if module_key == "general":
-        assert_any_module_active(db, user)
+        assert_any_module_active(store, user)
     else:
-        assert_module_write_allowed(db, user, module_key)
+        assert_module_write_allowed(store, user, module_key)
 
     cost = AI_ACTION_COSTS.get(action, 1) if credits_cost is None else int(credits_cost)
     if user.role == "admin" or cost <= 0:
-        daily_38 = get_student_daily_38_usage(db, user)
+        daily_38 = get_student_daily_38_usage(store, user)
         set_ai_routing_policy(
             prefer_fallback_35=daily_38["fallback_active"],
             reason="student_daily_38_cap" if daily_38["fallback_active"] else "",
@@ -194,13 +171,7 @@ def assert_ai_quota_available(
         )
         return max(0, cost)
 
-    quota = db.get(UserAIQuotaORM, user.id)
-    if quota is None:
-        quota = UserAIQuotaORM(user_id=user.id, credits_total=0, credits_used=0, updated_at=utcnow())
-        db.add(quota)
-        db.commit()
-        db.refresh(quota)
-
+    quota = store.ensure_quota(user.id, credits_total=0)
     remaining = max(0, quota.credits_total - quota.credits_used)
     if remaining < cost:
         raise HTTPException(
@@ -215,7 +186,7 @@ def assert_ai_quota_available(
                 ),
             },
         )
-    daily_38 = get_student_daily_38_usage(db, user)
+    daily_38 = get_student_daily_38_usage(store, user)
     set_ai_routing_policy(
         prefer_fallback_35=daily_38["fallback_active"],
         reason="student_daily_38_cap" if daily_38["fallback_active"] else "",
@@ -226,8 +197,8 @@ def assert_ai_quota_available(
 
 
 def record_usage_and_debit(
-    db: Session,
-    user: UserORM,
+    db: Any,
+    user: Any,
     module_key: str,
     action: str,
     credits_cost: int = 0,
@@ -237,18 +208,13 @@ def record_usage_and_debit(
     ip_address: str = "",
 ) -> None:
     """Debit AI credits (on successful non-admin action) and append an immutable telemetry event."""
+    store = as_store(db)
     now = utcnow()
     effective_cost = max(0, int(credits_cost))
     if effective_cost > 0 and user.role != "admin" and status == "ok":
-        quota = db.get(UserAIQuotaORM, user.id)
-        if quota is None:
-            quota = UserAIQuotaORM(user_id=user.id, credits_total=0, credits_used=0, updated_at=now)
-            db.add(quota)
-            db.flush()
-        quota.credits_used = int(quota.credits_used or 0) + effective_cost
-        quota.updated_at = now
+        store.debit_quota_atomic(user.id, effective_cost, now)
 
-    ev = UsageEventORM(
+    store.create_usage_event(
         user_id=user.id,
         project_id=project_id,
         module_key=module_key,
@@ -259,20 +225,19 @@ def record_usage_and_debit(
         ip_address=(ip_address or "")[:64],
         created_at=now,
     )
-    db.add(ev)
-    db.commit()
 
 
 def apply_license_plan_to_user(
-    db: Session,
-    admin_user: UserORM,
-    target_user: UserORM,
-    plan: LicensePlanORM,
+    db: Any,
+    admin_user: Any,
+    target_user: Any,
+    plan: Any,
     amount_paid_fcfa: Optional[int] = None,
     payment_reference: str = "",
     notes: str = "",
-) -> UserLicenseGrantORM:
+) -> UserLicenseGrantRecord:
     """Apply a LicensePlan to a user, stacking durations onto unexpired modules and adding AI credits."""
+    store = as_store(db)
     now = utcnow()
     days_by_module = {
         "module1": int(plan.module1_days or 0),
@@ -285,49 +250,34 @@ def apply_license_plan_to_user(
     for mk, days in days_by_module.items():
         if days <= 0:
             continue
-        ent = (
-            db.query(UserModuleEntitlementORM)
-            .filter(
-                UserModuleEntitlementORM.user_id == target_user.id,
-                UserModuleEntitlementORM.module_key == mk,
-            )
-            .first()
-        )
+        ent = store.get_entitlement(target_user.id, mk)
         if ent is None:
+            starts_at = now
             new_exp = now + timedelta(days=days)
-            ent = UserModuleEntitlementORM(
-                user_id=target_user.id,
-                module_key=mk,
-                starts_at=now,
-                expires_at=new_exp,
-                updated_at=now,
-            )
-            db.add(ent)
         else:
             current_exp = ensure_utc(ent.expires_at) or now
             base = current_exp if current_exp > now else now
-            if current_exp <= now:
-                ent.starts_at = now
+            starts_at = now if current_exp <= now else (ensure_utc(ent.starts_at) or now)
             new_exp = base + timedelta(days=days)
-            ent.expires_at = new_exp
-            ent.updated_at = now
-        applied_windows[mk] = new_exp.isoformat()
-
-    quota = db.get(UserAIQuotaORM, target_user.id)
-    if quota is None:
-        quota = UserAIQuotaORM(
+        store.upsert_entitlement(
             user_id=target_user.id,
-            credits_total=max(0, int(plan.ai_quota_included or 0)),
-            credits_used=0,
+            module_key=mk,
+            starts_at=starts_at,
+            expires_at=new_exp,
             updated_at=now,
         )
-        db.add(quota)
-    else:
-        quota.credits_total = int(quota.credits_total or 0) + max(0, int(plan.ai_quota_included or 0))
-        quota.updated_at = now
+        applied_windows[mk] = new_exp.isoformat()
+
+    ai_added = max(0, int(plan.ai_quota_included or 0))
+    store.add_quota_credits_atomic(
+        user_id=target_user.id,
+        add_credits=ai_added,
+        now=now,
+        update_daily_limit=False,
+    )
 
     paid = int(plan.price_fcfa if amount_paid_fcfa is None else amount_paid_fcfa)
-    grant = UserLicenseGrantORM(
+    grant = store.create_grant(
         user_id=target_user.id,
         plan_id=plan.id,
         granted_by_admin_id=admin_user.id,
@@ -336,52 +286,41 @@ def apply_license_plan_to_user(
         notes=notes.strip(),
         granted_at=now,
     )
-    db.add(grant)
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            target_user_id=target_user.id,
-            action="grant_license_plan",
-            details_json={
-                "plan_id": plan.id,
-                "plan_name": plan.name,
-                "amount_paid_fcfa": max(0, paid),
-                "payment_reference": payment_reference.strip(),
-                "ai_quota_added": int(plan.ai_quota_included or 0),
-                "applied_windows": applied_windows,
-                "notes": notes.strip(),
-            },
-            created_at=now,
-        )
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=target_user.id,
+        action="grant_license_plan",
+        details_json={
+            "plan_id": plan.id,
+            "plan_name": plan.name,
+            "amount_paid_fcfa": max(0, paid),
+            "payment_reference": payment_reference.strip(),
+            "ai_quota_added": int(plan.ai_quota_included or 0),
+            "applied_windows": applied_windows,
+            "notes": notes.strip(),
+        },
+        created_at=now,
     )
-    db.commit()
-    db.refresh(grant)
     return grant
 
 
 def adjust_user_module_entitlement(
-    db: Session,
-    admin_user: UserORM,
-    target_user: UserORM,
+    db: Any,
+    admin_user: Any,
+    target_user: Any,
     module_key: str,
     expires_at: Optional[datetime] = None,
     add_days: Optional[int] = None,
     revoke: bool = False,
     notes: str = "",
-) -> UserModuleEntitlementORM:
+) -> UserModuleEntitlementRecord:
     """Manually extend, set exact expiry, or revoke a single module license for a user."""
     if module_key not in MODULE_KEYS:
         raise HTTPException(status_code=400, detail=f"Module invalide : {module_key}")
 
+    store = as_store(db)
     now = utcnow()
-    ent = (
-        db.query(UserModuleEntitlementORM)
-        .filter(
-            UserModuleEntitlementORM.user_id == target_user.id,
-            UserModuleEntitlementORM.module_key == module_key,
-        )
-        .first()
-    )
+    ent = store.get_entitlement(target_user.id, module_key)
     old_exp = ensure_utc(ent.expires_at).isoformat() if ent and ent.expires_at else None
 
     if revoke:
@@ -399,81 +338,69 @@ def adjust_user_module_entitlement(
         )
 
     if ent is None:
-        ent = UserModuleEntitlementORM(
-            user_id=target_user.id,
-            module_key=module_key,
-            starts_at=now,
-            expires_at=target_exp,
-            updated_at=now,
-        )
-        db.add(ent)
+        starts_at = now
+    elif not revoke and (ensure_utc(ent.expires_at) or now) <= now:
+        starts_at = now
     else:
-        if not revoke and (ensure_utc(ent.expires_at) or now) <= now:
-            ent.starts_at = now
-        ent.expires_at = target_exp
-        ent.updated_at = now
+        starts_at = ensure_utc(ent.starts_at) or now
 
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            target_user_id=target_user.id,
-            action="adjust_module_entitlement",
-            details_json={
-                "module_key": module_key,
-                "revoke": revoke,
-                "add_days": add_days,
-                "old_expires_at": old_exp,
-                "new_expires_at": target_exp.isoformat(),
-                "notes": notes.strip(),
-            },
-            created_at=now,
-        )
+    updated = store.upsert_entitlement(
+        user_id=target_user.id,
+        module_key=module_key,
+        starts_at=starts_at,
+        expires_at=target_exp,
+        updated_at=now,
     )
-    db.commit()
-    db.refresh(ent)
-    return ent
+
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=target_user.id,
+        action="adjust_module_entitlement",
+        details_json={
+            "module_key": module_key,
+            "revoke": revoke,
+            "add_days": add_days,
+            "old_expires_at": old_exp,
+            "new_expires_at": target_exp.isoformat(),
+            "notes": notes.strip(),
+        },
+        created_at=now,
+    )
+    return updated
 
 
 def recharge_user_ai_quota(
-    db: Session,
-    admin_user: UserORM,
-    target_user: UserORM,
+    db: Any,
+    admin_user: Any,
+    target_user: Any,
     add_credits: int,
     notes: str = "",
     daily_38_limit: Optional[int] = None,
-) -> UserAIQuotaORM:
+) -> UserAIQuotaRecord:
     """Adjust or top up a user's AI credit allowance (and optional daily Gemini 3.8 cap) and record an admin audit entry."""
+    store = as_store(db)
     now = utcnow()
-    quota = db.get(UserAIQuotaORM, target_user.id)
-    if quota is None:
-        quota = UserAIQuotaORM(user_id=target_user.id, credits_total=0, credits_used=0, updated_at=now)
-        db.add(quota)
-        db.flush()
-
-    old_total = int(quota.credits_total or 0)
-    old_daily = quota.daily_38_limit
-    quota.credits_total = max(int(quota.credits_used or 0), old_total + int(add_credits))
-    if daily_38_limit is not None:
-        quota.daily_38_limit = int(daily_38_limit) if int(daily_38_limit) >= 1 else None
-    quota.updated_at = now
-
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            target_user_id=target_user.id,
-            action="recharge_ai_quota",
-            details_json={
-                "add_credits": int(add_credits),
-                "old_total": old_total,
-                "new_total": quota.credits_total,
-                "credits_used": int(quota.credits_used or 0),
-                "old_daily_38_limit": old_daily,
-                "new_daily_38_limit": quota.daily_38_limit,
-                "notes": notes.strip(),
-            },
-            created_at=now,
-        )
+    quota, old_total, old_daily = store.add_quota_credits_atomic(
+        user_id=target_user.id,
+        add_credits=int(add_credits),
+        now=now,
+        daily_38_limit=daily_38_limit,
+        update_daily_limit=(daily_38_limit is not None),
     )
-    db.commit()
-    db.refresh(quota)
+
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=target_user.id,
+        action="recharge_ai_quota",
+        details_json={
+            "add_credits": int(add_credits),
+            "old_total": old_total,
+            "new_total": quota.credits_total,
+            "credits_used": int(quota.credits_used or 0),
+            "old_daily_38_limit": old_daily,
+            "new_daily_38_limit": quota.daily_38_limit,
+            "notes": notes.strip(),
+        },
+        created_at=now,
+    )
     return quota

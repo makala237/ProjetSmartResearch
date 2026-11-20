@@ -45,6 +45,19 @@ class BlobStorage(ABC):
     def delete(self, object_key: str) -> None:
         """Best-effort delete of object_key from the backing store."""
 
+    @abstractmethod
+    def upload_bytes(
+        self,
+        object_key: str,
+        data: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> str:
+        """Persist raw bytes into the backing store and return its storage URI/path."""
+
+    @abstractmethod
+    def download_bytes(self, object_key: str) -> Optional[bytes]:
+        """Fetch raw bytes for object_key if present, else return None."""
+
 
 class LocalBlobStorage(BlobStorage):
     """Default on-disk storage adapter (development & single-node volumes)."""
@@ -84,6 +97,23 @@ class LocalBlobStorage(BlobStorage):
                 target.unlink()
             except OSError:
                 pass
+
+    def upload_bytes(
+        self,
+        object_key: str,
+        data: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> str:
+        target = self._resolve(object_key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        return str(target)
+
+    def download_bytes(self, object_key: str) -> Optional[bytes]:
+        target = self._resolve(object_key)
+        if target.exists() and target.is_file():
+            return target.read_bytes()
+        return None
 
 
 class GCSBlobStorage(BlobStorage):
@@ -127,6 +157,26 @@ class GCSBlobStorage(BlobStorage):
                 blob.delete()
         except Exception as exc:
             logger.warning("GCS delete failed for %s: %s", object_key, exc)
+
+    def upload_bytes(
+        self,
+        object_key: str,
+        data: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> str:
+        blob = self._bucket.blob(object_key)
+        blob.upload_from_string(data, content_type=content_type)
+        return f"gs://{self.bucket_name}/{object_key}"
+
+    def download_bytes(self, object_key: str) -> Optional[bytes]:
+        try:
+            blob = self._bucket.blob(object_key)
+            if not blob.exists():
+                return None
+            return blob.download_as_bytes()
+        except Exception as exc:
+            logger.warning("GCS download_bytes failed for %s: %s", object_key, exc)
+            return None
 
 
 class S3R2BlobStorage(BlobStorage):
@@ -185,10 +235,46 @@ class S3R2BlobStorage(BlobStorage):
         except Exception as exc:
             logger.warning("S3/R2 delete failed for %s: %s", object_key, exc)
 
+    def upload_bytes(
+        self,
+        object_key: str,
+        data: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> str:
+        self._client.put_object(
+            Bucket=self.bucket_name,
+            Key=object_key,
+            Body=data,
+            ContentType=content_type,
+        )
+        return f"s3://{self.bucket_name}/{object_key}"
+
+    def download_bytes(self, object_key: str) -> Optional[bytes]:
+        try:
+            resp = self._client.get_object(Bucket=self.bucket_name, Key=object_key)
+            body = resp.get("Body")
+            return body.read() if body is not None else None
+        except Exception:
+            return None
+
+
+_BLOB_STORAGE_OVERRIDE: Optional[BlobStorage] = None
+
+
+def set_blob_storage_override(adapter: Optional[BlobStorage]) -> None:
+    """Inject or clear a test BlobStorage override."""
+    global _BLOB_STORAGE_OVERRIDE
+    _BLOB_STORAGE_OVERRIDE = adapter
+
+
+def reset_blob_storage_cache() -> None:
+    """Clear singleton cache for BlobStorage adapter."""
+    get_blob_storage.cache_clear()
+
 
 @lru_cache
-def get_blob_storage() -> BlobStorage:
-    """Return configured singleton BlobStorage adapter ('local', 'gcs', or 's3')."""
+def _build_cached_blob_storage() -> BlobStorage:
+    """Build configured singleton BlobStorage adapter ('local', 'gcs', or 's3')."""
     settings = get_settings()
     backend = (settings.storage_backend or "local").strip().lower()
     if backend == "gcs":
@@ -202,3 +288,13 @@ def get_blob_storage() -> BlobStorage:
             region_name=settings.cloud_storage_region,
         )
     return LocalBlobStorage(root_dir=settings.storage_dir)
+
+
+def get_blob_storage() -> BlobStorage:
+    """Return configured singleton BlobStorage adapter ('local', 'gcs', or 's3')."""
+    if _BLOB_STORAGE_OVERRIDE is not None:
+        return _BLOB_STORAGE_OVERRIDE
+    return _build_cached_blob_storage()
+
+
+get_blob_storage.cache_clear = _build_cached_blob_storage.cache_clear  # type: ignore[attr-defined]

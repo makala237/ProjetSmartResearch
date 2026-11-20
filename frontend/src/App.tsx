@@ -292,8 +292,8 @@ export default function App() {
     status: StepStatus,
     userNotes: string,
     contentHtml?: string
-  ) {
-    if (!activeProject) return;
+  ): Promise<boolean> {
+    if (!activeProject) return false;
     setSaving(true);
     setError(null);
     try {
@@ -308,8 +308,10 @@ export default function App() {
         prev.map((p) => (p.project_id === updated.project_id ? updated : p))
       );
       refreshMe();
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setSaving(false);
     }
@@ -986,6 +988,7 @@ export default function App() {
                   }}
                   onSaveSection={handleSaveSection}
                   onSaveCover={handleSaveCover}
+                  onOpenModule2={() => setActiveModule("module2")}
                   onError={(msg) => setError(msg || null)}
                   saving={saving}
                   isAdmin={isAdmin}

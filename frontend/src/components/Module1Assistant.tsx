@@ -14,7 +14,6 @@ import {
   Globe,
   Loader2,
   Menu,
-  MessageSquarePlus,
   RefreshCw,
   ShieldCheck,
   Sparkles,
@@ -45,6 +44,10 @@ import { PipelineProgressWidget } from "./PipelineProgressWidget";
 import { ResearchPanel } from "./ResearchPanel";
 import { RichTextEditor } from "./RichTextEditor";
 import { SectionMediaPanel } from "./SectionMediaPanel";
+import {
+  extractInvestigatorPlaceholders,
+  splitTextWithPlaceholders,
+} from "../utils/investigatorPlaceholders";
 
 interface Module1Props {
   project: ProtocolProject;
@@ -58,12 +61,50 @@ interface Module1Props {
     status: StepStatus,
     userNotes: string,
     contentHtml?: string
-  ) => Promise<void>;
+  ) => Promise<boolean | void>;
   onSaveCover: (cover: CoverMetadata) => Promise<void>;
+  onOpenModule2?: () => void;
   onError: (msg: string) => void;
   saving: boolean;
   isAdmin?: boolean;
   isVisible?: boolean;
+}
+
+const ALGORITHMIC_SECTION_IDS = new Set([
+  "toc",
+  "abbreviations",
+  "list_of_tables",
+  "list_of_figures",
+  "annexes",
+  "references",
+]);
+const AUTO_SYNC_SECTION_IDS = new Set([
+  "toc",
+  "abbreviations",
+  "list_of_tables",
+  "list_of_figures",
+  "annexes",
+]);
+const NON_MEDIA_SECTION_IDS = new Set([
+  "toc",
+  "abbreviations",
+  "list_of_tables",
+  "list_of_figures",
+  "references",
+  "annexes",
+]);
+
+function renderHighlightedSegmentText(text: string) {
+  const parts = splitTextWithPlaceholders(text);
+  return parts.map((pt, i) =>
+    pt.isPlaceholder ? (
+      <mark key={i} className="sr-placeholder-highlight">
+        {pt.text}
+      </mark>
+    ) : (
+      <span key={i}>{pt.text}</span>
+    )
+  );
 }
 
 export function Module1Assistant({
@@ -74,6 +115,7 @@ export function Module1Assistant({
   onProjectUpdated,
   onSaveSection,
   onSaveCover,
+  onOpenModule2,
   onError,
   saving,
   isAdmin = false,
@@ -114,20 +156,145 @@ export function Module1Assistant({
   const [showMethodGuide, setShowMethodGuide] = useState(false);
   const [showCamesRequirements, setShowCamesRequirements] = useState(false);
   const [showAssignedSegments, setShowAssignedSegments] = useState(false);
+  const [showPersonalNotes, setShowPersonalNotes] = useState(() =>
+    Boolean(activeState?.user_notes?.trim())
+  );
   const [aiInstruction, setAiInstruction] = useState("");
   const [coverForm, setCoverForm] = useState<CoverMetadata>(() =>
     withStructuredSupervisors(project.cover)
   );
   const [coDirDraft, setCoDirDraft] = useState<SupervisorInfo>(emptySupervisor);
 
-  const [busyDraft, setBusyDraft] = useState(false);
-  const [busyAudit, setBusyAudit] = useState(false);
-  const [busyFix, setBusyFix] = useState(false);
-  const [busyHumanize, setBusyHumanize] = useState(false);
+  const [busyDraftBySec, setBusyDraftBySec] = useState<Record<string, boolean>>({});
+  const [busyAuditBySec, setBusyAuditBySec] = useState<Record<string, boolean>>({});
+  const [busyFixBySec, setBusyFixBySec] = useState<Record<string, boolean>>({});
+  const [busyHumanizeBySec, setBusyHumanizeBySec] = useState<Record<string, boolean>>({});
   const [busyHarmonize, setBusyHarmonize] = useState(false);
   const [busyToc, setBusyToc] = useState(false);
   const [busyRefs, setBusyRefs] = useState(false);
-  const [busyAntigravity, setBusyAntigravity] = useState(false);
+  const [busyAntigravityBySec, setBusyAntigravityBySec] = useState<Record<string, boolean>>({});
+
+  const busyDraft = Boolean(busyDraftBySec[activeSpec.id]);
+  const busyAudit = Boolean(busyAuditBySec[activeSpec.id]);
+  const busyFix = Boolean(busyFixBySec[activeSpec.id]);
+  const busyHumanize = Boolean(busyHumanizeBySec[activeSpec.id]);
+  const busyAntigravity = Boolean(busyAntigravityBySec[activeSpec.id]);
+
+  const latestProjectRef = useRef(project);
+  latestProjectRef.current = project;
+
+  function mergeSectionProjectUpdate(
+    serverProject: ProtocolProject,
+    targetSectionId: string
+  ): ProtocolProject {
+    const current = latestProjectRef.current;
+    if (!current || current.project_id !== serverProject.project_id) {
+      return serverProject;
+    }
+    const mergedSections = {
+      ...serverProject.sections,
+      ...current.sections,
+    };
+    if (serverProject.sections[targetSectionId]) {
+      mergedSections[targetSectionId] = serverProject.sections[targetSectionId];
+    }
+    const merged: ProtocolProject = {
+      ...serverProject,
+      sections: mergedSections,
+    };
+    latestProjectRef.current = merged;
+    return merged;
+  }
+
+  function isSectionBusy(secId: string): boolean {
+    return Boolean(
+      busyDraftBySec[secId] ||
+        busyAuditBySec[secId] ||
+        busyFixBySec[secId] ||
+        busyHumanizeBySec[secId] ||
+        busyAntigravityBySec[secId]
+    );
+  }
+
+  const [actionToast, setActionToast] = useState<{
+    kind: "validated" | "saved";
+    message: string;
+    isFinalStep?: boolean;
+  } | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+
+  function showToast(
+    kind: "validated" | "saved",
+    message: string,
+    isFinalStep = false
+  ) {
+    if (toastTimerRef.current !== null) {
+      window.clearTimeout(toastTimerRef.current);
+    }
+    setActionToast({ kind, message, isFinalStep });
+    toastTimerRef.current = window.setTimeout(() => {
+      setActionToast(null);
+      toastTimerRef.current = null;
+    }, 5000);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) {
+        window.clearTimeout(toastTimerRef.current);
+      }
+    };
+  }, []);
+
+  async function handleSectionSaveOrValidate(
+    sectionId: string,
+    sectionTitle: string,
+    contentMarkdown: string,
+    status: StepStatus,
+    userNotes: string,
+    contentHtml?: string
+  ) {
+    const res = await onSaveSection(
+      sectionId,
+      contentMarkdown,
+      status,
+      userNotes,
+      contentHtml
+    );
+    if (res === false) return;
+
+    if (status === "validated") {
+      const idx = canvas.findIndex((s) => s.id === sectionId);
+      if (idx >= 0 && idx < canvas.length - 1) {
+        const nextSpec = canvas[idx + 1];
+        onSelectSection(nextSpec.id);
+        if (typeof window !== "undefined") {
+          window.scrollTo({ top: 0, behavior: "smooth" });
+        }
+        showToast(
+          "validated",
+          lang === "en"
+            ? `Step "${sectionTitle}" validated! Moved to "${nextSpec.title}".`
+            : `Étape « ${sectionTitle} » validée ! Passage automatique à « ${nextSpec.title} ».`
+        );
+      } else {
+        showToast(
+          "validated",
+          lang === "en"
+            ? `Step "${sectionTitle}" validated! All steps completed — ready for Module 2.`
+            : `Étape « ${sectionTitle} » validée ! Protocole prêt pour la mise en forme dans le Module 2.`,
+          true
+        );
+      }
+    } else {
+      showToast(
+        "saved",
+        lang === "en"
+          ? `Draft saved for "${sectionTitle}".`
+          : `Brouillon enregistré pour « ${sectionTitle} ».`
+      );
+    }
+  }
   const [lastRefDecisionNote, setLastRefDecisionNote] = useState<string | null>(null);
   const [lastDraftResult, setLastDraftResult] = useState<DraftResult | null>(null);
   const [lastAuditResult, setLastAuditResult] = useState<AuditResult | null>(null);
@@ -220,6 +387,8 @@ export function Module1Assistant({
     setLastHumanizeResult(null);
     setLastRefDecisionNote(null);
     setLastHarmonizeNote(null);
+    setAiInstruction("");
+    setShowPersonalNotes(Boolean(project.sections[activeSpec.id]?.user_notes?.trim()));
   }, [activeSpec.id]);
 
   useEffect(() => {
@@ -260,10 +429,34 @@ export function Module1Assistant({
     (a) => a.target_section_id !== activeSpec.id
   );
 
+  const isAlgorithmicSection = ALGORITHMIC_SECTION_IDS.has(activeSpec.id);
+  const isAutoSyncSection = AUTO_SYNC_SECTION_IDS.has(activeSpec.id);
+  const isReferencesSection = activeSpec.id === "references";
+  const hasContent = draft.trim().length > 0;
+  const hasInstruction = aiInstruction.trim().length > 0;
+  const showMediaPanel = !NON_MEDIA_SECTION_IDS.has(activeSpec.id);
+  const wordCount = hasContent ? draft.trim().split(/\s+/).length : 0;
+  const detectedPlaceholders = extractInvestigatorPlaceholders(draft);
+
+  const syncButtonLabel =
+    activeSpec.id === "toc"
+      ? t("m1.sync_toc")
+      : activeSpec.id === "list_of_tables"
+      ? t("m1.sync_tables")
+      : activeSpec.id === "list_of_figures"
+      ? t("m1.sync_figures")
+      : activeSpec.id === "annexes"
+      ? t("m1.sync_annexes")
+      : t("m1.sync_abbreviations");
+
+  const aiPlaceholder = !hasContent
+    ? t("m1.instruction_placeholder_generate")
+    : t("m1.instruction_placeholder_refine");
+
   async function handleDraftWithAI(instruction?: string) {
     const targetSectionId = activeSpec.id;
     const targetTitle = activeSpec.title;
-    setBusyDraft(true);
+    setBusyDraftBySec((prev) => ({ ...prev, [targetSectionId]: true }));
     onError("");
     try {
       const res = await tracker.runWithProgress(
@@ -276,12 +469,13 @@ export function Module1Assistant({
         (taskId) =>
           api.draftSection(project.project_id, targetSectionId, instruction, taskId)
       );
-      onProjectUpdated(res.project);
+      const merged = mergeSectionProjectUpdate(res.project, targetSectionId);
+      onProjectUpdated(merged);
       if (selectedSectionIdRef.current === targetSectionId) {
         setDraft(res.result.content_markdown);
         setDraftHtml(
           res.result.content_html ??
-            res.project.sections[targetSectionId]?.content_html ??
+            merged.sections[targetSectionId]?.content_html ??
             ""
         );
         setLastDraftResult(res.result);
@@ -290,14 +484,14 @@ export function Module1Assistant({
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusyDraft(false);
+      setBusyDraftBySec((prev) => ({ ...prev, [targetSectionId]: false }));
     }
   }
 
   async function handleAuditWithAI() {
     const targetSectionId = activeSpec.id;
     const targetTitle = activeSpec.title;
-    setBusyAudit(true);
+    setBusyAuditBySec((prev) => ({ ...prev, [targetSectionId]: true }));
     onError("");
     try {
       const res = await tracker.runWithProgress(
@@ -309,21 +503,22 @@ export function Module1Assistant({
         },
         (taskId) => api.auditSection(project.project_id, targetSectionId, taskId)
       );
-      onProjectUpdated(res.project);
+      const merged = mergeSectionProjectUpdate(res.project, targetSectionId);
+      onProjectUpdated(merged);
       if (selectedSectionIdRef.current === targetSectionId) {
         setLastAuditResult(res.result);
       }
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusyAudit(false);
+      setBusyAuditBySec((prev) => ({ ...prev, [targetSectionId]: false }));
     }
   }
 
   async function handleMobilizeAntigravity(instruction?: string) {
     const targetSectionId = activeSpec.id;
     const targetTitle = activeSpec.title;
-    setBusyAntigravity(true);
+    setBusyAntigravityBySec((prev) => ({ ...prev, [targetSectionId]: true }));
     onError("");
     try {
       const res = await tracker.runWithProgress(
@@ -342,18 +537,19 @@ export function Module1Assistant({
             taskId
           )
       );
-      onProjectUpdated(res.project);
+      const merged = mergeSectionProjectUpdate(res.project, targetSectionId);
+      onProjectUpdated(merged);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusyAntigravity(false);
+      setBusyAntigravityBySec((prev) => ({ ...prev, [targetSectionId]: false }));
     }
   }
 
   async function handleFixWithAI() {
     const targetSectionId = activeSpec.id;
     const targetTitle = activeSpec.title;
-    setBusyFix(true);
+    setBusyFixBySec((prev) => ({ ...prev, [targetSectionId]: true }));
     onError("");
     try {
       const res = await tracker.runWithProgress(
@@ -365,12 +561,13 @@ export function Module1Assistant({
         },
         (taskId) => api.fixSection(project.project_id, targetSectionId, taskId)
       );
-      onProjectUpdated(res.project);
+      const merged = mergeSectionProjectUpdate(res.project, targetSectionId);
+      onProjectUpdated(merged);
       if (selectedSectionIdRef.current === targetSectionId) {
         setDraft(res.result.content_markdown);
         setDraftHtml(
           res.result.content_html ??
-            res.project.sections[targetSectionId]?.content_html ??
+            merged.sections[targetSectionId]?.content_html ??
             ""
         );
         setLastDraftResult(res.result);
@@ -379,14 +576,14 @@ export function Module1Assistant({
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusyFix(false);
+      setBusyFixBySec((prev) => ({ ...prev, [targetSectionId]: false }));
     }
   }
 
   async function handleHumanizeWithAI() {
     const targetSectionId = activeSpec.id;
     const targetTitle = activeSpec.title;
-    setBusyHumanize(true);
+    setBusyHumanizeBySec((prev) => ({ ...prev, [targetSectionId]: true }));
     onError("");
     try {
       const res = await tracker.runWithProgress(
@@ -399,12 +596,13 @@ export function Module1Assistant({
         (taskId) =>
           api.humanizeSection(project.project_id, targetSectionId, true, taskId)
       );
-      onProjectUpdated(res.project);
+      const merged = mergeSectionProjectUpdate(res.project, targetSectionId);
+      onProjectUpdated(merged);
       if (selectedSectionIdRef.current === targetSectionId) {
         setDraft(res.result.content_markdown);
         setDraftHtml(
           res.result.content_html ??
-            res.project.sections[targetSectionId]?.content_html ??
+            merged.sections[targetSectionId]?.content_html ??
             ""
         );
         setLastHumanizeResult(res.result);
@@ -412,7 +610,7 @@ export function Module1Assistant({
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusyHumanize(false);
+      setBusyHumanizeBySec((prev) => ({ ...prev, [targetSectionId]: false }));
     }
   }
 
@@ -481,7 +679,9 @@ export function Module1Assistant({
                 >
                   <span className="flex items-start gap-2">
                     <span className="mt-0.5 shrink-0">
-                      {st === "validated" ? (
+                      {isSectionBusy(item.id) ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                      ) : st === "validated" ? (
                         <CheckCircle2 className="h-4 w-4 text-emerald-600" />
                       ) : st === "in_progress" ? (
                         <Clock className="h-4 w-4 text-amber-500" />
@@ -593,7 +793,7 @@ export function Module1Assistant({
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         {/* Desktop Sidebar: Step-by-step FMSB Canvas */}
-        <aside className="hidden lg:block lg:col-span-4 xl:col-span-3">
+        <aside className="hidden lg:block lg:col-span-4 xl:col-span-3 lg:sticky lg:top-20 lg:self-start">
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">
@@ -610,7 +810,7 @@ export function Module1Assistant({
               />
             </div>
 
-            <div className="max-h-[68vh] overflow-y-auto pr-1">
+            <div className="max-h-[calc(100vh-11rem)] overflow-y-auto pr-1">
               {renderStepsList()}
             </div>
           </div>
@@ -618,6 +818,56 @@ export function Module1Assistant({
 
         {/* Main Workspace for Active Step */}
         <section className="space-y-5 lg:col-span-8 xl:col-span-9">
+          {actionToast && (
+            <div
+              role="status"
+              aria-live="polite"
+              className={`flex flex-wrap items-center justify-between gap-3 rounded-xl border px-4 py-3 text-xs font-medium shadow-md transition ${
+                actionToast.kind === "validated"
+                  ? "border-emerald-300 bg-emerald-50 text-emerald-950"
+                  : "border-indigo-200 bg-indigo-50 text-indigo-950"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <CheckCircle2
+                  className={`h-4 w-4 shrink-0 ${
+                    actionToast.kind === "validated"
+                      ? "text-emerald-600"
+                      : "text-indigo-600"
+                  }`}
+                />
+                <span>{actionToast.message}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                {actionToast.isFinalStep && onOpenModule2 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionToast(null);
+                      onOpenModule2();
+                    }}
+                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-700"
+                  >
+                    <span>
+                      {lang === "en"
+                        ? "Open Module 2 (Formatting & Export)"
+                        : "Ouvrir le Module 2 (Mise en forme & Export)"}
+                    </span>
+                    <ArrowRight className="h-3.5 w-3.5" />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setActionToast(null)}
+                  className="rounded p-1 text-slate-400 hover:bg-white/60 hover:text-slate-700"
+                  aria-label={t("nav.close")}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Section Header + Collapsible FMSB Constraints */}
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -741,8 +991,9 @@ export function Module1Assistant({
                       setCoDirDraft(emptySupervisor());
                       setCoverForm(payload);
                       await onSaveCover(payload);
-                      await onSaveSection(
+                      await handleSectionSaveOrValidate(
                         "cover_page",
+                        activeSpec.title,
                         payload.title,
                         "validated",
                         notes
@@ -895,10 +1146,15 @@ export function Module1Assistant({
                                   {seg.epidemiology_scope}
                                 </span>
                               )}
-                              <span className="text-slate-800">{seg.summary}</span>
+                              <span className="text-slate-800">
+                                {renderHighlightedSegmentText(seg.summary)}
+                              </span>
                               {seg.key_quote_or_data && (
                                 <div className="mt-0.5 text-[11px] text-slate-500">
-                                  {lang === "en" ? "Data:" : "Donnée :"} {seg.key_quote_or_data}
+                                  {lang === "en" ? "Data:" : "Donnée :"}{" "}
+                                  {renderHighlightedSegmentText(
+                                    seg.key_quote_or_data
+                                  )}
                                 </div>
                               )}
                             </div>
@@ -930,43 +1186,57 @@ export function Module1Assistant({
                 </div>
               )}
 
-              {/* AI Actions Bar */}
-              <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-indigo-100 bg-indigo-50/60 px-3.5 py-2.5">
-                <span className="text-xs text-indigo-950">
-                  <strong>{lang === "en" ? "AI Assistant:" : "Assistant IA :"}</strong>{" "}
-                  {lang === "en"
-                    ? "evidence-grounded drafting without hallucination & FMSB audit"
-                    : "rédaction sourcée sans hallucination & audit FMSB"}
-                </span>
-                <div className="flex flex-wrap gap-2">
-                  {(activeSpec.id === "toc" ||
-                    activeSpec.id === "abbreviations" ||
-                    activeSpec.id === "list_of_tables" ||
-                    activeSpec.id === "list_of_figures") && (
+              {/* Algorithmic Synchronization Bar (No AI Buttons) vs Narrative Unified AI Command Bar */}
+              {isAlgorithmicSection ? (
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50/90 px-4 py-3">
+                  <div className="flex items-center gap-2.5 text-xs text-slate-700">
+                    <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#6C2826]/10 text-[#6C2826]">
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    </span>
+                    <div>
+                      <div className="font-bold text-slate-900">
+                        {lang === "en"
+                          ? "Automatic Protocol Synchronization"
+                          : "Synchronisation algorithmique automatique"}
+                      </div>
+                      <div className="text-[11px] text-slate-600">
+                        {isReferencesSection
+                          ? lang === "en"
+                            ? "Automatically compiled and formatted in Vancouver ICMJE order from your cited references."
+                            : "Générée automatiquement selon la norme Vancouver ICMJE à partir des références du protocole."
+                          : lang === "en"
+                          ? "Automatically compiled from the sections, tables, figures, and structured forms of your protocol."
+                          : "Extraite automatiquement à partir des sections, tableaux, figures et formulaires structurés du protocole."}
+                      </div>
+                    </div>
+                  </div>
+
+                  {isAutoSyncSection && (
                     <button
                       type="button"
                       disabled={busyToc}
                       onClick={handleGenerateAutoToc}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#571f1d] disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#571f1d] disabled:opacity-50"
                     >
                       {busyToc ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                       ) : (
-                        <FileText className="h-3.5 w-3.5" />
+                        <RefreshCw className="h-3.5 w-3.5" />
                       )}
                       {busyToc
                         ? lang === "en"
-                          ? "Generating..."
-                          : "Génération..."
-                        : t("m1.generate_toc")}
+                          ? "Syncing..."
+                          : "Synchronisation..."
+                        : syncButtonLabel}
                     </button>
                   )}
-                  {activeSpec.id === "references" && (
+
+                  {isReferencesSection && (
                     <button
                       type="button"
                       disabled={busyRefs}
                       onClick={handleValidateVancouverReferences}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#571f1d] disabled:opacity-50"
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-[#571f1d] disabled:opacity-50"
                     >
                       {busyRefs ? (
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -980,85 +1250,149 @@ export function Module1Assistant({
                         : t("m1.validate_refs")}
                     </button>
                   )}
-                  <button
-                    type="button"
-                    disabled={busyDraft}
-                    onClick={() => handleDraftWithAI()}
-                    className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
-                  >
-                    {busyDraft ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <Sparkles className="h-3.5 w-3.5" />
-                    )}
-                    {busyDraft ? t("m1.drafting") : t("m1.draft_ai")}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busyAudit}
-                    onClick={handleAuditWithAI}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                  >
-                    {busyAudit ? (
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    ) : (
-                      <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
-                    )}
-                    {busyAudit ? t("m1.auditing") : t("m1.audit_ai")}
-                  </button>
-                  {![
-                    "toc",
-                    "abbreviations",
-                    "list_of_tables",
-                    "list_of_figures",
-                    "references",
-                  ].includes(activeSpec.id) && (
-                    <button
-                      type="button"
-                      disabled={busyHumanize || !draft.trim()}
-                      onClick={handleHumanizeWithAI}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
-                      title={
-                        lang === "en"
-                          ? "Rewrite this section in natural academic medical prose while preserving 100% of citations [n] and figures"
-                          : "Réécrire cette section en plume médicale naturelle FMSB tout en conservant 100 % des citations [n] et chiffres"
-                      }
-                    >
-                      {busyHumanize ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Feather className="h-3.5 w-3.5 text-amber-700" />
-                      )}
-                      {busyHumanize ? t("m1.humanizing") : t("m1.humanize")}
-                    </button>
-                  )}
-                  {![
-                    "toc",
-                    "abbreviations",
-                    "list_of_tables",
-                    "list_of_figures",
-                  ].includes(activeSpec.id) && (
-                    <button
-                      type="button"
-                      disabled={busyAntigravity}
-                      onClick={() => handleMobilizeAntigravity()}
-                      className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-[#6C2826] hover:bg-rose-100 disabled:opacity-50"
-                      title={
-                        lang === "en"
-                          ? "Search Vancouver references and relevant figures for this section"
-                          : "Rechercher des références Vancouver et figures pertinentes pour cette section"
-                      }
-                    >
-                      {busyAntigravity ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : (
-                        <Globe className="h-3.5 w-3.5" />
-                      )}
-                      {busyAntigravity ? t("m1.enriching") : t("m1.enrich_web")}
-                    </button>
-                  )}
                 </div>
-              </div>
+              ) : (
+                <div className="space-y-2.5 rounded-xl border border-indigo-200/80 bg-gradient-to-b from-indigo-50/70 to-white p-3.5 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs text-indigo-950">
+                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-lg bg-indigo-600/10 text-indigo-700">
+                        <Sparkles className="h-3.5 w-3.5" />
+                      </span>
+                      <div>
+                        <span className="font-bold">
+                          {lang === "en" ? "AI Assistant" : "Assistant IA"}
+                        </span>
+                        <span className="mx-1.5 text-slate-300">·</span>
+                        <span className="text-slate-600">
+                          {lang === "en"
+                            ? "Evidence-grounded drafting, refinement & FMSB audit"
+                            : "Rédaction sourcée, affinage ciblé & audit FMSB"}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        disabled={busyAudit || !hasContent}
+                        onClick={handleAuditWithAI}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        {busyAudit ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <ShieldCheck className="h-3.5 w-3.5 text-emerald-600" />
+                        )}
+                        {busyAudit ? t("m1.auditing") : t("m1.audit_ai")}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={busyHumanize || !hasContent}
+                        onClick={handleHumanizeWithAI}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-50"
+                        title={
+                          lang === "en"
+                            ? "Rewrite this section in natural academic medical prose while preserving 100% of citations [n] and figures"
+                            : "Réécrire cette section en plume médicale naturelle FMSB tout en conservant 100 % des citations [n] et chiffres"
+                        }
+                      >
+                        {busyHumanize ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Feather className="h-3.5 w-3.5 text-amber-700" />
+                        )}
+                        {busyHumanize ? t("m1.humanizing") : t("m1.humanize")}
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={busyAntigravity}
+                        onClick={() =>
+                          handleMobilizeAntigravity(aiInstruction.trim() || undefined)
+                        }
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-rose-300 bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-[#6C2826] hover:bg-rose-100 disabled:opacity-50"
+                        title={
+                          lang === "en"
+                            ? "Search Vancouver references and relevant figures for this section"
+                            : "Rechercher des références Vancouver et figures pertinentes pour cette section"
+                        }
+                      >
+                        {busyAntigravity ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Globe className="h-3.5 w-3.5" />
+                        )}
+                        {busyAntigravity ? t("m1.enriching") : t("m1.enrich_web")}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Unified Prompt Input + Single Adaptive Primary AI Action */}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (busyDraft) return;
+                      handleDraftWithAI(aiInstruction.trim() || undefined);
+                    }}
+                    className="flex flex-wrap items-center gap-2"
+                  >
+                    <input
+                      type="text"
+                      value={aiInstruction}
+                      onChange={(e) => setAiInstruction(e.target.value)}
+                      placeholder={aiPlaceholder}
+                      className="min-w-[220px] flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                    />
+
+                    {!hasContent ? (
+                      <button
+                        type="submit"
+                        disabled={busyDraft}
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50"
+                      >
+                        {busyDraft ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="h-3.5 w-3.5" />
+                        )}
+                        {busyDraft ? t("m1.drafting") : t("m1.generate_ai")}
+                      </button>
+                    ) : hasInstruction ? (
+                      <button
+                        type="submit"
+                        disabled={busyDraft}
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50"
+                      >
+                        {busyDraft ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Wand2 className="h-3.5 w-3.5" />
+                        )}
+                        {busyDraft ? t("m1.refining") : t("m1.refine_ai")}
+                      </button>
+                    ) : (
+                      <button
+                        type="submit"
+                        disabled={busyDraft}
+                        title={
+                          lang === "en"
+                            ? "Regenerate or refresh this section using current references (type an instruction on the left to refine specific points)"
+                            : "Régénérer cette section à partir des références (ou saisissez une consigne à gauche pour un affinage ciblé)"
+                        }
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-indigo-300 bg-white px-3.5 py-2 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
+                      >
+                        {busyDraft ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                        {busyDraft ? t("m1.drafting") : t("m1.regenerate_ai")}
+                      </button>
+                    )}
+                  </form>
+                </div>
+              )}
 
               {/* Cas A : Section courante ciblée par une alerte de cohérence inter-sections */}
               {activeSectionAlerts.map((alert) => (
@@ -1245,15 +1579,48 @@ export function Module1Assistant({
                 </div>
               )}
 
+              {detectedPlaceholders.length > 0 && (
+                <div className="rounded-xl border-2 border-amber-400 bg-amber-50/95 p-3.5 text-xs text-rose-950 shadow-sm">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-rose-900">
+                        {lang === "en"
+                          ? `${detectedPlaceholders.length} investigator placeholder(s) to complete in this section:`
+                          : `${detectedPlaceholders.length} champ(s) [À compléter par l'investigateur] à renseigner dans cette section :`}
+                      </div>
+                      <p className="mt-0.5 text-[11px] text-amber-900">
+                        {lang === "en"
+                          ? "Replace the highlighted yellow/red markers below directly in the editor with your verified local or institutional figures."
+                          : "Remplacez directement les balises surlignées en jaune et rouge dans l'éditeur ci-dessous par vos données locales ou institutionnelles."}
+                      </p>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {detectedPlaceholders.map((ph, idx) => (
+                          <span
+                            key={idx}
+                            className="sr-placeholder-highlight inline-block text-[11px]"
+                          >
+                            {ph}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               <div>
-                <label className="block text-sm font-semibold text-slate-800 mb-1.5">
-                  {lang === "en"
-                    ? "Section Content (Rich Text Editor)"
-                    : "Contenu de la section (Éditeur riche FMSB)"}
-                </label>
+                <div className="mb-1.5 flex items-center justify-between gap-2">
+                  <label className="block text-sm font-semibold text-slate-800">
+                    {lang === "en"
+                      ? "Section Content (Rich Text Editor)"
+                      : "Contenu de la section (Éditeur riche FMSB)"}
+                  </label>
+                </div>
                 <RichTextEditor
                   contentHtml={draftHtml}
                   contentMarkdown={draft}
+                  wordCount={wordCount}
                   onChange={(html, text) => {
                     setDraftHtml(html);
                     setDraft(text);
@@ -1261,78 +1628,112 @@ export function Module1Assistant({
                 />
               </div>
 
-              <SectionMediaPanel
-                project={project}
-                sectionId={activeSpec.id}
-                sectionText={draft}
-                sectionHtml={draftHtml}
-                onProjectUpdated={onProjectUpdated}
-                onError={onError}
-              />
-
-              {/* Dialogue / Iterative Revision Box */}
-              <div className="flex flex-wrap gap-2">
-                <input
-                  type="text"
-                  value={aiInstruction}
-                  onChange={(e) => setAiInstruction(e.target.value)}
-                  placeholder={t("m1.instruction_placeholder")}
-                  className="min-w-[240px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs focus:border-indigo-500 focus:outline-none"
+              {showMediaPanel && (
+                <SectionMediaPanel
+                  project={project}
+                  sectionId={activeSpec.id}
+                  sectionText={draft}
+                  sectionHtml={draftHtml}
+                  onProjectUpdated={onProjectUpdated}
+                  onError={onError}
                 />
-                <button
-                  type="button"
-                  disabled={busyDraft || !aiInstruction.trim()}
-                  onClick={() => handleDraftWithAI(aiInstruction)}
-                  className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 px-3.5 py-2 text-xs font-semibold text-white hover:bg-slate-900 disabled:opacity-50"
-                >
-                  <MessageSquarePlus className="h-3.5 w-3.5" />
-                  {lang === "en" ? "Apply instruction" : "Appliquer l'amélioration"}
-                </button>
-              </div>
+              )}
 
-              <div>
-                <label className="block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  {lang === "en" ? "Candidate Personal Notes" : "Notes personnelles de l'étudiant"}
-                </label>
-                <textarea
-                  rows={2}
-                  value={notes}
-                  onChange={(e) => setNotes(e.target.value)}
-                  placeholder={lang === "en" ? "Internal notes..." : "Notes internes..."}
-                  className="mt-1 w-full rounded-lg border border-slate-200 p-2.5 text-xs focus:border-indigo-500 focus:outline-none"
-                />
-              </div>
+              {/* Compact Collapsible Personal Notes + Save Bar */}
+              <div className="border-t border-slate-100 pt-3">
+                {showPersonalNotes ? (
+                  <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-xs font-semibold uppercase tracking-wide text-slate-600">
+                        {lang === "en"
+                          ? "Candidate Personal Notes"
+                          : "Notes personnelles de l'étudiant"}
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setShowPersonalNotes(false)}
+                        className="text-[11px] font-medium text-slate-500 hover:text-slate-700"
+                      >
+                        {lang === "en" ? "Hide" : "Masquer"}
+                      </button>
+                    </div>
+                    <textarea
+                      rows={2}
+                      value={notes}
+                      onChange={(e) => setNotes(e.target.value)}
+                      placeholder={
+                        lang === "en" ? "Internal notes..." : "Notes internes..."
+                      }
+                      className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white p-2.5 text-xs focus:border-indigo-500 focus:outline-none"
+                    />
+                  </div>
+                ) : null}
 
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <span className="text-xs text-slate-500">
-                  {draft.trim()
-                    ? `${draft.trim().split(/\s+/).length} ${lang === "en" ? "words" : "mots"}`
-                    : lang === "en"
-                    ? "0 words"
-                    : "0 mot"}
-                </span>
-                <div className="flex flex-wrap gap-2.5">
-                  <button
-                    type="button"
-                    disabled={saving}
-                    onClick={() =>
-                      onSaveSection(activeSpec.id, draft, "in_progress", notes, draftHtml)
-                    }
-                    className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                  >
-                    {t("m1.save_draft")}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={saving}
-                    onClick={() =>
-                      onSaveSection(activeSpec.id, draft, "validated", notes, draftHtml)
-                    }
-                    className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
-                  >
-                    <CheckCircle2 className="h-4 w-4" />
-                    {t("m1.validate_step")}
-                  </button>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="flex items-center gap-3 text-xs text-slate-500">
+                    <span>
+                      {wordCount}{" "}
+                      {lang === "en"
+                        ? wordCount === 1
+                          ? "word"
+                          : "words"
+                        : wordCount <= 1
+                        ? "mot"
+                        : "mots"}
+                    </span>
+                    {!showPersonalNotes && (
+                      <button
+                        type="button"
+                        onClick={() => setShowPersonalNotes(true)}
+                        className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                      >
+                        {notes.trim()
+                          ? lang === "en"
+                            ? "View personal notes"
+                            : "Voir notes personnelles"
+                          : lang === "en"
+                          ? "+ Personal notes"
+                          : "+ Notes personnelles"}
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-2.5">
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() =>
+                        handleSectionSaveOrValidate(
+                          activeSpec.id,
+                          activeSpec.title,
+                          draft,
+                          "in_progress",
+                          notes,
+                          draftHtml
+                        )
+                      }
+                      className="rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {t("m1.save_draft")}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() =>
+                        handleSectionSaveOrValidate(
+                          activeSpec.id,
+                          activeSpec.title,
+                          draft,
+                          "validated",
+                          notes,
+                          draftHtml
+                        )
+                      }
+                      className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      <CheckCircle2 className="h-4 w-4" />
+                      {t("m1.validate_step")}
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1341,12 +1742,14 @@ export function Module1Assistant({
       </div>
       </div>
 
-      {/* Real-Time Pipeline Steps Utility (kept visible even across module switches) */}
+      {/* Real-Time Multi-Task Pipeline Steps Side Panel */}
       <PipelineProgressWidget
+        tasks={tracker.tasks}
         task={tracker.activeTask}
         elapsedSec={tracker.localElapsedSec}
         visible={tracker.visible}
         onDismiss={tracker.dismiss}
+        onDismissTask={tracker.dismissTask}
       />
     </>
   );

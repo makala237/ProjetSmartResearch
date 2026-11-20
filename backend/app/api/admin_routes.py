@@ -4,23 +4,17 @@ import secrets
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func
-from sqlalchemy.orm import Session
 
 from app.api.deps import require_admin
 from app.core.security import ensure_utc, hash_password
 from app.db.database import get_db
-from app.db.models import (
-    AdminAuditLogORM,
-    LicensePlanORM,
-    ProjectORM,
-    UsageEventORM,
-    UserAIQuotaORM,
-    UserLicenseGrantORM,
-    UserModuleEntitlementORM,
-    UserORM,
-    utcnow,
+from app.db.datastore import (
+    UserLicenseGrantRecord,
+    UserModuleEntitlementRecord,
+    UserRecord,
+    as_store,
 )
+from app.db.models import utcnow
 from app.schemas.admin import (
     AdminAdjustEntitlementRequest,
     AdminAuditLogOut,
@@ -72,54 +66,19 @@ def _generate_temp_password() -> str:
 
 
 def _build_student_rows(
-    db: Session,
-    users: List[UserORM],
+    db: Any,
+    users: List[Any],
 ) -> List[AdminStudentStatsRow]:
     if not users:
         return []
+    store = as_store(db)
     user_ids = [u.id for u in users]
     now = datetime.now(timezone.utc)
 
-    ent_rows = (
-        db.query(UserModuleEntitlementORM)
-        .filter(UserModuleEntitlementORM.user_id.in_(user_ids))
-        .all()
-    )
-    ent_by_user: Dict[str, Dict[str, UserModuleEntitlementORM]] = {}
-    for er in ent_rows:
-        ent_by_user.setdefault(er.user_id, {})[er.module_key] = er
-
-    quota_rows = (
-        db.query(UserAIQuotaORM)
-        .filter(UserAIQuotaORM.user_id.in_(user_ids))
-        .all()
-    )
-    quota_by_user = {q.user_id: q for q in quota_rows}
-
-    proj_rows = (
-        db.query(ProjectORM)
-        .filter(ProjectORM.owner_user_id.in_(user_ids))
-        .order_by(ProjectORM.updated_at.desc())
-        .all()
-    )
-    proj_by_user: Dict[str, ProjectORM] = {}
-    for pr in proj_rows:
-        if pr.owner_user_id not in proj_by_user:
-            proj_by_user[pr.owner_user_id] = pr
-
-    event_rows = (
-        db.query(UsageEventORM.user_id, UsageEventORM.action, func.count(UsageEventORM.id))
-        .filter(UsageEventORM.user_id.in_(user_ids), UsageEventORM.status == "ok")
-        .group_by(UsageEventORM.user_id, UsageEventORM.action)
-        .all()
-    )
-    exports_by_user: Dict[str, int] = {}
-    ai_calls_by_user: Dict[str, int] = {}
-    for uid, act, cnt in event_rows:
-        if act in EXPORT_ACTIONS:
-            exports_by_user[uid] = exports_by_user.get(uid, 0) + int(cnt)
-        elif act != "patient_upsert":
-            ai_calls_by_user[uid] = ai_calls_by_user.get(uid, 0) + int(cnt)
+    ent_by_user: Dict[str, Dict[str, UserModuleEntitlementRecord]] = store.list_entitlements_for_users(user_ids)
+    quota_by_user = store.list_quotas_for_users(user_ids)
+    proj_by_user = store.list_project_metas_for_users(user_ids)
+    exports_by_user, ai_calls_by_user = store.aggregate_ok_events_by_users(user_ids, EXPORT_ACTIONS)
 
     result: List[AdminStudentStatsRow] = []
     for u in users:
@@ -168,7 +127,7 @@ def _build_student_rows(
         else:
             summary = "none"
 
-        daily_38 = get_student_daily_38_usage(db, u)
+        daily_38 = get_student_daily_38_usage(store, u)
         q = quota_by_user.get(u.id)
         if q:
             ai_quota = AIQuotaOut(
@@ -223,13 +182,14 @@ def _build_student_rows(
     return result
 
 
-def _hydrate_grants(db: Session, grants: List[UserLicenseGrantORM]) -> List[AdminGrantRecordOut]:
+def _hydrate_grants(db: Any, grants: List[UserLicenseGrantRecord]) -> List[AdminGrantRecordOut]:
     if not grants:
         return []
+    store = as_store(db)
     uids = list({g.user_id for g in grants})
     pids = list({g.plan_id for g in grants if g.plan_id})
-    users = {u.id: u for u in db.query(UserORM).filter(UserORM.id.in_(uids)).all()} if uids else {}
-    plans = {p.id: p for p in db.query(LicensePlanORM).filter(LicensePlanORM.id.in_(pids)).all()} if pids else {}
+    users = store.get_users_by_ids(uids) if uids else {}
+    plans = store.get_plans_by_ids(pids) if pids else {}
     now = datetime.now(timezone.utc)
     out: List[AdminGrantRecordOut] = []
     for g in grants:
@@ -257,20 +217,21 @@ def _hydrate_grants(db: Session, grants: List[UserLicenseGrantORM]) -> List[Admi
 # DASHBOARD KPIS
 # =========================================================================
 @router.get("/dashboard", response_model=AdminDashboardStatsOut)
-def get_admin_dashboard(db: Session = Depends(get_db)) -> AdminDashboardStatsOut:
+def get_admin_dashboard(db: Any = Depends(get_db)) -> AdminDashboardStatsOut:
+    store = as_store(db)
     now = datetime.now(timezone.utc)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
-    total_admins = db.query(UserORM).filter(UserORM.role == "admin").count()
-    students = db.query(UserORM).filter(UserORM.role == "student").all()
-    student_rows = _build_student_rows(db, students)
+    total_admins = store.count_users(role="admin")
+    students = store.list_users(role="student")
+    student_rows = _build_student_rows(store, students)
 
     active_cnt = sum(1 for r in student_rows if r.status_summary == "active")
     exp_soon_rows = [r for r in student_rows if r.status_summary == "expiring_soon"]
     expired_cnt = sum(1 for r in student_rows if r.status_summary in ("expired", "none"))
     disabled_cnt = sum(1 for r in student_rows if r.status_summary == "disabled")
 
-    all_grants = db.query(UserLicenseGrantORM).order_by(UserLicenseGrantORM.granted_at.desc()).all()
+    all_grants = store.list_grants()
     total_rev = sum(int(g.amount_paid_fcfa or 0) for g in all_grants)
     month_rev = sum(
         int(g.amount_paid_fcfa or 0)
@@ -278,10 +239,10 @@ def get_admin_dashboard(db: Session = Depends(get_db)) -> AdminDashboardStatsOut
         if (ensure_utc(g.granted_at) or now) >= month_start
     )
 
-    total_projects = db.query(ProjectORM).count()
-    total_patients = int(db.query(func.coalesce(func.sum(ProjectORM.patients_count), 0)).scalar() or 0)
+    total_projects = store.count_projects()
+    total_patients = store.sum_patients_count()
 
-    all_events = db.query(UsageEventORM).filter(UsageEventORM.status == "ok").all()
+    all_events = store.list_usage_events(status="ok")
     total_exports = sum(1 for e in all_events if e.action in EXPORT_ACTIONS)
     total_ai_used = sum(int(e.credits_cost or 0) for e in all_events)
     month_ai_used = sum(
@@ -304,7 +265,7 @@ def get_admin_dashboard(db: Session = Depends(get_db)) -> AdminDashboardStatsOut
         total_exports=total_exports,
         total_ai_credits_used=total_ai_used,
         month_ai_credits_used=month_ai_used,
-        recent_grants=_hydrate_grants(db, all_grants[:8]),
+        recent_grants=_hydrate_grants(store, all_grants[:8]),
         expiring_soon_list=exp_soon_rows[:10],
     )
 
@@ -315,12 +276,10 @@ def get_admin_dashboard(db: Session = Depends(get_db)) -> AdminDashboardStatsOut
 @router.get("/plans", response_model=List[LicensePlanOut])
 def list_license_plans(
     include_inactive: bool = False,
-    db: Session = Depends(get_db),
+    db: Any = Depends(get_db),
 ) -> List[LicensePlanOut]:
-    q = db.query(LicensePlanORM)
-    if not include_inactive:
-        q = q.filter(LicensePlanORM.is_active.is_(True))
-    plans = q.order_by(LicensePlanORM.price_fcfa.asc(), LicensePlanORM.created_at.desc()).all()
+    store = as_store(db)
+    plans = store.list_plans(include_inactive=include_inactive)
     return [
         LicensePlanOut(
             id=p.id,
@@ -342,15 +301,15 @@ def list_license_plans(
 @router.post("/plans", response_model=LicensePlanOut)
 def create_license_plan(
     payload: LicensePlanCreateRequest,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> LicensePlanOut:
+    store = as_store(db)
     clean_name = payload.name.strip()
-    existing = db.query(LicensePlanORM).filter(LicensePlanORM.name == clean_name).first()
-    if existing is not None:
+    if store.get_plan_by_name(clean_name) is not None:
         raise HTTPException(status_code=409, detail="Un plan avec ce nom existe déjà.")
 
-    plan = LicensePlanORM(
+    plan = store.create_plan(
         name=clean_name,
         description=payload.description.strip(),
         price_fcfa=payload.price_fcfa,
@@ -362,18 +321,13 @@ def create_license_plan(
         is_active=payload.is_active,
         created_at=utcnow(),
     )
-    db.add(plan)
-    db.flush()
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            action="create_license_plan",
-            details_json={"plan_id": plan.id, "name": plan.name, "price_fcfa": plan.price_fcfa},
-            created_at=utcnow(),
-        )
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=None,
+        action="create_license_plan",
+        details_json={"plan_id": plan.id, "name": plan.name, "price_fcfa": plan.price_fcfa},
+        created_at=utcnow(),
     )
-    db.commit()
-    db.refresh(plan)
     return LicensePlanOut(
         id=plan.id,
         name=plan.name,
@@ -393,50 +347,45 @@ def create_license_plan(
 def update_license_plan(
     plan_id: str,
     payload: LicensePlanUpdateRequest,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> LicensePlanOut:
-    plan = db.get(LicensePlanORM, plan_id)
+    store = as_store(db)
+    plan = store.get_plan(plan_id)
     if plan is None:
         raise HTTPException(status_code=404, detail="Plan de licence introuvable.")
 
+    updates: Dict[str, Any] = {}
     if payload.name is not None:
         clean_name = payload.name.strip()
-        dup = (
-            db.query(LicensePlanORM)
-            .filter(LicensePlanORM.name == clean_name, LicensePlanORM.id != plan_id)
-            .first()
-        )
-        if dup is not None:
+        if store.get_plan_by_name(clean_name, exclude_id=plan_id) is not None:
             raise HTTPException(status_code=409, detail="Un autre plan utilise déjà ce nom.")
-        plan.name = clean_name
+        updates["name"] = clean_name
     if payload.description is not None:
-        plan.description = payload.description.strip()
+        updates["description"] = payload.description.strip()
     if payload.price_fcfa is not None:
-        plan.price_fcfa = payload.price_fcfa
+        updates["price_fcfa"] = payload.price_fcfa
     if payload.module1_days is not None:
-        plan.module1_days = payload.module1_days
+        updates["module1_days"] = payload.module1_days
     if payload.module2_days is not None:
-        plan.module2_days = payload.module2_days
+        updates["module2_days"] = payload.module2_days
     if payload.module3_days is not None:
-        plan.module3_days = payload.module3_days
+        updates["module3_days"] = payload.module3_days
     if payload.module4_days is not None:
-        plan.module4_days = payload.module4_days
+        updates["module4_days"] = payload.module4_days
     if payload.ai_quota_included is not None:
-        plan.ai_quota_included = payload.ai_quota_included
+        updates["ai_quota_included"] = payload.ai_quota_included
     if payload.is_active is not None:
-        plan.is_active = payload.is_active
+        updates["is_active"] = payload.is_active
 
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            action="update_license_plan",
-            details_json={"plan_id": plan.id, "name": plan.name},
-            created_at=utcnow(),
-        )
+    plan = store.update_plan(plan_id, **updates) or plan
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=None,
+        action="update_license_plan",
+        details_json={"plan_id": plan.id, "name": plan.name},
+        created_at=utcnow(),
     )
-    db.commit()
-    db.refresh(plan)
     return LicensePlanOut(
         id=plan.id,
         name=plan.name,
@@ -455,30 +404,28 @@ def update_license_plan(
 @router.delete("/plans/{plan_id}")
 def delete_or_archive_license_plan(
     plan_id: str,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
-    plan = db.get(LicensePlanORM, plan_id)
+    store = as_store(db)
+    plan = store.get_plan(plan_id)
     if plan is None:
         raise HTTPException(status_code=404, detail="Plan de licence introuvable.")
-    has_grants = db.query(UserLicenseGrantORM).filter(UserLicenseGrantORM.plan_id == plan_id).count() > 0
-    if has_grants:
-        plan.is_active = False
+    if store.has_grants_for_plan(plan_id):
+        store.update_plan(plan_id, is_active=False)
         action = "archive_license_plan"
         status_out = "archived"
     else:
-        db.delete(plan)
+        store.delete_plan(plan_id)
         action = "delete_license_plan"
         status_out = "deleted"
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            action=action,
-            details_json={"plan_id": plan_id, "name": plan.name},
-            created_at=utcnow(),
-        )
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=None,
+        action=action,
+        details_json={"plan_id": plan_id, "name": plan.name},
+        created_at=utcnow(),
     )
-    db.commit()
     return {"status": status_out, "plan_id": plan_id}
 
 
@@ -490,13 +437,11 @@ def list_users(
     role: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
     status: Optional[str] = Query(default=None),
-    db: Session = Depends(get_db),
+    db: Any = Depends(get_db),
 ) -> List[AdminStudentStatsRow]:
-    q = db.query(UserORM)
-    if role in ("student", "admin"):
-        q = q.filter(UserORM.role == role)
-    users = q.order_by(UserORM.created_at.desc()).all()
-    rows = _build_student_rows(db, users)
+    store = as_store(db)
+    users = store.list_users(role=role if role in ("student", "admin") else None)
+    rows = _build_student_rows(store, users)
 
     if search and search.strip():
         needle = search.strip().casefold()
@@ -517,21 +462,22 @@ def list_users(
 @router.post("/users", response_model=AdminCreateUserResponse)
 def admin_create_user(
     payload: AdminCreateUserRequest,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> AdminCreateUserResponse:
+    store = as_store(db)
     role = payload.role if payload.role in ("student", "admin") else "student"
     temp_pw = (payload.temporary_password or "").strip() or _generate_temp_password()
 
-    plan: Optional[LicensePlanORM] = None
+    plan = None
     if role == "student" and payload.plan_id:
-        plan = db.get(LicensePlanORM, payload.plan_id)
+        plan = store.get_plan(payload.plan_id)
         if plan is None:
             raise HTTPException(status_code=404, detail="Plan de licence introuvable.")
 
     try:
         user = create_user_account(
-            db=db,
+            db=store,
             email=payload.email,
             full_name=payload.full_name,
             password=temp_pw,
@@ -543,12 +489,12 @@ def admin_create_user(
         )
     except ValueError as exc:
         if str(exc) == "EMAIL_EXISTS":
-            raise HTTPException(status_code=409, detail="Un compte avec cet email existe déjà.") from exc
+            raise HTTPException(status_code=409, detail="Un compte avec cet identifiant ou e-mail existe déjà.") from exc
         raise
 
     if plan is not None and role == "student":
         apply_license_plan_to_user(
-            db=db,
+            db=store,
             admin_user=admin_user,
             target_user=user,
             plan=plan,
@@ -571,7 +517,7 @@ def admin_create_user(
                 author_name=user.full_name,
                 matricule=user.matricule,
                 student_phone=user.phone,
-                student_email=user.email,
+                student_email=user.email if "@" in user.email else "",
             )
 
         if cov is not None and cov.title.strip():
@@ -581,7 +527,7 @@ def admin_create_user(
                 cov.matricule = user.matricule
             if not cov.student_phone.strip() and user.phone:
                 cov.student_phone = user.phone
-            if not cov.student_email.strip() and user.email:
+            if not cov.student_email.strip() and user.email and "@" in user.email:
                 cov.student_email = user.email
 
             created_proj = project_storage.create(
@@ -602,23 +548,20 @@ def admin_create_user(
             update_section_working_memory(created_proj, "cover_page")
             created_pid = created_proj.project_id
 
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            target_user_id=user.id,
-            action="create_user",
-            details_json={
-                "email": user.email,
-                "role": role,
-                "plan_id": payload.plan_id if role == "student" else None,
-                "created_project_id": created_pid,
-            },
-            created_at=utcnow(),
-        )
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=user.id,
+        action="create_user",
+        details_json={
+            "email": user.email,
+            "role": role,
+            "plan_id": payload.plan_id if role == "student" else None,
+            "created_project_id": created_pid,
+        },
+        created_at=utcnow(),
     )
-    db.commit()
-    db.refresh(user)
-    row_out = _build_student_rows(db, [user])[0]
+    fresh_user = store.get_user(user.id) or user
+    row_out = _build_student_rows(store, [fresh_user])[0]
     return AdminCreateUserResponse(
         user=row_out,
         temporary_password=temp_pw,
@@ -629,42 +572,26 @@ def admin_create_user(
 @router.get("/users/{user_id}", response_model=AdminUserDetailOut)
 def get_user_detail(
     user_id: str,
-    db: Session = Depends(get_db),
+    db: Any = Depends(get_db),
 ) -> AdminUserDetailOut:
-    user = db.get(UserORM, user_id)
+    store = as_store(db)
+    user = store.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
 
-    row_out = _build_student_rows(db, [user])[0]
-    grants = (
-        db.query(UserLicenseGrantORM)
-        .filter(UserLicenseGrantORM.user_id == user_id)
-        .order_by(UserLicenseGrantORM.granted_at.desc())
-        .limit(50)
-        .all()
-    )
-    events = (
-        db.query(UsageEventORM)
-        .filter(UsageEventORM.user_id == user_id)
-        .order_by(UsageEventORM.created_at.desc())
-        .limit(50)
-        .all()
-    )
-    logs = (
-        db.query(AdminAuditLogORM)
-        .filter(AdminAuditLogORM.target_user_id == user_id)
-        .order_by(AdminAuditLogORM.created_at.desc())
-        .limit(50)
-        .all()
-    )
+    row_out = _build_student_rows(store, [user])[0]
+    grants = store.list_grants(user_id=user_id, limit=50)
+    events = store.list_usage_events(user_id=user_id, limit=50)
+    logs = store.list_audit_logs(target_user_id=user_id, limit=50)
+
     admin_ids = list({l.admin_id for l in logs if l.admin_id})
-    admins = {a.id: a.email for a in db.query(UserORM).filter(UserORM.id.in_(admin_ids)).all()} if admin_ids else {}
+    admins = {uid: u.email for uid, u in store.get_users_by_ids(admin_ids).items()} if admin_ids else {}
     now = datetime.now(timezone.utc)
     proj_obj = project_storage.get(row_out.project_id) if row_out.project_id else None
 
     return AdminUserDetailOut(
         user=row_out,
-        grants=_hydrate_grants(db, grants),
+        grants=_hydrate_grants(store, grants),
         recent_events=[
             UsageEventOut(
                 id=e.id,
@@ -703,10 +630,11 @@ def get_user_detail(
 def update_user(
     user_id: str,
     payload: AdminUpdateUserRequest,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> AdminStudentStatsRow:
-    user = db.get(UserORM, user_id)
+    store = as_store(db)
+    user = store.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
     if user.id == admin_user.id:
@@ -715,55 +643,43 @@ def update_user(
         if payload.role is not None and payload.role != "admin":
             raise HTTPException(status_code=400, detail="Vous ne pouvez pas rétrograder votre propre compte.")
 
+    updates: Dict[str, Any] = {}
     if payload.full_name is not None:
-        user.full_name = payload.full_name.strip()
+        updates["full_name"] = payload.full_name.strip()
     if payload.matricule is not None:
-        user.matricule = payload.matricule.strip()
+        updates["matricule"] = payload.matricule.strip()
     if payload.phone is not None:
-        user.phone = payload.phone.strip()
+        updates["phone"] = payload.phone.strip()
     if payload.role in ("student", "admin"):
-        user.role = payload.role
+        updates["role"] = payload.role
         if payload.role == "admin":
-            quota_row = db.get(UserAIQuotaORM, user.id)
-            if quota_row is None:
-                db.add(
-                    UserAIQuotaORM(
-                        user_id=user.id,
-                        credits_total=100000,
-                        credits_used=0,
-                        updated_at=utcnow(),
-                    )
-                )
-            else:
-                quota_row.credits_total = max(int(quota_row.credits_total or 0), 100000)
-                quota_row.updated_at = utcnow()
+            store.ensure_admin_min_quota(user.id, min_credits=100000, now=utcnow())
     if payload.is_active is not None:
-        user.is_active = payload.is_active
+        updates["is_active"] = payload.is_active
         if not payload.is_active:
-            user.active_session_id = None
+            updates["active_session_id"] = None
 
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            target_user_id=user.id,
-            action="update_user",
-            details_json=payload.model_dump(exclude_none=True),
-            created_at=utcnow(),
-        )
+    user = store.update_user(user.id, **updates) or user
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=user.id,
+        action="update_user",
+        details_json=payload.model_dump(exclude_none=True),
+        created_at=utcnow(),
     )
-    db.commit()
-    db.refresh(user)
-    return _build_student_rows(db, [user])[0]
+    fresh_user = store.get_user(user_id) or user
+    return _build_student_rows(store, [fresh_user])[0]
 
 
 @router.post("/users/{user_id}/reset-password", response_model=AdminResetPasswordResponse)
 def reset_user_password(
     user_id: str,
     payload: Optional[AdminResetPasswordRequest] = None,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> AdminResetPasswordResponse:
-    user = db.get(UserORM, user_id)
+    store = as_store(db)
+    user = store.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
 
@@ -772,20 +688,19 @@ def reset_user_password(
         if payload and payload.new_temporary_password
         else _generate_temp_password()
     )
-    user.password_hash = hash_password(temp_pw)
-    user.must_change_password = True
-    user.active_session_id = None
-
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            target_user_id=user.id,
-            action="reset_password",
-            details_json={"email": user.email},
-            created_at=utcnow(),
-        )
+    store.update_user(
+        user.id,
+        password_hash=hash_password(temp_pw),
+        must_change_password=True,
+        active_session_id=None,
     )
-    db.commit()
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=user.id,
+        action="reset_password",
+        details_json={"email": user.email},
+        created_at=utcnow(),
+    )
     return AdminResetPasswordResponse(user_id=user.id, temporary_password=temp_pw)
 
 
@@ -793,18 +708,19 @@ def reset_user_password(
 def grant_plan_to_user(
     user_id: str,
     payload: AdminGrantPlanRequest,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> AdminStudentStatsRow:
-    user = db.get(UserORM, user_id)
+    store = as_store(db)
+    user = store.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
-    plan = db.get(LicensePlanORM, payload.plan_id)
+    plan = store.get_plan(payload.plan_id)
     if plan is None:
         raise HTTPException(status_code=404, detail="Plan de licence introuvable.")
 
     apply_license_plan_to_user(
-        db=db,
+        db=store,
         admin_user=admin_user,
         target_user=user,
         plan=plan,
@@ -812,8 +728,8 @@ def grant_plan_to_user(
         payment_reference=payload.payment_reference,
         notes=payload.notes,
     )
-    db.refresh(user)
-    return _build_student_rows(db, [user])[0]
+    fresh_user = store.get_user(user_id) or user
+    return _build_student_rows(store, [fresh_user])[0]
 
 
 @router.patch("/users/{user_id}/entitlements/{module_key}", response_model=AdminStudentStatsRow)
@@ -821,15 +737,16 @@ def adjust_module_license(
     user_id: str,
     module_key: str,
     payload: AdminAdjustEntitlementRequest,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> AdminStudentStatsRow:
-    user = db.get(UserORM, user_id)
+    store = as_store(db)
+    user = store.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
 
     adjust_user_module_entitlement(
-        db=db,
+        db=store,
         admin_user=admin_user,
         target_user=user,
         module_key=module_key,
@@ -838,54 +755,51 @@ def adjust_module_license(
         revoke=payload.revoke,
         notes=payload.notes,
     )
-    db.refresh(user)
-    return _build_student_rows(db, [user])[0]
+    fresh_user = store.get_user(user_id) or user
+    return _build_student_rows(store, [fresh_user])[0]
 
 
 @router.post("/users/{user_id}/recharge-ai", response_model=AdminStudentStatsRow)
 def recharge_ai_credits(
     user_id: str,
     payload: AdminRechargeAIRequest,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> AdminStudentStatsRow:
-    user = db.get(UserORM, user_id)
+    store = as_store(db)
+    user = store.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
 
     recharge_user_ai_quota(
-        db=db,
+        db=store,
         admin_user=admin_user,
         target_user=user,
         add_credits=payload.add_credits,
         notes=payload.notes,
         daily_38_limit=payload.daily_38_limit,
     )
-    db.refresh(user)
-    return _build_student_rows(db, [user])[0]
+    fresh_user = store.get_user(user_id) or user
+    return _build_student_rows(store, [fresh_user])[0]
 
 
 @router.patch("/users/{user_id}/project-identity", response_model=AdminStudentStatsRow)
 def override_student_project_identity(
     user_id: str,
     payload: AdminUpdateProjectIdentityRequest,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> AdminStudentStatsRow:
-    user = db.get(UserORM, user_id)
+    store = as_store(db)
+    user = store.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
 
-    proj_row = (
-        db.query(ProjectORM)
-        .filter(ProjectORM.owner_user_id == user_id)
-        .order_by(ProjectORM.updated_at.desc())
-        .first()
-    )
-    if proj_row is None:
+    proj_meta = store.get_latest_project_meta_for_user(user_id)
+    if proj_meta is None:
         raise HTTPException(status_code=404, detail="Cet utilisateur n'a aucun protocole enregistré.")
 
-    proj = project_storage.get(proj_row.project_id)
+    proj = project_storage.get(proj_meta.project_id)
     if proj is None:
         raise HTTPException(status_code=404, detail="Protocole introuvable.")
 
@@ -914,39 +828,36 @@ def override_student_project_identity(
 
     project_storage.save(proj)
 
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            target_user_id=user.id,
-            action="override_project_identity",
-            details_json={
-                "project_id": proj.project_id,
-                "old": old_vals,
-                "new": {
-                    "title": proj.cover.title,
-                    "author_name": proj.cover.author_name,
-                    "matricule": proj.cover.matricule,
-                    "topic_locked": proj.topic_locked,
-                },
-                "reason": payload.reason.strip(),
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=user.id,
+        action="override_project_identity",
+        details_json={
+            "project_id": proj.project_id,
+            "old": old_vals,
+            "new": {
+                "title": proj.cover.title,
+                "author_name": proj.cover.author_name,
+                "matricule": proj.cover.matricule,
+                "topic_locked": proj.topic_locked,
             },
-            created_at=utcnow(),
-        )
+            "reason": payload.reason.strip(),
+        },
+        created_at=utcnow(),
     )
-    db.commit()
-    db.expire_all()
-    user = db.get(UserORM, user_id)
-    return _build_student_rows(db, [user])[0]
+    fresh_user = store.get_user(user_id) or user
+    return _build_student_rows(store, [fresh_user])[0]
 
 
 @router.patch("/users/{user_id}/cover", response_model=AdminStudentStatsRow)
 def update_user_full_cover(
     user_id: str,
     payload: AdminUpdateUserCoverRequest,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> AdminStudentStatsRow:
-    user = db.get(UserORM, user_id)
+    store = as_store(db)
+    user = store.get_user(user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
 
@@ -957,17 +868,12 @@ def update_user_full_cover(
         next_cover.matricule = user.matricule
     if not next_cover.student_phone.strip() and user.phone:
         next_cover.student_phone = user.phone
-    if not next_cover.student_email.strip() and user.email:
+    if not next_cover.student_email.strip() and user.email and "@" in user.email:
         next_cover.student_email = user.email
 
-    proj_row = (
-        db.query(ProjectORM)
-        .filter(ProjectORM.owner_user_id == user_id)
-        .order_by(ProjectORM.updated_at.desc())
-        .first()
-    )
+    proj_meta = store.get_latest_project_meta_for_user(user_id)
 
-    if proj_row is None:
+    if proj_meta is None:
         proj_title = (next_cover.title or "").strip() or f"Protocole de {user.full_name}"
         next_cover.title = proj_title
         proj = project_storage.create(
@@ -984,7 +890,7 @@ def update_user_full_cover(
         if payload.topic_locked is not None:
             proj.topic_locked = payload.topic_locked
     else:
-        proj = project_storage.get(proj_row.project_id)
+        proj = project_storage.get(proj_meta.project_id)
         if proj is None:
             raise HTTPException(status_code=404, detail="Protocole introuvable.")
 
@@ -1016,53 +922,45 @@ def update_user_full_cover(
     saved_proj = project_storage.save(proj)
     update_section_working_memory(saved_proj, "cover_page")
 
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            target_user_id=user.id,
-            action="update_student_cover",
-            details_json={
-                "project_id": saved_proj.project_id,
-                "title": saved_proj.cover.title,
-                "author_name": saved_proj.cover.author_name,
-                "matricule": saved_proj.cover.matricule,
-                "university_fr": saved_proj.cover.university_fr,
-                "faculty_fr": saved_proj.cover.faculty_fr,
-                "department_fr": saved_proj.cover.department_fr,
-                "reason": payload.reason.strip(),
-            },
-            created_at=utcnow(),
-        )
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=user.id,
+        action="update_student_cover",
+        details_json={
+            "project_id": saved_proj.project_id,
+            "title": saved_proj.cover.title,
+            "author_name": saved_proj.cover.author_name,
+            "matricule": saved_proj.cover.matricule,
+            "university_fr": saved_proj.cover.university_fr,
+            "faculty_fr": saved_proj.cover.faculty_fr,
+            "department_fr": saved_proj.cover.department_fr,
+            "reason": payload.reason.strip(),
+        },
+        created_at=utcnow(),
     )
-    db.commit()
-    db.expire_all()
-    user = db.get(UserORM, user_id)
-    return _build_student_rows(db, [user])[0]
+    fresh_user = store.get_user(user_id) or user
+    return _build_student_rows(store, [fresh_user])[0]
 
 
 @router.delete("/users/{user_id}")
 def delete_user(
     user_id: str,
-    admin_user: UserORM = Depends(require_admin),
-    db: Session = Depends(get_db),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
     if user_id == admin_user.id:
         raise HTTPException(status_code=400, detail="Vous ne pouvez pas supprimer votre propre compte.")
-    user = db.get(UserORM, user_id)
-    if user is None:
+    store = as_store(db)
+    deleted_email = store.delete_user_cascade(user_id)
+    if deleted_email is None:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
-    email = user.email
-    db.delete(user)
-    db.add(
-        AdminAuditLogORM(
-            admin_id=admin_user.id,
-            target_user_id=None,
-            action="delete_user",
-            details_json={"deleted_user_id": user_id, "deleted_email": email},
-            created_at=utcnow(),
-        )
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=None,
+        action="delete_user",
+        details_json={"deleted_user_id": user_id, "deleted_email": deleted_email},
+        created_at=utcnow(),
     )
-    db.commit()
     return {"deleted": True, "user_id": user_id}
 
 
@@ -1073,10 +971,11 @@ def delete_user(
 def get_student_stats(
     search: Optional[str] = Query(default=None),
     sort_by: str = Query(default="last_login"),
-    db: Session = Depends(get_db),
+    db: Any = Depends(get_db),
 ) -> List[AdminStudentStatsRow]:
-    students = db.query(UserORM).filter(UserORM.role == "student").all()
-    rows = _build_student_rows(db, students)
+    store = as_store(db)
+    students = store.list_users(role="student")
+    rows = _build_student_rows(store, students)
 
     if search and search.strip():
         needle = search.strip().casefold()
@@ -1109,17 +1008,13 @@ def list_usage_events(
     user_id: Optional[str] = Query(default=None),
     module_key: Optional[str] = Query(default=None),
     limit: int = Query(default=100, ge=1, le=500),
-    db: Session = Depends(get_db),
+    db: Any = Depends(get_db),
 ) -> List[UsageEventOut]:
-    q = db.query(UsageEventORM)
-    if user_id:
-        q = q.filter(UsageEventORM.user_id == user_id)
-    if module_key:
-        q = q.filter(UsageEventORM.module_key == module_key)
-    events = q.order_by(UsageEventORM.created_at.desc()).limit(limit).all()
+    store = as_store(db)
+    events = store.list_usage_events(user_id=user_id, module_key=module_key, limit=limit)
 
     uids = list({e.user_id for e in events})
-    emails = {u.id: u.email for u in db.query(UserORM).filter(UserORM.id.in_(uids)).all()} if uids else {}
+    emails = {uid: u.email for uid, u in store.get_users_by_ids(uids).items()} if uids else {}
     now = datetime.now(timezone.utc)
     return [
         UsageEventOut(
@@ -1142,11 +1037,12 @@ def list_usage_events(
 @router.get("/audit-logs", response_model=List[AdminAuditLogOut])
 def list_admin_audit_logs(
     limit: int = Query(default=100, ge=1, le=500),
-    db: Session = Depends(get_db),
+    db: Any = Depends(get_db),
 ) -> List[AdminAuditLogOut]:
-    logs = db.query(AdminAuditLogORM).order_by(AdminAuditLogORM.created_at.desc()).limit(limit).all()
+    store = as_store(db)
+    logs = store.list_audit_logs(limit=limit)
     uids = list({x for l in logs for x in (l.admin_id, l.target_user_id) if x})
-    emails = {u.id: u.email for u in db.query(UserORM).filter(UserORM.id.in_(uids)).all()} if uids else {}
+    emails = {uid: u.email for uid, u in store.get_users_by_ids(uids).items()} if uids else {}
     now = datetime.now(timezone.utc)
     return [
         AdminAuditLogOut(

@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     openalex_email: str = ""
 
     # SaaS Database, Authentication & Bootstrap Admin
+    db_backend: str = "sql"  # sql | firestore
+    firestore_project_id: str = ""
+    firestore_database: str = "smartresearch-prod"
     database_url: str = ""
     jwt_secret_key: str = ""
     jwt_access_token_expire_minutes: int = 120

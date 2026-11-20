@@ -107,12 +107,16 @@ export function LoginScreen({ onAuthenticated, notice }: LoginScreenProps) {
               </label>
               <input
                 id="login-email"
-                type="email"
+                type="text"
                 required
-                autoComplete="email"
+                autoComplete="username"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder={lang === "en" ? "student@example.org" : "etudiant@exemple.cm"}
+                placeholder={
+                  lang === "en"
+                    ? "e.g. john.doe, John Doe, or student@example.org"
+                    : "ex. jean.kamga, Jean Kamga ou etudiant@fmsb.cm"
+                }
                 className="mt-1 w-full rounded-xl border border-slate-300 bg-slate-50/50 px-3.5 py-2.5 text-sm text-slate-900 transition focus:border-[#004A8F] focus:bg-white focus:outline-none focus:ring-2 focus:ring-[#004A8F]/20"
               />
             </div>

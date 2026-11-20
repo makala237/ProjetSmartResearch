@@ -69,6 +69,10 @@ export const TRANSLATIONS: Record<AppLang, Record<string, string>> = {
     "m1.status_validated": "Validé",
     "m1.draft_ai": "Rédiger / Compléter avec l'IA",
     "m1.drafting": "Rédaction en cours...",
+    "m1.generate_ai": "Générer avec l'IA",
+    "m1.regenerate_ai": "Régénérer",
+    "m1.refine_ai": "Affiner avec l'IA",
+    "m1.refining": "Affinage en cours...",
     "m1.audit_ai": "Auditer conformité FMSB",
     "m1.auditing": "Audit en cours...",
     "m1.fix_ai": "Corriger selon l'audit",
@@ -78,11 +82,26 @@ export const TRANSLATIONS: Record<AppLang, Record<string, string>> = {
     "m1.enrich_web": "Enrichir + Web",
     "m1.enriching": "Enrichissement...",
     "m1.generate_toc": "Générer / Actualiser TDM",
+    "m1.sync_toc": "Actualiser la TDM",
+    "m1.sync_tables": "Synchroniser les tableaux",
+    "m1.sync_figures": "Synchroniser les figures",
+    "m1.sync_abbreviations": "Synchroniser les sigles",
+    "m1.sync_annexes": "Actualiser les annexes",
     "m1.validate_refs": "Valider Vancouver ICMJE",
     "m1.save_draft": "Enregistrer brouillon",
     "m1.validate_step": "Valider cette étape",
     "m1.instruction_placeholder":
       "Instruction optionnelle pour l'IA (ex: insister sur les données camerounaises, adopter un style plus concis)...",
+    "m1.instruction_placeholder_generate":
+      "Consigne optionnelle avant génération (ex. insister sur les données camerounaises, style concis)...",
+    "m1.instruction_placeholder_refine":
+      "Modifier ou affiner ce contenu avec l'IA (ex. raccourcir, ajouter un détail méthodologique)...",
+    "m1.instruction_placeholder_fact":
+      "Consigne d'affinage IA (ex. harmoniser les intitulés, vérifier la cohérence des titres)...",
+    "m1.instruction_placeholder_abbr":
+      "Consigne d'affinage IA (ex. compléter les sigles manquants, trier par ordre alphabétique)...",
+    "m1.instruction_placeholder_refs":
+      "Consigne d'affinage IA (ex. harmoniser les abréviations de revues, vérifier le style Vancouver)...",
     "m1.guidance_title": "Guide méthodologique FMSB / CAMES",
     "m1.coherence_title": "Alerte(s) de cohérence détectée(s)",
     "m1.harmonize_btn": "Harmoniser",
@@ -93,10 +112,10 @@ export const TRANSLATIONS: Record<AppLang, Record<string, string>> = {
     "m1.run_segment": "Segmenter les articles sélectionnés",
     "m1.import_btn": "Importer et analyser (.docx / .pdf / .txt)",
 
-    "pipe.running": "Pipeline en cours",
+    "pipe.running": "En cours",
     "pipe.done": "Terminé",
     "pipe.error": "Erreur",
-    "pipe.steps_title": "Étapes de réflexion en temps réel",
+    "pipe.steps_title": "Progression en direct",
     "pipe.brand_badge": "Centre de recherche Smart Research",
     "pipe.model_38": "Centre de recherche Smart Research",
     "pipe.model_35_relay": "Centre de recherche Smart Research",
@@ -144,7 +163,7 @@ export const TRANSLATIONS: Record<AppLang, Record<string, string>> = {
 
     "login.title": "Connexion à votre espace",
     "login.subtitle": "Plateforme Smart Research — Rédaction scientifique assistée par IA",
-    "login.email": "Adresse e-mail",
+    "login.email": "Nom d'utilisateur, nom complet ou e-mail",
     "login.password": "Mot de passe",
     "login.submit": "Se connecter",
 
@@ -219,6 +238,10 @@ export const TRANSLATIONS: Record<AppLang, Record<string, string>> = {
     "m1.status_validated": "Validated",
     "m1.draft_ai": "Draft / Complete with AI",
     "m1.drafting": "Drafting...",
+    "m1.generate_ai": "Generate with AI",
+    "m1.regenerate_ai": "Regenerate",
+    "m1.refine_ai": "AI Refine",
+    "m1.refining": "Refining...",
     "m1.audit_ai": "Audit FMSB Compliance",
     "m1.auditing": "Auditing...",
     "m1.fix_ai": "Fix Audit Issues",
@@ -228,11 +251,26 @@ export const TRANSLATIONS: Record<AppLang, Record<string, string>> = {
     "m1.enrich_web": "Enrich + Web",
     "m1.enriching": "Enriching...",
     "m1.generate_toc": "Generate / Refresh TOC",
+    "m1.sync_toc": "Refresh TOC",
+    "m1.sync_tables": "Sync Tables List",
+    "m1.sync_figures": "Sync Figures List",
+    "m1.sync_abbreviations": "Sync Abbreviations",
+    "m1.sync_annexes": "Refresh Appendices",
     "m1.validate_refs": "Validate Vancouver ICMJE",
     "m1.save_draft": "Save Draft",
     "m1.validate_step": "Validate This Step",
     "m1.instruction_placeholder":
       "Optional AI instruction (e.g., emphasize regional epidemiological data, use a more concise clinical style)...",
+    "m1.instruction_placeholder_generate":
+      "Optional instruction before generating (e.g., emphasize regional epidemiological data, concise tone)...",
+    "m1.instruction_placeholder_refine":
+      "Edit or refine this section with AI (e.g., tighten prose, expand methodology details)...",
+    "m1.instruction_placeholder_fact":
+      "AI refinement instruction (e.g., polish captions, verify numbering consistency)...",
+    "m1.instruction_placeholder_abbr":
+      "AI refinement instruction (e.g., expand missing acronyms, sort alphabetically)...",
+    "m1.instruction_placeholder_refs":
+      "AI refinement instruction (e.g., standardize journal abbreviations, check Vancouver style)...",
     "m1.guidance_title": "FMSB / CAMES Methodological Guide",
     "m1.coherence_title": "Coherence Alert(s) Detected",
     "m1.harmonize_btn": "Harmonize",
@@ -243,10 +281,10 @@ export const TRANSLATIONS: Record<AppLang, Record<string, string>> = {
     "m1.run_segment": "Segment Selected Articles",
     "m1.import_btn": "Import & Analyze (.docx / .pdf / .txt)",
 
-    "pipe.running": "Pipeline running",
+    "pipe.running": "In progress",
     "pipe.done": "Completed",
     "pipe.error": "Error",
-    "pipe.steps_title": "Real-time Research Steps",
+    "pipe.steps_title": "Live Progress",
     "pipe.brand_badge": "Smart Research Center",
     "pipe.model_38": "Smart Research Center",
     "pipe.model_35_relay": "Smart Research Center",
@@ -294,7 +332,7 @@ export const TRANSLATIONS: Record<AppLang, Record<string, string>> = {
 
     "login.title": "Sign In to Your Workspace",
     "login.subtitle": "Smart Research Platform — AI-Assisted Scientific Writing",
-    "login.email": "Email Address",
+    "login.email": "Username, Full Name, or Email",
     "login.password": "Password",
     "login.submit": "Sign In",
 

@@ -1,12 +1,13 @@
 import logging
 import threading
-from typing import Any, Dict, Generator
+from typing import Any, Dict, Generator, List, Optional
 
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
 from app.core.security import hash_password
+from app.db.datastore import BaseDataStore, FirestoreDataStore, SQLDataStore
 from app.db.models import (
     Base,
     LicensePlanORM,
@@ -19,6 +20,31 @@ from app.db.models import (
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+STARTER_LICENSE_PLANS: List[Dict[str, Any]] = [
+    {
+        "name": "Pack Protocole + Collecte 6 mois",
+        "description": "Accès complet Modules 1, 2 et 4 pendant 1 mois + Masque de Saisie Patients (Module 3) pendant 6 mois.",
+        "price_fcfa": 15000,
+        "module1_days": 30,
+        "module2_days": 30,
+        "module3_days": 180,
+        "module4_days": 30,
+        "ai_quota_included": 150,
+        "is_active": True,
+    },
+    {
+        "name": "Pack Soutenance Express",
+        "description": "Accès rédaction/édition 15 jours + Module 4 PowerPoint CAMES 30 jours.",
+        "price_fcfa": 7500,
+        "module1_days": 15,
+        "module2_days": 15,
+        "module3_days": 0,
+        "module4_days": 30,
+        "ai_quota_included": 60,
+        "is_active": True,
+    },
+]
 
 
 def _build_engine():
@@ -44,45 +70,61 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expi
 
 _init_lock = threading.Lock()
 _initialized = False
+_FIRESTORE_CLIENT_OVERRIDE: Optional[Any] = None
 
 
-def get_db() -> Generator[Session, None, None]:
-    """Yield a transactional SQLAlchemy session."""
+def is_firestore_backend() -> bool:
+    """Return True when DB_BACKEND is configured for Cloud Firestore."""
+    cfg = get_settings()
+    return (getattr(cfg, "db_backend", "sql") or "sql").strip().lower() == "firestore"
+
+
+def get_database_dialect() -> str:
+    """Return active database dialect name ('sqlite', 'postgresql', or 'firestore')."""
+    if is_firestore_backend():
+        return "firestore"
+    return engine.dialect.name
+
+
+def set_firestore_client_override(client: Optional[Any]) -> None:
+    """Set or clear a custom Firestore Client instance (for automated tests)."""
+    global _FIRESTORE_CLIENT_OVERRIDE
+    _FIRESTORE_CLIENT_OVERRIDE = client
+
+
+def reset_db_state() -> None:
+    """Reset initialization flag and Firestore test client override."""
+    global _initialized, _FIRESTORE_CLIENT_OVERRIDE
+    _initialized = False
+    _FIRESTORE_CLIENT_OVERRIDE = None
+
+
+def get_store() -> BaseDataStore:
+    """Return a DataStore bound to the configured backend (Firestore or SQLAlchemy)."""
+    if is_firestore_backend():
+        cfg = get_settings()
+        return FirestoreDataStore(
+            client=_FIRESTORE_CLIENT_OVERRIDE,
+            project_id=(cfg.firestore_project_id or "").strip() or None,
+            database=(cfg.firestore_database or "").strip() or None,
+        )
+    return SQLDataStore(SessionLocal(), owns_session=True)
+
+
+def get_db() -> Generator[BaseDataStore, None, None]:
+    """Yield a dual-mode DataStore session."""
     init_db()
-    db = SessionLocal()
+    store = get_store()
     try:
-        yield db
+        yield store
     finally:
-        db.close()
+        store.close()
 
 
 def _seed_starter_license_plans(db: Session) -> None:
     if db.query(LicensePlanORM).count() > 0:
         return
-    plans = [
-        LicensePlanORM(
-            name="Pack Protocole + Collecte 6 mois",
-            description="Accès complet Modules 1, 2 et 4 pendant 1 mois + Masque de Saisie Patients (Module 3) pendant 6 mois.",
-            price_fcfa=15000,
-            module1_days=30,
-            module2_days=30,
-            module3_days=180,
-            module4_days=30,
-            ai_quota_included=150,
-            is_active=True,
-        ),
-        LicensePlanORM(
-            name="Pack Soutenance Express",
-            description="Accès rédaction/édition 15 jours + Module 4 PowerPoint CAMES 30 jours.",
-            price_fcfa=7500,
-            module1_days=15,
-            module2_days=15,
-            module3_days=0,
-            module4_days=30,
-            ai_quota_included=60,
-            is_active=True,
-        ),
-    ]
+    plans = [LicensePlanORM(**p) for p in STARTER_LICENSE_PLANS]
     db.add_all(plans)
     db.flush()
 
@@ -168,13 +210,28 @@ def _ensure_schema_columns(eng) -> None:
 
 
 def init_db(force: bool = False) -> None:
-    """Create schema tables if missing, bootstrap admin/plans, and migrate legacy JSONs once."""
+    """Create schema/bootstrap admin & plans cleanly for either Firestore or SQL mode."""
     global _initialized
     if _initialized and not force:
         return
 
     with _init_lock:
         if _initialized and not force:
+            return
+
+        cfg = get_settings()
+        if is_firestore_backend():
+            store = get_store()
+            try:
+                store.bootstrap(
+                    admin_email=cfg.bootstrap_admin_email.strip().lower(),
+                    admin_password_hash=hash_password(cfg.bootstrap_admin_password),
+                    admin_name=cfg.bootstrap_admin_name.strip() or "Administrateur Principal",
+                    starter_plans=STARTER_LICENSE_PLANS,
+                )
+            finally:
+                store.close()
+            _initialized = True
             return
 
         Base.metadata.create_all(bind=engine)
@@ -184,10 +241,10 @@ def init_db(force: bool = False) -> None:
             admin = db.query(UserORM).filter(UserORM.role == "admin").first()
             if admin is None:
                 admin = UserORM(
-                    email=settings.bootstrap_admin_email.strip().lower(),
-                    full_name=settings.bootstrap_admin_name.strip() or "Administrateur Principal",
+                    email=cfg.bootstrap_admin_email.strip().lower(),
+                    full_name=cfg.bootstrap_admin_name.strip() or "Administrateur Principal",
                     role="admin",
-                    password_hash=hash_password(settings.bootstrap_admin_password),
+                    password_hash=hash_password(cfg.bootstrap_admin_password),
                     is_active=True,
                     must_change_password=False,
                 )

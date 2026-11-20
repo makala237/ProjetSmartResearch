@@ -1,5 +1,6 @@
 {
   "hosting": {
+    "site": "smart-research-fmsb",
     "public": "frontend/dist",
     "cleanUrls": true,
     "trailingSlash": false,
@@ -57,5 +58,12 @@
         "destination": "/index.html"
       }
     ]
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json",
+    "edition": "enterprise",
+    "database": "smartresearch-prod",
+    "location": "europe-west1"
   }
 }

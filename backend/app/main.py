@@ -11,7 +11,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 
 from app.api.admin_routes import router as admin_router
 from app.api.deps import (
@@ -29,8 +28,8 @@ from app.api.deps import (
 from app.core.config import WORKSPACE_DIR, get_settings
 from app.data.fmsb_canvas import FMSB_CANVAS_VERSION, FMSB_SECTIONS
 from app.data.i18n import get_localized_canvas, normalize_lang
-from app.db.database import engine, get_db, init_db
-from app.db.models import UserORM
+from app.db.database import get_database_dialect, get_db, init_db
+from app.db.datastore import UserRecord
 from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
@@ -287,7 +286,8 @@ def health_check() -> Dict[str, object]:
         "canvas_version": FMSB_CANVAS_VERSION,
         "gemini_key_configured": bool(settings.gemini_api_key),
         "auth_enabled": True,
-        "database_dialect": engine.dialect.name,
+        "database_dialect": get_database_dialect(),
+        "db_backend": (get_settings().db_backend or "sql").strip().lower(),
         "render_engine": resolve_render_engine(),
         "storage_backend": get_blob_storage().backend_name,
         "soffice_available": bool(shutil.which("soffice") or shutil.which("libreoffice")),
@@ -300,12 +300,12 @@ def health_check() -> Dict[str, object]:
 def auth_login(
     payload: LoginRequest,
     request: Request,
-    db: Session = Depends(get_db),
+    db: Any = Depends(get_db),
 ) -> TokenResponse:
     client_ip = request.client.host if request.client else ""
     user, access_tok, refresh_tok = authenticate_and_login(
         db=db,
-        email=payload.email,
+        email=payload.resolved_identifier(),
         password=payload.password,
         ip_address=client_ip,
     )
@@ -320,7 +320,7 @@ def auth_login(
 @app.post("/api/auth/refresh", response_model=TokenResponse)
 def auth_refresh(
     payload: RefreshTokenRequest,
-    db: Session = Depends(get_db),
+    db: Any = Depends(get_db),
 ) -> TokenResponse:
     user, access_tok, refresh_tok = refresh_session_tokens(db, payload.refresh_token)
     return TokenResponse(
@@ -333,8 +333,8 @@ def auth_refresh(
 
 @app.get("/api/auth/me", response_model=UserMeOut)
 def auth_me(
-    current_user: UserORM = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_current_user),
+    db: Any = Depends(get_db),
 ) -> UserMeOut:
     return build_user_me_out(db, current_user)
 
@@ -342,8 +342,8 @@ def auth_me(
 @app.post("/api/auth/change-password", response_model=TokenResponse)
 def auth_change_password(
     payload: ChangePasswordRequest,
-    current_user: UserORM = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_current_user),
+    db: Any = Depends(get_db),
 ) -> TokenResponse:
     access_tok, refresh_tok = change_user_password(
         db=db,
@@ -361,15 +361,15 @@ def auth_change_password(
 
 @app.post("/api/auth/logout")
 def auth_logout(
-    current_user: UserORM = Depends(get_current_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_current_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, str]:
     logout_user(db, current_user)
     return {"status": "ok"}
 
 
 @app.get("/api/models")
-def list_models(_current_user: UserORM = Depends(get_active_user)) -> Dict[str, object]:
+def list_models(_current_user: UserRecord = Depends(get_active_user)) -> Dict[str, object]:
     try:
         available = gemini_router.list_available_models()
         return {
@@ -401,7 +401,7 @@ def get_canvas(lang: str = "fr") -> Dict[str, object]:
 @app.get("/api/pipeline/progress/{task_id}")
 async def get_pipeline_progress(
     task_id: str,
-    current_user: UserORM = Depends(get_active_user),
+    current_user: UserRecord = Depends(get_active_user),
 ) -> Dict[str, object]:
     snapshot = get_pipeline_task_snapshot(
         task_id=task_id,
@@ -415,7 +415,7 @@ async def get_pipeline_progress(
 
 def _begin_request_pipeline_task(
     request: Request,
-    current_user: UserORM,
+    current_user: UserRecord,
     project: ProtocolProject,
     operation: str,
     title_fr: str,
@@ -447,8 +447,8 @@ def _begin_request_pipeline_task(
 def translate_department(
     payload: TranslateDepartmentRequest,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, str]:
     cost = assert_ai_quota_available(db, current_user, module_key="general", action="translate_department")
     res = gemini_router.translate_department_live(
@@ -472,14 +472,14 @@ def translate_department(
 
 
 @app.get("/api/projects", response_model=List[ProtocolProject])
-def list_projects(current_user: UserORM = Depends(get_active_user)) -> List[ProtocolProject]:
+def list_projects(current_user: UserRecord = Depends(get_active_user)) -> List[ProtocolProject]:
     return project_storage.list_for_user(current_user.id, current_user.role)
 
 
 @app.post("/api/projects", response_model=ProtocolProject)
 def create_project(
     payload: CreateProjectRequest,
-    current_user: UserORM = Depends(require_any_active_license()),
+    current_user: UserRecord = Depends(require_any_active_license()),
 ) -> ProtocolProject:
     try:
         return project_storage.create(
@@ -502,7 +502,7 @@ def create_project(
 @app.get("/api/projects/{project_id}", response_model=ProtocolProject)
 def get_project(
     project_id: str,
-    current_user: UserORM = Depends(get_active_user),
+    current_user: UserRecord = Depends(get_active_user),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     if ensure_project_crf_fields(project):
@@ -514,7 +514,7 @@ def get_project(
 def update_project_language(
     project_id: str,
     payload: UpdateLanguageRequest,
-    current_user: UserORM = Depends(require_any_active_license()),
+    current_user: UserRecord = Depends(require_any_active_license()),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     project.language = normalize_lang(payload.language)
@@ -526,7 +526,7 @@ def update_project_language(
 def update_cover(
     project_id: str,
     cover: CoverMetadata,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     assert_cover_admin_only(current_user)
     project = get_authorized_project(project_id, current_user)
@@ -583,7 +583,7 @@ async def upload_cover_logo(
     project_id: str,
     slot: str,
     file: UploadFile = File(...),
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     assert_cover_admin_only(current_user)
     if slot not in ("university", "faculty"):
@@ -623,7 +623,7 @@ async def upload_cover_logo(
 def delete_cover_logo(
     project_id: str,
     slot: str,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     assert_cover_admin_only(current_user)
     if slot not in ("university", "faculty"):
@@ -653,7 +653,7 @@ def delete_cover_logo(
 def get_cover_logo_file(
     project_id: str,
     slot: str,
-    current_user: UserORM = Depends(get_active_user_allow_query_token),
+    current_user: UserRecord = Depends(get_active_user_allow_query_token),
 ) -> FileResponse:
     if slot not in ("university", "faculty"):
         raise HTTPException(status_code=400, detail="Emplacement de logo invalide ('university' ou 'faculty').")
@@ -678,7 +678,7 @@ def update_section(
     project_id: str,
     section_id: str,
     payload: UpdateSectionRequest,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     if section_id == "cover_page":
         assert_cover_admin_only(current_user)
@@ -716,7 +716,7 @@ def update_section(
 def update_formatting(
     project_id: str,
     payload: UpdateFormattingRequest,
-    current_user: UserORM = Depends(require_module_write("module2")),
+    current_user: UserRecord = Depends(require_module_write("module2")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     project.formatting = payload.formatting
@@ -727,7 +727,7 @@ def update_formatting(
 def update_structured_data(
     project_id: str,
     payload: UpdateStructuredDataRequest,
-    current_user: UserORM = Depends(require_module_write("module2")),
+    current_user: UserRecord = Depends(require_module_write("module2")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     if payload.abbreviations is not None:
@@ -757,7 +757,7 @@ def update_structured_data(
 @app.get("/api/projects/{project_id}/annexes/preview")
 def preview_annexes(
     project_id: str,
-    current_user: UserORM = Depends(get_active_user),
+    current_user: UserRecord = Depends(get_active_user),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     return {"annexes": build_annexes_pack(project)}
@@ -766,7 +766,7 @@ def preview_annexes(
 @app.delete("/api/projects/{project_id}")
 def delete_project(
     project_id: str,
-    _admin: UserORM = Depends(require_admin),
+    _admin: UserRecord = Depends(require_admin),
 ) -> Dict[str, bool]:
     deleted = project_storage.delete(project_id)
     if not deleted:
@@ -782,8 +782,8 @@ def run_project_research(
     project_id: str,
     payload: ResearchRequest,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="research")
@@ -827,8 +827,8 @@ def segment_project(
     project_id: str,
     payload: SegmentRequest,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="segment")
@@ -877,7 +877,7 @@ def update_segment(
     project_id: str,
     segment_id: str,
     payload: ToggleSegmentRequest,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     for seg in project.article_segments:
@@ -895,7 +895,7 @@ def update_image_asset(
     project_id: str,
     asset_id: str,
     payload: ToggleImageRequest,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     for img in project.images:
@@ -923,7 +923,7 @@ async def upload_project_image(
     title: str = Form("Figure personnalisée"),
     caption: str = Form(""),
     anchor_hint: str = Form(""),
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     suffix = Path(file.filename or "image.png").suffix.lower()
@@ -959,7 +959,7 @@ async def upload_project_image(
 def get_uploaded_image_file(
     project_id: str,
     asset_id: str,
-    current_user: UserORM = Depends(get_active_user_allow_query_token),
+    current_user: UserRecord = Depends(get_active_user_allow_query_token),
 ) -> FileResponse:
     project = get_authorized_project(project_id, current_user)
     for img in project.images:
@@ -980,7 +980,7 @@ def get_uploaded_image_file(
 def delete_image_asset(
     project_id: str,
     asset_id: str,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     remaining = []
@@ -1005,8 +1005,8 @@ def draft_section(
     section_id: str,
     payload: DraftSectionRequest,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1117,8 +1117,8 @@ def audit_section(
     project_id: str,
     section_id: str,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1159,8 +1159,8 @@ def fix_section(
     project_id: str,
     section_id: str,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1219,8 +1219,8 @@ def humanize_section(
     section_id: str,
     request: Request,
     payload: Optional[HumanizeRequest] = None,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1273,8 +1273,8 @@ def harmonize_section(
     section_id: str,
     request: Request,
     payload: Optional[HarmonizeSectionRequest] = None,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1331,8 +1331,8 @@ def run_section_antigravity(
     section_id: str,
     request: Request,
     payload: Optional[SectionAntigravityRequest] = None,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1385,8 +1385,8 @@ def suggest_section_table(
     section_id: str,
     payload: SuggestTableRequest,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1419,7 +1419,7 @@ def add_section_table(
     project_id: str,
     section_id: str,
     payload: CreateSectionTableRequest,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1449,7 +1449,7 @@ def update_section_table(
     section_id: str,
     table_id: str,
     payload: UpdateSectionTableRequest,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1496,7 +1496,7 @@ def delete_section_table(
     project_id: str,
     section_id: str,
     table_id: str,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1527,7 +1527,7 @@ def delete_section_table(
 @app.post("/api/projects/{project_id}/media/transport-sync")
 def sync_media_transport(
     project_id: str,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> Dict[str, object]:
     """Transport downloaded/captured images locally and strictly synchronize Module 1 -> Module 2 tables."""
     project = get_authorized_project(project_id, current_user)
@@ -1557,8 +1557,8 @@ def suggest_section_diagram(
     section_id: str,
     payload: SuggestTableRequest,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1591,7 +1591,7 @@ def add_section_diagram(
     project_id: str,
     section_id: str,
     payload: CreateSectionDiagramRequest,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1625,7 +1625,7 @@ def update_section_diagram(
     section_id: str,
     diagram_id: str,
     payload: UpdateSectionDiagramRequest,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1659,7 +1659,7 @@ def get_section_diagram_svg(
     project_id: str,
     section_id: str,
     diagram_id: str,
-    current_user: UserORM = Depends(get_active_user_allow_query_token),
+    current_user: UserRecord = Depends(get_active_user_allow_query_token),
 ) -> Response:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1676,7 +1676,7 @@ def delete_section_diagram(
     project_id: str,
     section_id: str,
     diagram_id: str,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
@@ -1695,8 +1695,8 @@ async def import_existing_protocol(
     project_id: str,
     request: Request,
     file: UploadFile = File(...),
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="import_protocol")
@@ -1751,8 +1751,8 @@ async def import_existing_protocol(
 def global_audit_protocol(
     project_id: str,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     cost = assert_ai_quota_available(db, current_user, module_key="module2", action="global_audit")
@@ -1775,8 +1775,8 @@ def humanize_protocol(
     project_id: str,
     request: Request,
     payload: Optional[HumanizeRequest] = None,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     cost = assert_ai_quota_available(db, current_user, module_key="module2", action="humanize_protocol")
@@ -1806,7 +1806,7 @@ def humanize_protocol(
 @app.post("/api/projects/{project_id}/sync-structured")
 def sync_structured_data(
     project_id: str,
-    current_user: UserORM = Depends(require_module_write("module2")),
+    current_user: UserRecord = Depends(require_module_write("module2")),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     report = sync_structured_from_sections(project)
@@ -1819,8 +1819,8 @@ def sync_structured_data(
 def generate_project_toc(
     project_id: str,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     cost = assert_ai_quota_available(db, current_user, module_key="module2", action="generate_toc")
@@ -1890,8 +1890,8 @@ def generate_project_toc(
 def validate_project_references(
     project_id: str,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     cost = assert_ai_quota_available(db, current_user, module_key="module2", action="validate_references")
@@ -1948,8 +1948,8 @@ def export_docx(
     project_id: str,
     request: Request,
     payload: Optional[UpdateFormattingRequest] = Body(default=None),
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> FileResponse:
     project = get_authorized_project(project_id, current_user)
     saved_formatting = project.formatting.model_copy(deep=True)
@@ -1986,8 +1986,8 @@ def export_pdf(
     project_id: str,
     request: Request,
     payload: Optional[UpdateFormattingRequest] = Body(default=None),
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> FileResponse:
     project = get_authorized_project(project_id, current_user)
     saved_formatting = project.formatting.model_copy(deep=True)
@@ -2027,7 +2027,7 @@ def export_pdf(
 def sync_project_crf(
     project_id: str,
     force_extract: bool = False,
-    current_user: UserORM = Depends(require_module_write("module3")),
+    current_user: UserRecord = Depends(require_module_write("module3")),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     if force_extract or not project.crf_fields:
@@ -2047,7 +2047,7 @@ def sync_project_crf(
 def update_project_crf_schema(
     project_id: str,
     payload: UpdateCRFSchemaRequest,
-    current_user: UserORM = Depends(require_module_write("module3")),
+    current_user: UserRecord = Depends(require_module_write("module3")),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     project.crf_fields = payload.crf_fields
@@ -2063,7 +2063,7 @@ def update_project_crf_schema(
 @app.get("/api/projects/{project_id}/crf/preview-html")
 def get_crf_preview_html(
     project_id: str,
-    current_user: UserORM = Depends(get_active_user),
+    current_user: UserRecord = Depends(get_active_user),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     if ensure_project_crf_fields(project):
@@ -2079,8 +2079,8 @@ def upsert_patient_record(
     project_id: str,
     payload: UpsertPatientRecordRequest,
     request: Request,
-    current_user: UserORM = Depends(require_module_write("module3")),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(require_module_write("module3")),
+    db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     ensure_project_crf_fields(project)
@@ -2143,7 +2143,7 @@ def upsert_patient_record(
 def delete_patient_record(
     project_id: str,
     record_id: str,
-    current_user: UserORM = Depends(require_module_write("module3")),
+    current_user: UserRecord = Depends(require_module_write("module3")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
     before = len(project.patient_records)
@@ -2157,8 +2157,8 @@ def delete_patient_record(
 def export_patients_csv(
     project_id: str,
     request: Request,
-    current_user: UserORM = Depends(get_active_user_allow_query_token),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user_allow_query_token),
+    db: Any = Depends(get_db),
 ) -> Response:
     project = get_authorized_project(project_id, current_user)
     csv_text = export_patient_records_csv(project)
@@ -2183,7 +2183,7 @@ def export_patients_csv(
 @app.get("/api/projects/{project_id}/working-memory")
 def get_working_memory(
     project_id: str,
-    current_user: UserORM = Depends(get_active_user),
+    current_user: UserRecord = Depends(get_active_user),
 ) -> Dict[str, Any]:
     project = get_authorized_project(project_id, current_user)
     memory_map = load_working_memory_map(project)
@@ -2200,7 +2200,7 @@ def get_working_memory(
 @app.post("/api/projects/{project_id}/working-memory/refresh")
 def refresh_working_memory(
     project_id: str,
-    current_user: UserORM = Depends(require_module_write("module1")),
+    current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> Dict[str, Any]:
     project = get_authorized_project(project_id, current_user)
     return refresh_all_working_memory(project)
@@ -2214,7 +2214,7 @@ class AntigravityAgentRequest(BaseModel):
 @app.post("/api/antigravity/test")
 def test_antigravity_agent(
     payload: Optional[AntigravityAgentRequest] = None,
-    _admin: UserORM = Depends(require_admin),
+    _admin: UserRecord = Depends(require_admin),
 ) -> Dict[str, Any]:
     prompt = payload.prompt if payload else "Confirme ton statut opérationnel pour SmartResearch FMSB."
     model = payload.agent_model if payload else "antigravity-preview-latest"
@@ -2234,7 +2234,7 @@ class GenerateSlideRequest(BaseModel):
 
 def _load_valid_deck(
     project_id: str,
-    current_user: UserORM,
+    current_user: UserRecord,
 ) -> Tuple[ProtocolProject, PresentationDeck]:
     project = get_authorized_project(project_id, current_user)
     cached = project_storage.get_presentation(project_id)
@@ -2247,7 +2247,7 @@ def _load_valid_deck(
 @app.get("/api/projects/{project_id}/presentation")
 def get_presentation(
     project_id: str,
-    current_user: UserORM = Depends(get_active_user),
+    current_user: UserRecord = Depends(get_active_user),
 ) -> PresentationDeck:
     """Retrieve, auto-migrate if needed, and return the presentation deck with Welcome first."""
     _, deck = _load_valid_deck(project_id, current_user)
@@ -2258,7 +2258,7 @@ def get_presentation(
 def update_presentation(
     project_id: str,
     payload: PresentationDeck,
-    current_user: UserORM = Depends(require_module_write("module4")),
+    current_user: UserRecord = Depends(require_module_write("module4")),
 ) -> PresentationDeck:
     """Save modified slides, speaker notes, layout modes, enforce opening order and recompute geometry."""
     project = get_authorized_project(project_id, current_user)
@@ -2272,7 +2272,7 @@ def update_presentation(
 @app.post("/api/projects/{project_id}/presentation/reset-from-protocol")
 def reset_presentation_from_protocol(
     project_id: str,
-    current_user: UserORM = Depends(require_module_write("module4")),
+    current_user: UserRecord = Depends(require_module_write("module4")),
 ) -> PresentationDeck:
     """Rebuild the entire presentation deck directly from real protocol data."""
     project = get_authorized_project(project_id, current_user)
@@ -2285,8 +2285,8 @@ def reset_presentation_from_protocol(
 def generate_full_presentation_ai(
     project_id: str,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
     """Orchestrate 3 Gemini roles (3.5 Flash Lite drafting, 3.1 Flash Lite audit, Decision 1 layout)."""
     project = get_authorized_project(project_id, current_user)
@@ -2317,8 +2317,8 @@ def ai_generate_slide(
     slide_index: int,
     request: Request,
     payload: Optional[GenerateSlideRequest] = None,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> Dict[str, Any]:
     """Regenerate one slide via Gemini 3.5 Flash Lite + Gemini 3.1 Flash Lite with optional instruction."""
     project, deck = _load_valid_deck(project_id, current_user)
@@ -2358,8 +2358,8 @@ def ai_generate_slide(
 def audit_presentation(
     project_id: str,
     request: Request,
-    current_user: UserORM = Depends(get_active_user),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
 ) -> PresentationAuditReport:
     """Audit slide readability (>=24pt, <=6 lines), oral duration (10-15 min), and protocol fidelity."""
     project, deck = _load_valid_deck(project_id, current_user)
@@ -2384,8 +2384,8 @@ def audit_presentation(
 def export_presentation_pptx(
     project_id: str,
     request: Request,
-    current_user: UserORM = Depends(get_active_user_allow_query_token),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user_allow_query_token),
+    db: Any = Depends(get_db),
 ) -> FileResponse:
     """Compile and download the native Microsoft PowerPoint (.pptx) presentation."""
     project, deck = _load_valid_deck(project_id, current_user)
@@ -2414,8 +2414,8 @@ def export_presentation_pptx(
 def export_presentation_pdf(
     project_id: str,
     request: Request,
-    current_user: UserORM = Depends(get_active_user_allow_query_token),
-    db: Session = Depends(get_db),
+    current_user: UserRecord = Depends(get_active_user_allow_query_token),
+    db: Any = Depends(get_db),
 ) -> FileResponse:
     """Compile the presentation to .pptx and render PDF via Microsoft PowerPoint COM."""
     project, deck = _load_valid_deck(project_id, current_user)
@@ -2447,7 +2447,7 @@ def export_presentation_pdf(
 @app.post("/api/projects/{project_id}/presentation/render-previews")
 def render_presentation_previews(
     project_id: str,
-    current_user: UserORM = Depends(get_active_user),
+    current_user: UserRecord = Depends(get_active_user),
 ) -> Dict[str, Any]:
     """Compile .pptx and export genuine Microsoft PowerPoint PNG slide previews (1280x720)."""
     project, deck = _load_valid_deck(project_id, current_user)
@@ -2474,7 +2474,7 @@ def render_presentation_previews(
 def get_presentation_preview_png(
     project_id: str,
     slide_num: int,
-    current_user: UserORM = Depends(get_active_user_allow_query_token),
+    current_user: UserRecord = Depends(get_active_user_allow_query_token),
 ) -> FileResponse:
     """Serve a rendered PowerPoint PNG preview image for a specific slide index."""
     get_authorized_project(project_id, current_user)

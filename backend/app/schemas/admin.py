@@ -45,7 +45,7 @@ class LicensePlanOut(BaseModel):
 
 
 class AdminCreateUserRequest(BaseModel):
-    email: str = Field(..., min_length=3, max_length=255)
+    email: str = Field(..., min_length=2, max_length=255)
     full_name: str = Field(..., min_length=2, max_length=255)
     matricule: str = ""
     phone: str = ""

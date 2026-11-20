@@ -288,7 +288,7 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
   }
 
   function copyCredentials(email: string, pw: string) {
-    const txt = `Smart Research\nEmail : ${email}\nMot de passe temporaire : ${pw}`;
+    const txt = `Smart Research\nIdentifiant : ${email}\nMot de passe temporaire : ${pw}`;
     navigator.clipboard?.writeText(txt).then(() => {
       setNotice("Identifiants copiés dans le presse-papiers.");
     });
@@ -308,7 +308,9 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
               author_name: newCover.author_name.trim() || newFullName.trim(),
               matricule: newCover.matricule.trim() || newMatricule.trim(),
               student_phone: newCover.student_phone.trim() || newPhone.trim(),
-              student_email: newCover.student_email.trim() || newEmail.trim(),
+              student_email:
+                newCover.student_email.trim() ||
+                (newEmail.includes("@") ? newEmail.trim() : ""),
             },
             newCoDirDraft
           )
@@ -720,7 +722,7 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
           <div>
             <div className="font-bold">{revealedCreds.label}</div>
             <div className="mt-0.5 font-mono">
-              Email : <strong>{revealedCreds.email}</strong> · Mot de passe temporaire :{" "}
+              Identifiant : <strong>{revealedCreds.email}</strong> · Mot de passe temporaire :{" "}
               <strong className="rounded bg-white px-1.5 py-0.5 text-[#6C2826]">
                 {revealedCreds.password}
               </strong>
@@ -1039,10 +1041,10 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                 <div>
                   <label className="block text-[11px] font-semibold text-slate-600">
-                    Email *
+                    Identifiant (Nom d'utilisateur ou e-mail) *
                   </label>
                   <input
-                    type="email"
+                    type="text"
                     required
                     value={newEmail}
                     onChange={(e) => {
@@ -1051,15 +1053,17 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                         ...prev,
                         student_email:
                           !prev.student_email || prev.student_email === newEmail
-                            ? val
+                            ? val.includes("@")
+                              ? val
+                              : ""
                             : prev.student_email,
                       }));
                       setNewEmail(val);
                     }}
                     placeholder={
                       newRole === "admin"
-                        ? "admin@smartresearch.cm"
-                        : "etudiant@fmsb.cm"
+                        ? "admin.fmsb ou admin@smartresearch.cm"
+                        : "jean.kamga ou etudiant@fmsb.cm"
                     }
                     className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs"
                   />

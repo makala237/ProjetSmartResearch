@@ -26,6 +26,11 @@ import type {
 import { StructuredTablesEditor } from "./StructuredTablesEditor";
 import { TimelineGridEditor } from "./TimelineGridEditor";
 import { getFormattedCoverHeader } from "../utils/coverHeader";
+import {
+  extractInvestigatorPlaceholders,
+  highlightPlaceholdersInHtml,
+  splitTextWithPlaceholders,
+} from "../utils/investigatorPlaceholders";
 
 interface Module2Props {
   project: ProtocolProject;
@@ -289,6 +294,20 @@ export function Module2Editor({
     (s) =>
       s.id !== "cover_page" &&
       project.sections[s.id]?.status === "validated"
+  );
+
+  const sectionsWithPlaceholders = canvas
+    .filter((s) => s.id !== "cover_page")
+    .map((s) => {
+      const md = project.sections[s.id]?.content_markdown ?? "";
+      const matches = extractInvestigatorPlaceholders(md);
+      return { spec: s, matches };
+    })
+    .filter((item) => item.matches.length > 0);
+
+  const totalPlaceholdersCount = sectionsWithPlaceholders.reduce(
+    (sum, item) => sum + item.matches.length,
+    0
   );
 
   return (
@@ -1009,9 +1028,40 @@ export function Module2Editor({
             onError={onError}
           />
         ) : (
-          <div className="rounded-xl border border-slate-200 bg-slate-200/70 p-6">
-            <div
-              className="mx-auto max-w-[794px] rounded bg-white p-10 shadow-md"
+          <div className="space-y-4">
+            {totalPlaceholdersCount > 0 && (
+              <div className="rounded-xl border-2 border-amber-400 bg-amber-50/95 p-4 text-xs text-rose-950 shadow-sm">
+                <div className="flex items-start gap-2.5">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-600" />
+                  <div className="min-w-0 flex-1">
+                    <div className="font-bold text-rose-900">
+                      {lang === "en"
+                        ? `${totalPlaceholdersCount} investigator placeholder(s) [To be completed...] detected across ${sectionsWithPlaceholders.length} section(s)`
+                        : `${totalPlaceholdersCount} mention(s) [À compléter par l'investigateur...] détectée(s) dans ${sectionsWithPlaceholders.length} section(s)`}
+                    </div>
+                    <p className="mt-0.5 text-[11px] text-amber-900">
+                      {lang === "en"
+                        ? "These markers are highlighted in yellow and red in the preview below. Complete them in Module 1 before final export."
+                        : "Ces passages sont surlignés en jaune et rouge dans l'aperçu ci-dessous. Complétez-les avec vos données locales dans le Module 1 avant l'impression finale."}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {sectionsWithPlaceholders.map(({ spec, matches }) => (
+                        <span
+                          key={spec.id}
+                          className="inline-flex items-center gap-1 rounded-md border border-rose-300 bg-yellow-100 px-2 py-0.5 text-[11px] font-bold text-rose-900"
+                        >
+                          {spec.title} ({matches.length})
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-xl border border-slate-200 bg-slate-200/70 p-6">
+              <div
+                className="mx-auto max-w-[794px] rounded bg-white p-10 shadow-md"
               style={{
                 fontFamily: fmt.font_family,
                 fontSize: `${fmt.body_font_size_pt}pt`,
@@ -1311,7 +1361,9 @@ export function Module2Editor({
                             className={`mt-2 prose prose-slate max-w-none text-sm text-slate-800 ${
                               spec.id === "toc" ? "text-left" : ""
                             }`}
-                            dangerouslySetInnerHTML={{ __html: st.content_html }}
+                            dangerouslySetInnerHTML={{
+                              __html: highlightPlaceholdersInHtml(st.content_html),
+                            }}
                           />
                         ) : hasText ? (
                           <p
@@ -1319,7 +1371,19 @@ export function Module2Editor({
                               spec.id === "toc" ? "text-left" : ""
                             }`}
                           >
-                            {st.content_markdown}
+                            {splitTextWithPlaceholders(st.content_markdown).map(
+                              (part, pIdx) =>
+                                part.isPlaceholder ? (
+                                  <mark
+                                    key={pIdx}
+                                    className="sr-placeholder-highlight"
+                                  >
+                                    {part.text}
+                                  </mark>
+                                ) : (
+                                  <span key={pIdx}>{part.text}</span>
+                                )
+                            )}
                           </p>
                         ) : (
                           <p className="mt-1 font-sans text-xs italic text-slate-400">
@@ -1704,6 +1768,7 @@ export function Module2Editor({
                 <span className="shrink-0 font-bold text-slate-800">
                   Page i / 1…
                 </span>
+              </div>
               </div>
             </div>
           </div>

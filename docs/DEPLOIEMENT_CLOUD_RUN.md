@@ -1,11 +1,11 @@
-# Guide de Déploiement Firebase Hosting + Google Cloud Run (Smart Research)
+# Guide de Déploiement Firebase Hosting + Google Cloud Run + Firestore Enterprise + GCS (Smart Research)
 
-Ce guide décrit le déploiement complet de **Smart Research** avec l'architecture recommandée **Firebase Hosting + Google Cloud Run** :
-- **Firebase Hosting** ([firebase.json](file:///c:/Users/MBIANDA/Desktop/ProjetSmartResearch/firebase.json), [.firebaserc](file:///c:/Users/MBIANDA/Desktop/ProjetSmartResearch/.firebaserc)) : sert l'interface React/Vite PWA (`frontend/dist`) sur CDN mondial HTTPS et redirige `/api/**` et `/tamplates/**` vers Cloud Run.
-- **Google Cloud Run** ([Dockerfile](file:///c:/Users/MBIANDA/Desktop/ProjetSmartResearch/Dockerfile), [cloudbuild.yaml](file:///c:/Users/MBIANDA/Desktop/ProjetSmartResearch/cloudbuild.yaml)) : exécute l'API FastAPI, les appels **Gemini**, la génération `.docx`/`.pptx` ainsi que **LibreOffice Headless + Poppler (`pdftoppm`)** pour les exports PDF et aperçus PNG.
-- **Cloud SQL PostgreSQL** (ou Neon / Supabase) : base utilisateurs, rôles, licences, quotas et protocoles.
-- **Google Cloud Storage** (`STORAGE_BACKEND=gcs`) : stockage persistant des logos de couverture, figures et exports.
-- **Google Secret Manager** : stockage sécurisé de `DATABASE_URL`, `JWT_SECRET_KEY`, `GEMINI_API_KEY` et `BOOTSTRAP_ADMIN_PASSWORD`.
+Ce guide décrit le déploiement complet de **Smart Research** avec l'architecture **100% Firebase / Google Cloud** (`DB_BACKEND=firestore` + `STORAGE_BACKEND=gcs`) :
+- **Firebase Hosting** ([firebase.json](../firebase.json), [.firebaserc](../.firebaserc)) : sert l'interface React/Vite PWA (`frontend/dist`) sur CDN mondial HTTPS et redirige `/api/**` et `/tamplates/**` vers Cloud Run.
+- **Google Cloud Run** ([Dockerfile](../Dockerfile), [cloudbuild.yaml](../cloudbuild.yaml)) : exécute l'API FastAPI, les appels **Gemini**, la génération `.docx`/`.pptx` ainsi que **LibreOffice Headless + Poppler (`pdftoppm`)** pour les exports PDF et aperçus PNG.
+- **Cloud Firestore Enterprise Edition** (`database=smartresearch-prod`, `location=europe-west1`) : métadonnées utilisateurs, rôles, sessions, licences, quotas IA, journaux et métadonnées de projets. *(Mode PostgreSQL/SQLite conservé via `DB_BACKEND=sql` + `DATABASE_URL` pour le dev local ou Cloud SQL).*
+- **Google Cloud Storage** (`STORAGE_BACKEND=gcs`) : stockage persistant des JSON complets de protocoles/présentations (aucune limite à 1 MiB), des logos de couverture, figures et exports.
+- **Google Secret Manager** : stockage sécurisé de `JWT_SECRET_KEY`, `GEMINI_API_KEY` et `BOOTSTRAP_ADMIN_PASSWORD` *(aucun `SMR_DB_URL` requis en mode `firestore`)*.
 
 ---
 
@@ -18,51 +18,63 @@ Ce guide décrit le déploiement complet de **Smart Research** avec l'architectu
      - `/tamplates/**` → rewrite vers Cloud Run `smart-research-api` (`europe-west1`)
      - `**` → fallback SPA `/index.html`
    - **Important (Timeout Firebase Hosting)** : les rewrites Cloud Run via Firebase Hosting ont une limite de **60 secondes par requête HTTP**. Pour garantir des exports PDF/PPTX rapides sans dépassement ni démarrage à froid (*cold start*), déployez `smart-research-api` avec **`--cpu 2 --memory 4Gi`** et idéalement **`--min-instances 1`** en production.
+   - **Important (Pipeline Tracker en RAM)** : `pipeline_tracker.py` suit l'avancement temps réel en mémoire du conteneur. Gardez `UVICORN_WORKERS=1` et **`--max-instances 1`** tant que le suivi n'est pas externalisé.
 
 2. **Backend FastAPI + Moteur Documentaire Linux (Cloud Run)** :
-   - Le [Dockerfile](file:///c:/Users/MBIANDA/Desktop/ProjetSmartResearch/Dockerfile) installe `libreoffice-writer`, `libreoffice-impress`, `poppler-utils` (`pdftoppm`) et les polices métriques (`fonts-liberation`, `fonts-liberation2`, `fonts-crosextra-carlito`, `fonts-crosextra-caladea`, `fonts-dejavu-core`).
-   - Exécute les migrations Alembic au démarrage via [docker/entrypoint.sh](file:///c:/Users/MBIANDA/Desktop/ProjetSmartResearch/docker/entrypoint.sh).
-   - Expose le contrôle de santé `/api/health` (`app`, `database_dialect`, `render_engine`, `storage_backend`, `soffice_available`, `pdftoppm_available`).
+   - Le [Dockerfile](../Dockerfile) installe `libreoffice-writer`, `libreoffice-impress`, `poppler-utils` (`pdftoppm`) et les polices métriques (`fonts-liberation`, `fonts-liberation2`, `fonts-crosextra-carlito`, `fonts-crosextra-caladea`, `fonts-dejavu-core`).
+   - En mode `DB_BACKEND=firestore`, [docker/entrypoint.sh](../docker/entrypoint.sh) ignore Alembic et démarre directement Uvicorn.
+   - Expose `/api/health` (`app`, `db_backend`, `database_dialect`, `render_engine`, `storage_backend`, `soffice_available`, `pdftoppm_available`).
 
 ---
 
-## 2. Pré-requis Cloud (dans un même projet Firebase / GCP, forfait Blaze)
+## 2. Pré-requis Cloud (Projet Firebase / GCP `smart-research-fmsb`, forfait Blaze)
 
-1. Créer le projet sur la **console Firebase**, activer le **forfait Blaze** et noter son identifiant (`PROJECT_ID`).
-2. Activer les APIs Google Cloud nécessaires :
+1. Activer les APIs Google Cloud nécessaires :
    ```bash
-   export PROJECT_ID="votre-projet-firebase"
+   export PROJECT_ID="smart-research-fmsb"
    export REGION="europe-west1"
    export SERVICE="smart-research-api"
+   export FIRESTORE_DB="smartresearch-prod"
 
    gcloud services enable \
      run.googleapis.com \
      cloudbuild.googleapis.com \
      artifactregistry.googleapis.com \
-     sqladmin.googleapis.com \
+     firestore.googleapis.com \
      storage.googleapis.com \
      secretmanager.googleapis.com \
      firebasehosting.googleapis.com \
      --project "${PROJECT_ID}"
    ```
-3. **Base de données PostgreSQL** (Cloud SQL, Neon ou Supabase) :
-   - Renseigner `DATABASE_URL=postgresql+psycopg://USER:PASSWORD@HOST:5432/smartresearch?sslmode=require` dans Secret Manager (`SMR_DB_URL`).
-   - Pour Cloud SQL, ajouter `--add-cloudsql-instances="${PROJECT_ID}:${REGION}:smartresearch-pg"` au déploiement Cloud Run.
-4. **Stockage binaire persistant (`STORAGE_BACKEND=gcs`)** :
-   - Créer un bucket Cloud Storage (ex. `${PROJECT_ID}-smartresearch-uploads`) et attribuer `roles/storage.objectAdmin` au compte de service Cloud Run.
+2. **Créer la base Cloud Firestore Enterprise + déployer règles & index** :
+   ```bash
+   npx -y firebase-tools@latest firestore:databases:create "${FIRESTORE_DB}" \
+     --location="${REGION}" \
+     --edition="enterprise" \
+     --firestore-data-access="ENABLED" \
+     --mongodb-compatible-data-access="DISABLED" \
+     --project "${PROJECT_ID}"
+
+   npx -y firebase-tools@latest deploy --only firestore --project "${PROJECT_ID}"
+   ```
+3. **Stockage binaire persistant (`STORAGE_BACKEND=gcs`)** :
+   - Créer un bucket Cloud Storage `${PROJECT_ID}-smartresearch-uploads` en région `europe-west1`.
+4. **Rôles IAM du compte de service Cloud Run** :
+   - Attribuer `roles/datastore.user` (accès backend Server SDK à Firestore Enterprise) et `roles/storage.objectAdmin` (lecture/écriture sur le bucket GCS) au compte de service d'exécution Cloud Run.
 5. **Secrets obligatoires dans Secret Manager** :
-   - `SMR_DB_URL` (`DATABASE_URL`)
    - `SMR_JWT_SECRET` (`JWT_SECRET_KEY`, au moins 64 caractères aléatoires)
    - `SMR_GEMINI_KEY` (`GEMINI_API_KEY`)
    - `SMR_ADMIN_PASS` (`BOOTSTRAP_ADMIN_PASSWORD`)
+
+   *(Note : si vous préférez revenir au mode PostgreSQL `DB_BACKEND=sql`, ajoutez `SMR_DB_URL`, passez `DB_BACKEND=sql` et `RUN_MIGRATIONS_ON_START=true`.)*
 
 ---
 
 ## 3. Build, Déploiement Cloud Run & Déploiement Firebase Hosting
 
 ```bash
-# 1. Configurer l'identifiant Firebase dans .firebaserc (remplacer VOTRE_ID_PROJET_FIREBASE)
-firebase use "${PROJECT_ID}"
+# 1. Vérifier le projet actif dans .firebaserc
+npx -y firebase-tools@latest use "${PROJECT_ID}"
 
 # 2. Construire et pousser l'image Docker dans le cloud via Cloud Build
 gcloud artifacts repositories create cloud-run-source-deploy \
@@ -71,9 +83,9 @@ gcloud artifacts repositories create cloud-run-source-deploy \
 gcloud builds submit \
   --project "${PROJECT_ID}" \
   --config cloudbuild.yaml \
-  --substitutions "_REGION=${REGION},_SERVICE_NAME=${SERVICE},_CLOUD_STORAGE_BUCKET=${PROJECT_ID}-smartresearch-uploads"
+  --substitutions "_REGION=${REGION},_SERVICE_NAME=${SERVICE},_CLOUD_STORAGE_BUCKET=${PROJECT_ID}-smartresearch-uploads,_DB_BACKEND=firestore,_FIRESTORE_DATABASE=${FIRESTORE_DB}"
 
-# 3. Déployer / mettre à jour Cloud Run avec les secrets + Cloud SQL + min-instances=1 en prod
+# 3. Déployer / mettre à jour Cloud Run avec les secrets + min-instances=1 / max-instances=1
 gcloud run deploy "${SERVICE}" \
   --project "${PROJECT_ID}" \
   --region "${REGION}" \
@@ -84,13 +96,13 @@ gcloud run deploy "${SERVICE}" \
   --memory 4Gi \
   --timeout 300 \
   --min-instances 1 \
-  --max-instances 5 \
-  --set-env-vars "RENDER_ENGINE=libreoffice,STORAGE_BACKEND=gcs,CLOUD_STORAGE_BUCKET=${PROJECT_ID}-smartresearch-uploads,RUN_MIGRATIONS_ON_START=true" \
-  --set-secrets "DATABASE_URL=SMR_DB_URL:latest,JWT_SECRET_KEY=SMR_JWT_SECRET:latest,GEMINI_API_KEY=SMR_GEMINI_KEY:latest,BOOTSTRAP_ADMIN_PASSWORD=SMR_ADMIN_PASS:latest"
+  --max-instances 1 \
+  --set-env-vars "DB_BACKEND=firestore,FIRESTORE_PROJECT_ID=${PROJECT_ID},FIRESTORE_DATABASE=${FIRESTORE_DB},RENDER_ENGINE=libreoffice,STORAGE_BACKEND=gcs,CLOUD_STORAGE_BUCKET=${PROJECT_ID}-smartresearch-uploads,RUN_MIGRATIONS_ON_START=false" \
+  --set-secrets "JWT_SECRET_KEY=SMR_JWT_SECRET:latest,GEMINI_API_KEY=SMR_GEMINI_KEY:latest,BOOTSTRAP_ADMIN_PASSWORD=SMR_ADMIN_PASS:latest"
 
 # 4. Compiler le frontend React/Vite puis déployer sur Firebase Hosting
 npm --prefix frontend run build
-firebase deploy --only hosting --project "${PROJECT_ID}"
+npx -y firebase-tools@latest deploy --only hosting,firestore --project "${PROJECT_ID}"
 ```
 
 ---
@@ -101,7 +113,7 @@ firebase deploy --only hosting --project "${PROJECT_ID}"
    ```bash
    curl -fsS "https://${PROJECT_ID}.web.app/api/health"
    ```
-   Vérifier que `"app": "Smart Research"`, `"database_dialect": "postgresql"`, `"render_engine": "libreoffice"`, `"storage_backend": "gcs"`, `"soffice_available": true` et `"pdftoppm_available": true`.
+   Vérifier que `"app": "Smart Research"`, `"db_backend": "firestore"`, `"database_dialect": "firestore"`, `"render_engine": "libreoffice"`, `"storage_backend": "gcs"`, `"soffice_available": true` et `"pdftoppm_available": true`.
 
 2. Ouvrir `https://${PROJECT_ID}.web.app` (et `https://${PROJECT_ID}.firebaseapp.com`), se connecter en administrateur, créer un compte étudiant avec page de garde verrouillée et tester un export Word / PDF / PPTX.
 

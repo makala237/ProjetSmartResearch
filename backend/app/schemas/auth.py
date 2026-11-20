@@ -1,11 +1,25 @@
 from datetime import datetime
 from typing import Dict, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class LoginRequest(BaseModel):
-    email: str = Field(..., min_length=3)
+    email: Optional[str] = Field(default=None, max_length=255)
+    username: Optional[str] = Field(default=None, max_length=255)
+    identifier: Optional[str] = Field(default=None, max_length=255)
     password: str = Field(..., min_length=1)
+
+    def resolved_identifier(self) -> str:
+        for candidate in (self.identifier, self.username, self.email):
+            if candidate is not None and candidate.strip():
+                return candidate.strip()
+        return ""
+
+    @model_validator(mode="after")
+    def _validate_identifier(self) -> "LoginRequest":
+        if len(self.resolved_identifier()) < 2:
+            raise ValueError("Identifiant requis (au moins 2 caractères).")
+        return self
 
 
 class RefreshTokenRequest(BaseModel):

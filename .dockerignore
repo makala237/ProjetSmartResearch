@@ -2,14 +2,21 @@
 .git
 .gitignore
 .env
+**/.env
+**/.env.*
 cléAPI.txt
 *.db
 *.sqlite*
+backend/storage/*.db*
+backend/storage/.jwt_secret
 
 # Python virtualenvs & caches
 .venv
+**/.venv
 __pycache__
+**/__pycache__
 *.pyc
+**/*.pyc
 *.pyo
 .pytest_cache
 
@@ -22,6 +29,7 @@ backend/storage/exports/*
 backend/storage/uploads/*
 backend/storage/working_memory/*
 backend/storage/projects/*
+backend/storage/presentations/*
 backend/tests
 docs
 images
@@ -32,6 +40,7 @@ scripts
 *.png
 *.PNG
 !2025_Canevas_protocole.docx
+!backend/templates/fmsb_master_template.docx
 !tamplates/**
 !tamplates/**/*.png
 !tamplates/**/*.PNG

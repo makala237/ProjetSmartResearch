@@ -175,93 +175,74 @@ def sync_special_sections(
 
 
 class ProjectStorage:
-    """SQLAlchemy-backed store for protocol projects and presentation decks (PostgreSQL / SQLite)."""
+    """Dual-mode store for protocol projects and presentation decks (Firestore+BlobStorage / SQL)."""
 
     def _ensure_ready(self) -> None:
         from app.db.database import init_db
 
         init_db()
 
-    def _hydrate_project(self, row) -> ProtocolProject:
+    def _hydrate_project(self, meta, payload: dict) -> ProtocolProject:
         from app.core.security import ensure_utc
 
-        proj = ProtocolProject.model_validate(row.data_json)
-        proj.owner_user_id = row.owner_user_id
-        proj.topic_locked = bool(row.topic_locked)
-        proj.locked_title = row.locked_title or ""
-        proj.locked_author_name = row.locked_author_name or ""
-        proj.locked_matricule = row.locked_matricule or ""
-        if row.created_at:
-            proj.created_at = ensure_utc(row.created_at) or proj.created_at
-        if row.updated_at:
-            proj.updated_at = ensure_utc(row.updated_at) or proj.updated_at
+        proj = ProtocolProject.model_validate(payload)
+        proj.owner_user_id = meta.owner_user_id
+        proj.topic_locked = bool(meta.topic_locked)
+        proj.locked_title = meta.locked_title or ""
+        proj.locked_author_name = meta.locked_author_name or ""
+        proj.locked_matricule = meta.locked_matricule or ""
+        if meta.created_at:
+            proj.created_at = ensure_utc(meta.created_at) or proj.created_at
+        if meta.updated_at:
+            proj.updated_at = ensure_utc(meta.updated_at) or proj.updated_at
         sync_special_sections(proj)
         return proj
 
     def get_presentation(self, project_id: str):
-        from app.db.database import SessionLocal
-        from app.db.models import PresentationORM
+        from app.db.database import get_store
         from app.schemas.presentation import PresentationDeck
 
         self._ensure_ready()
-        db = SessionLocal()
+        store = get_store()
         try:
-            row = db.get(PresentationORM, project_id)
-            if not row:
+            payload = store.get_presentation_payload(project_id)
+            if not payload:
                 return None
-            return PresentationDeck.model_validate(row.data_json)
+            return PresentationDeck.model_validate(payload)
         except Exception:
             return None
         finally:
-            db.close()
+            store.close()
 
     def save_presentation(self, deck) -> None:
-        from app.db.database import SessionLocal
-        from app.db.models import PresentationORM, ProjectORM, utcnow
+        from app.db.database import get_store
 
         self._ensure_ready()
-        db = SessionLocal()
+        store = get_store()
         try:
-            proj_row = db.get(ProjectORM, deck.project_id)
-            if proj_row is None:
+            proj_meta = store.get_project_meta(deck.project_id)
+            if proj_meta is None:
                 return
-            payload = deck.model_dump(mode="json")
-            now = utcnow()
-            existing = db.get(PresentationORM, deck.project_id)
-            if existing is None:
-                db.add(
-                    PresentationORM(
-                        project_id=deck.project_id,
-                        owner_user_id=proj_row.owner_user_id,
-                        version=deck.version or "3.1.0",
-                        slides_count=len(deck.slides),
-                        data_json=payload,
-                        updated_at=now,
-                    )
-                )
-            else:
-                existing.owner_user_id = proj_row.owner_user_id
-                existing.version = deck.version or "3.1.0"
-                existing.slides_count = len(deck.slides)
-                existing.data_json = payload
-                existing.updated_at = now
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
+            store.save_presentation(
+                project_id=deck.project_id,
+                owner_user_id=proj_meta.owner_user_id,
+                version=deck.version or "3.1.0",
+                slides_count=len(deck.slides),
+                payload_dict=deck.model_dump(mode="json"),
+                updated_at=datetime.now(timezone.utc),
+            )
         finally:
-            db.close()
+            store.close()
 
     def count_for_user(self, user_id: str) -> int:
-        from app.db.database import SessionLocal
-        from app.db.models import ProjectORM
+        from app.db.database import get_store
 
         self._ensure_ready()
-        db = SessionLocal()
+        store = get_store()
         try:
-            return db.query(ProjectORM).filter(ProjectORM.owner_user_id == user_id).count()
+            return store.count_projects(owner_user_id=user_id)
         finally:
-            db.close()
+            store.close()
 
     def create(
         self,
@@ -271,26 +252,21 @@ class ProjectStorage:
         owner_full_name: str = "",
         owner_matricule: str = "",
     ) -> ProtocolProject:
-        from app.db.database import SessionLocal
-        from app.db.models import ProjectORM, UserORM
+        from app.db.database import get_store
+        from app.db.datastore import ProjectMetaRecord
 
         self._ensure_ready()
-        db = SessionLocal()
+        store = get_store()
         try:
             resolved_owner_id = owner_user_id
             if not resolved_owner_id:
-                admin = db.query(UserORM).filter(UserORM.role == "admin").first()
+                admin = store.get_first_admin()
                 if admin is None:
                     raise RuntimeError("Aucun utilisateur administrateur initialisé en base.")
                 resolved_owner_id = admin.id
 
             if owner_role != "admin":
-                existing_count = (
-                    db.query(ProjectORM)
-                    .filter(ProjectORM.owner_user_id == resolved_owner_id)
-                    .count()
-                )
-                if existing_count >= 1:
+                if store.count_projects(owner_user_id=resolved_owner_id) >= 1:
                     raise PermissionError("ONE_PROTOCOL_LIMIT")
 
             sections = {
@@ -337,32 +313,27 @@ class ProjectStorage:
                 for sec in project.sections.values()
                 if getattr(sec.status, "value", str(sec.status)) == "validated"
             )
-            row = ProjectORM(
+            meta = ProjectMetaRecord(
                 project_id=project.project_id,
                 owner_user_id=resolved_owner_id,
                 name=project.name,
                 locked_title=project.locked_title,
                 locked_author_name=project.locked_author_name,
                 locked_matricule=project.locked_matricule,
-                topic_locked=project.topic_locked,
-                data_json=project.model_dump(mode="json"),
+                topic_locked=bool(project.topic_locked),
                 sections_validated_count=validated_count,
                 patients_count=len(project.patient_records),
                 created_at=project.created_at,
                 updated_at=project.updated_at,
             )
-            db.add(row)
-            db.commit()
+            store.save_project(meta, project.model_dump(mode="json"))
             return project
-        except Exception:
-            db.rollback()
-            raise
         finally:
-            db.close()
+            store.close()
 
     def save(self, project: ProtocolProject) -> ProtocolProject:
-        from app.db.database import SessionLocal
-        from app.db.models import ProjectORM, UserORM
+        from app.db.database import get_store
+        from app.db.datastore import ProjectMetaRecord
 
         self._ensure_ready()
         sync_special_sections(project)
@@ -375,129 +346,100 @@ class ProjectStorage:
         patients_count = len(project.patient_records)
         payload = project.model_dump(mode="json")
 
-        db = SessionLocal()
+        store = get_store()
         try:
-            row = db.get(ProjectORM, project.project_id)
-            if row is None:
-                owner_id = project.owner_user_id
-                if not owner_id:
-                    admin = db.query(UserORM).filter(UserORM.role == "admin").first()
-                    if admin is None:
-                        raise RuntimeError("Aucun utilisateur administrateur initialisé en base.")
-                    owner_id = admin.id
-                    project.owner_user_id = owner_id
-                row = ProjectORM(
-                    project_id=project.project_id,
-                    owner_user_id=owner_id,
-                    name=project.name,
-                    locked_title=project.locked_title,
-                    locked_author_name=project.locked_author_name,
-                    locked_matricule=project.locked_matricule,
-                    topic_locked=bool(project.topic_locked),
-                    data_json=payload,
-                    sections_validated_count=validated_count,
-                    patients_count=patients_count,
-                    created_at=project.created_at,
-                    updated_at=project.updated_at,
-                )
-                db.add(row)
-            else:
-                if project.owner_user_id:
-                    row.owner_user_id = project.owner_user_id
-                row.name = project.name
-                row.locked_title = project.locked_title
-                row.locked_author_name = project.locked_author_name
-                row.locked_matricule = project.locked_matricule
-                row.topic_locked = bool(project.topic_locked)
-                row.data_json = payload
-                row.sections_validated_count = validated_count
-                row.patients_count = patients_count
-                row.updated_at = project.updated_at
-            db.commit()
+            existing_meta = store.get_project_meta(project.project_id)
+            owner_id = project.owner_user_id or (existing_meta.owner_user_id if existing_meta else "")
+            if not owner_id:
+                admin = store.get_first_admin()
+                if admin is None:
+                    raise RuntimeError("Aucun utilisateur administrateur initialisé en base.")
+                owner_id = admin.id
+            project.owner_user_id = owner_id
+            created_at = (
+                existing_meta.created_at
+                if existing_meta and existing_meta.created_at
+                else project.created_at
+            )
+
+            meta = ProjectMetaRecord(
+                project_id=project.project_id,
+                owner_user_id=owner_id,
+                name=project.name,
+                locked_title=project.locked_title,
+                locked_author_name=project.locked_author_name,
+                locked_matricule=project.locked_matricule,
+                topic_locked=bool(project.topic_locked),
+                sections_validated_count=validated_count,
+                patients_count=patients_count,
+                created_at=created_at,
+                updated_at=project.updated_at,
+                blob_key=existing_meta.blob_key if existing_meta else "",
+            )
+            store.save_project(meta, payload)
             return project
-        except Exception:
-            db.rollback()
-            raise
         finally:
-            db.close()
+            store.close()
 
     def get(self, project_id: str) -> Optional[ProtocolProject]:
-        from app.db.database import SessionLocal
-        from app.db.models import ProjectORM
+        from app.db.database import get_store
 
         self._ensure_ready()
-        db = SessionLocal()
+        store = get_store()
         try:
-            row = db.get(ProjectORM, project_id)
-            if row is None:
+            loaded = store.get_project_payload(project_id)
+            if loaded is None:
                 return None
-            return self._hydrate_project(row)
+            meta, payload = loaded
+            return self._hydrate_project(meta, payload)
         finally:
-            db.close()
+            store.close()
 
     def list_all(self) -> List[ProtocolProject]:
-        from app.db.database import SessionLocal
-        from app.db.models import ProjectORM
+        from app.db.database import get_store
 
         self._ensure_ready()
-        db = SessionLocal()
+        store = get_store()
         try:
-            rows = db.query(ProjectORM).order_by(ProjectORM.updated_at.desc()).all()
             out: List[ProtocolProject] = []
-            for row in rows:
+            for meta, payload in store.list_project_payloads():
                 try:
-                    out.append(self._hydrate_project(row))
+                    out.append(self._hydrate_project(meta, payload))
                 except Exception:
                     continue
             return out
         finally:
-            db.close()
+            store.close()
 
     def list_for_user(self, user_id: str, role: str) -> List[ProtocolProject]:
         """Return all projects for admins, or strictly owned projects for students."""
         if role == "admin":
             return self.list_all()
 
-        from app.db.database import SessionLocal
-        from app.db.models import ProjectORM
+        from app.db.database import get_store
 
         self._ensure_ready()
-        db = SessionLocal()
+        store = get_store()
         try:
-            rows = (
-                db.query(ProjectORM)
-                .filter(ProjectORM.owner_user_id == user_id)
-                .order_by(ProjectORM.updated_at.desc())
-                .all()
-            )
             out: List[ProtocolProject] = []
-            for row in rows:
+            for meta, payload in store.list_project_payloads(owner_user_id=user_id):
                 try:
-                    out.append(self._hydrate_project(row))
+                    out.append(self._hydrate_project(meta, payload))
                 except Exception:
                     continue
             return out
         finally:
-            db.close()
+            store.close()
 
     def delete(self, project_id: str) -> bool:
-        from app.db.database import SessionLocal
-        from app.db.models import ProjectORM
+        from app.db.database import get_store
 
         self._ensure_ready()
-        db = SessionLocal()
+        store = get_store()
         try:
-            row = db.get(ProjectORM, project_id)
-            if row is None:
-                return False
-            db.delete(row)
-            db.commit()
-            return True
-        except Exception:
-            db.rollback()
-            raise
+            return store.delete_project(project_id)
         finally:
-            db.close()
+            store.close()
 
 
 project_storage = ProjectStorage()

@@ -1,11 +1,10 @@
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import Depends, Header, HTTPException, Query, Request
-from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.db.models import UserORM
+from app.db.datastore import UserRecord
 from app.schemas.protocol import CoverMetadata, ProtocolProject
 from app.services.auth_service import verify_session_token
 from app.services.licensing_service import (
@@ -37,8 +36,8 @@ def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
 
 def get_current_user(
     authorization: Optional[str] = Header(default=None),
-    db: Session = Depends(get_db),
-) -> UserORM:
+    db: Any = Depends(get_db),
+) -> UserRecord:
     """Authenticate Bearer JWT token and enforce strict active_session_id."""
     token = _extract_bearer_token(authorization)
     if not token:
@@ -50,8 +49,8 @@ def get_current_user(
 
 
 def get_active_user(
-    current_user: UserORM = Depends(get_current_user),
-) -> UserORM:
+    current_user: UserRecord = Depends(get_current_user),
+) -> UserRecord:
     """Require an authenticated user who has completed first-login password change."""
     if current_user.must_change_password:
         raise HTTPException(
@@ -67,8 +66,8 @@ def get_active_user(
 def get_active_user_allow_query_token(
     authorization: Optional[str] = Header(default=None),
     access_token: Optional[str] = Query(default=None),
-    db: Session = Depends(get_db),
-) -> UserORM:
+    db: Any = Depends(get_db),
+) -> UserRecord:
     """Authenticate Bearer header or ?access_token= query parameter for binary downloads/previews."""
     token = _extract_bearer_token(authorization) or ((access_token or "").strip() or None)
     if not token:
@@ -89,8 +88,8 @@ def get_active_user_allow_query_token(
 
 
 def require_admin(
-    current_user: UserORM = Depends(get_active_user),
-) -> UserORM:
+    current_user: UserRecord = Depends(get_active_user),
+) -> UserRecord:
     """Restrict endpoint strictly to active admin accounts."""
     if current_user.role != "admin":
         raise HTTPException(
@@ -106,9 +105,9 @@ def require_admin(
 def require_module_write(module_key: str):
     """Dependency enforcing active write entitlement on a specific licensed module."""
     def _checker(
-        current_user: UserORM = Depends(get_active_user),
-        db: Session = Depends(get_db),
-    ) -> UserORM:
+        current_user: UserRecord = Depends(get_active_user),
+        db: Any = Depends(get_db),
+    ) -> UserRecord:
         assert_module_write_allowed(db, current_user, module_key)
         return current_user
 
@@ -118,16 +117,16 @@ def require_module_write(module_key: str):
 def require_any_active_license():
     """Dependency requiring at least one active module license for students."""
     def _checker(
-        current_user: UserORM = Depends(get_active_user),
-        db: Session = Depends(get_db),
-    ) -> UserORM:
+        current_user: UserRecord = Depends(get_active_user),
+        db: Any = Depends(get_db),
+    ) -> UserRecord:
         assert_any_module_active(db, current_user)
         return current_user
 
     return _checker
 
 
-def get_authorized_project(project_id: str, current_user: UserORM) -> ProtocolProject:
+def get_authorized_project(project_id: str, current_user: UserRecord) -> ProtocolProject:
     """Fetch a project and enforce strict multi-user ownership isolation."""
     project = project_storage.get(project_id)
     if not project:
@@ -147,7 +146,7 @@ def _norm_locked_str(value: Optional[str]) -> str:
     return re.sub(r"\s+", " ", (value or "")).strip().casefold()
 
 
-def assert_cover_admin_only(current_user: UserORM) -> None:
+def assert_cover_admin_only(current_user: UserRecord) -> None:
     """Block any cover-page mutation when requested by a non-admin user."""
     if current_user.role != "admin":
         raise HTTPException(
@@ -162,7 +161,7 @@ def assert_cover_admin_only(current_user: UserORM) -> None:
 def enforce_topic_lock_on_cover_update(
     project: ProtocolProject,
     incoming_cover: CoverMetadata,
-    current_user: UserORM,
+    current_user: UserRecord,
 ) -> None:
     """Enforce admin-only cover editing while synchronizing locked identity fields."""
     if current_user.role != "admin":
