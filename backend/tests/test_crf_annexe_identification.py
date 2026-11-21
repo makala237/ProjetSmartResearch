@@ -111,6 +111,76 @@ Information ici...
         self.assertEqual(hta_f.field_type, "dichotomous")
         self.assertIn("préciser", (hta_f.sub_field_label or "").lower())
 
+    def test_crf_positioned_at_annexe_3_not_annexe_1(self):
+        md = """# ANNEXES DU PROTOCOLE
+## ANNEXE 1 : NOTICE D'INFORMATION DU PARTICIPANT
+Texte de la notice d'information...
+
+## ANNEXE 2 : FORMULAIRE DE CONSENTEMENT ÉCLAIRÉ
+Texte du consentement éclairé...
+
+## ANNEXE 3 : FICHE DE COLLECTE DES DONNÉES
+### SECTION A : SOCIODÉMOGRAPHIQUE
+- **A1. Âge :** [____] ans
+- **A2. Statut matrimonial :** [ ] Célibataire  [ ] Marié(e)
+- **A3. Antécédents :** [ ] HTA  [ ] Diabète
+
+## ANNEXE 4 : ÉCHELLE DE GLASGOW
+Critères de l'échelle de Glasgow...
+"""
+        before, crf, after = extract_annexe1_block(md)
+        self.assertIn("ANNEXE 1", before)
+        self.assertIn("ANNEXE 2", before)
+        self.assertIn("ANNEXE 3 : FICHE DE COLLECTE", crf)
+        self.assertIn("Âge", crf)
+        self.assertIn("ANNEXE 4 : ÉCHELLE DE GLASGOW", after)
+
+    def test_build_annexes_pack_preserves_user_custom_annexes_and_order(self):
+        from app.services.annexes_generator import build_annexes_pack
+
+        project = ProtocolProject(
+            project_id="custom-order-proj",
+            name="Etude Traumatologie",
+            sections={
+                "annexes": SectionState(
+                    section_id="annexes",
+                    content_markdown="""# ANNEXES
+## ANNEXE 1 : NOTICE D'INFORMATION DU PATIENT
+Paragraphe 1 de la notice...
+Paragraphe 2 de la notice...
+
+## ANNEXE 2 : FORMULAIRE DE CONSENTEMENT
+Paragraphe du consentement...
+
+## ANNEXE 3 : FICHE DE COLLECTE DES DONNÉES
+### SECTION A : VARIABLES CLINIQUES
+- A1. Score de Glasgow : [____]
+- A2. Délais de prise en charge : [____] heures
+
+## ANNEXE 4 : ÉCHELLE DE DOULEUR EVA
+Description de l'échelle visuelle analogique...
+""",
+                )
+            },
+        )
+
+        pack = build_annexes_pack(project)
+        self.assertEqual(len(pack), 4)
+
+        # Order must be preserved exactly
+        self.assertIn("NOTICE D'INFORMATION", pack[0]["title"])
+        self.assertEqual(pack[0]["kind"], "letter")
+
+        self.assertIn("CONSENTEMENT", pack[1]["title"])
+        self.assertEqual(pack[1]["kind"], "letter")
+
+        self.assertIn("FICHE DE COLLECTE", pack[2]["title"])
+        self.assertEqual(pack[2]["kind"], "data_collection")
+        self.assertIn("grouped_variables", pack[2])
+
+        self.assertIn("ÉCHELLE DE DOULEUR", pack[3]["title"])
+        self.assertEqual(pack[3]["kind"], "letter")
+
 
 if __name__ == "__main__":
     unittest.main()

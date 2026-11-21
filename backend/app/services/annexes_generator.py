@@ -1,14 +1,122 @@
+import re
 from typing import Dict, List
 from app.data.i18n import normalize_lang
 from app.schemas.protocol import ProtocolProject
 from app.services.crf_builder import (
     ensure_project_crf_fields,
     extract_hospital_sites_from_project,
+    is_crf_annexe_content,
 )
 
 
+def parse_user_annexes_from_markdown(project: ProtocolProject, md: str) -> List[Dict[str, object]]:
+    """
+    Parse custom user-defined annexes from Markdown, respecting their actual order.
+    The annex identified as the data collection form / CRF gets kind='data_collection'
+    and includes all structured crf_fields and hospital sites. Other annexes get kind='letter'.
+    """
+    if not md or not md.strip():
+        return []
+
+    lines = md.splitlines()
+    header_indices: List[int] = []
+    for idx, line in enumerate(lines):
+        s = line.strip()
+        if re.match(r"^#{1,3}\s+(?:ANNEXE|APPENDIX)\b", s, re.IGNORECASE):
+            header_indices.append(idx)
+        elif re.match(
+            r"^#{1,3}\s+(?:FICHE|FORMULAIRE|QUESTIONNAIRE|NOTICE|CONSENTEMENT|CLAIRANCE|LETTRE|D[ÉE]CLARATION|CAHIER|CASE\s+REPORT)\b",
+            s,
+            re.IGNORECASE,
+        ):
+            header_indices.append(idx)
+
+    if not header_indices:
+        for idx, line in enumerate(lines):
+            s = line.strip()
+            if s.startswith("## ") and len(s) > 3:
+                header_indices.append(idx)
+
+    # Need at least one clearly defined annex header
+    if not header_indices:
+        return []
+
+    c = project.cover
+    author = c.author_name or "[Nom de l'étudiant]"
+    matricule = c.matricule or ""
+    title = c.title or project.name
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    ensure_project_crf_fields(project)
+    crf_serialized = [f.model_dump() for f in project.crf_fields]
+    hospital_sites = extract_hospital_sites_from_project(project)
+    default_sec_title = "General Variables" if lang == "en" else "Variables générales"
+    free_lbl = "Free text" if lang == "en" else "Champ libre"
+
+    grouped: Dict[str, List[Dict[str, str]]] = {}
+    for f in project.crf_fields:
+        grouped.setdefault(f.section_title or default_sec_title, []).append(
+            {
+                "code": f.code,
+                "name": f.label,
+                "field_type": f.field_type,
+                "options": " | ".join(f.options),
+                "unit": f.unit,
+                "sub_field_label": f.sub_field_label,
+                "modalities": " / ".join(f.options) if f.options else (f.unit or free_lbl),
+            }
+        )
+
+    annexes: List[Dict[str, object]] = []
+    for i, h_idx in enumerate(header_indices):
+        next_h = header_indices[i + 1] if i + 1 < len(header_indices) else len(lines)
+        raw_title = lines[h_idx].strip().lstrip("#").strip()
+        body_lines = [l.strip() for l in lines[h_idx + 1 : next_h] if l.strip() and not l.strip().startswith("---")]
+        body_text = "\n".join(body_lines)
+
+        is_crf = is_crf_annexe_content(raw_title, body_text)
+        if is_crf:
+            annexes.append(
+                {
+                    "number": i + 1,
+                    "title": raw_title,
+                    "kind": "data_collection",
+                    "grouped_variables": grouped,
+                    "crf_fields": crf_serialized,
+                    "hospital_sites": hospital_sites,
+                    "author_label": f"{author} ({'Reg. No.' if lang == 'en' else 'Matricule'} : {matricule})"
+                    if matricule
+                    else author,
+                    "study_title": title,
+                    "paragraphs": body_lines
+                    or [
+                        f"{'Study Title' if lang == 'en' else 'Titre de l\'étude'} : {title}",
+                        "Instructions: Check the appropriate box or write legibly inside the field."
+                        if lang == "en"
+                        else "Consigne : Cocher la case correspondante ou inscrire lisiblement la valeur dans le cadre réservé.",
+                    ],
+                }
+            )
+        else:
+            annexes.append(
+                {
+                    "number": i + 1,
+                    "title": raw_title,
+                    "kind": "letter",
+                    "paragraphs": body_lines if body_lines else [raw_title],
+                }
+            )
+
+    return annexes
+
+
 def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
-    """Generate clean, pre-filled FMSB ethical & administrative annexes from project metadata."""
+    """Generate clean FMSB ethical & administrative annexes from project metadata or custom markdown."""
+    ann_sec = project.sections.get("annexes")
+    if ann_sec and ann_sec.content_markdown and ann_sec.content_markdown.strip():
+        user_annexes = parse_user_annexes_from_markdown(project, ann_sec.content_markdown)
+        if user_annexes:
+            return user_annexes
+
     lang = normalize_lang(getattr(project, "language", "fr"))
     c = project.cover
     cfg = project.annexes_config

@@ -99,49 +99,104 @@ _UNIT_HINTS = [
 ]
 
 
-def extract_annexe1_block(annexes_md: str) -> Tuple[str, str, str]:
+def is_crf_annexe_content(title: str, text: str) -> bool:
+    """Check if an annex title or body represents a CRF / data collection sheet."""
+    t_lower = (title or "").lower()
+    if any(
+        k in t_lower
+        for k in (
+            "fiche de collecte",
+            "data collection",
+            "cahier d'observation",
+            "questionnaire",
+            "formulaire d'enregistrement",
+            "formulaire de collecte",
+            "case report form",
+            "crf",
+            "grille de collecte",
+            "guide d'entretien",
+        )
+    ):
+        return True
+    body = (text or "").lower()
+    has_boxes = body.count("[ ]") + body.count("☐") + body.count("[_") >= 3
+    has_sections = "section a" in body or "section 1" in body
+    return bool(has_boxes and has_sections)
+
+
+def extract_crf_annexe_block(annexes_md: str) -> Tuple[str, str, str, str]:
     """
-    Split annexes_md into (before_annexe1, annexe1_block, after_annexe1).
-    Preserves all other annexes (Annexe 2..7) intact when Annexe 1 is updated.
+    Find and isolate the CRF / data collection form block anywhere in annexes_md,
+    regardless of whether it is positioned at Annexe 1, Annexe 2, Annexe 3, or Annexe N!
+    Returns (before_crf, crf_block, after_crf, original_title).
     """
     if not annexes_md.strip():
-        return "", "", ""
+        return "", "", "", ""
     lines = annexes_md.splitlines()
-    start_idx: Optional[int] = None
-    end_idx: int = len(lines)
+
+    # Locate all annex header lines (e.g. ## ANNEXE ..., ## APPENDIX ..., or major section headers)
+    header_indices: List[int] = []
     for idx, line in enumerate(lines):
         s = line.strip()
-        if start_idx is None:
-            if _ANNEXE1_START_RE.match(s):
-                start_idx = idx
-        else:
-            if _NEXT_ANNEXE_RE.match(s):
-                end_idx = idx
-                break
-    if start_idx is None:
-        # Fallback: scan for any line mentioning fiche de collecte, formulaire, questionnaire, or first section
-        fallback_re = re.compile(
-            r"(?:fiche\s+de\s+collecte|formulaire\s+d['’]enregistrement|formulaire\s+de\s+collecte|questionnaire|case\s+report\s+form|crf\b|###\s*section\s*a)",
+        if re.match(r"^#{1,3}\s+(?:ANNEXE|APPENDIX)\b", s, re.IGNORECASE):
+            header_indices.append(idx)
+        elif re.match(
+            r"^#{1,3}\s+(?:FICHE|FORMULAIRE|QUESTIONNAIRE|NOTICE|CONSENTEMENT|CLAIRANCE|LETTRE|D[ÉE]CLARATION|CAHIER|CASE\s+REPORT)\b",
+            s,
             re.IGNORECASE,
-        )
+        ):
+            header_indices.append(idx)
+
+    if not header_indices:
         for idx, line in enumerate(lines):
             s = line.strip()
-            if fallback_re.search(s):
-                start_idx = idx
-                break
-        if start_idx is not None:
-            for idx in range(start_idx + 1, len(lines)):
-                s = lines[idx].strip()
-                if _NEXT_ANNEXE_RE.match(s) or (s.startswith("#") and any(k in s.lower() for k in ("annexe 2", "annexe ii", "appendix 2", "consentement", "notice", "clairance"))):
-                    end_idx = idx
-                    break
+            if s.startswith("## "):
+                header_indices.append(idx)
 
-    if start_idx is None:
-        return "", "", annexes_md.strip()
-    before = "\n".join(lines[:start_idx]).strip()
-    ann1 = "\n".join(lines[start_idx:end_idx]).strip()
-    after = "\n".join(lines[end_idx:]).strip()
-    return before, ann1, after
+    if not header_indices:
+        return "", annexes_md.strip(), "", "## ANNEXE 1 : FICHE DE COLLECTE DES DONNÉES"
+
+    # Slice into distinct annex blocks
+    blocks: List[Tuple[int, int, str, str, str]] = []
+    for i, h_idx in enumerate(header_indices):
+        next_h = header_indices[i + 1] if i + 1 < len(header_indices) else len(lines)
+        title = lines[h_idx].strip()
+        body = "\n".join(lines[h_idx + 1 : next_h]).strip()
+        full_text = "\n".join(lines[h_idx:next_h]).strip()
+        blocks.append((h_idx, next_h, title, body, full_text))
+
+    # Identify the block that corresponds to the CRF
+    crf_block_idx: Optional[int] = None
+    for idx, (_, _, title, body, _) in enumerate(blocks):
+        if is_crf_annexe_content(title, body):
+            crf_block_idx = idx
+            break
+
+    if crf_block_idx is None:
+        # Fallback 1: check if block matches _ANNEXE1_START_RE
+        for idx, (_, _, title, body, _) in enumerate(blocks):
+            if _ANNEXE1_START_RE.match(title):
+                crf_block_idx = idx
+                break
+
+    if crf_block_idx is None:
+        crf_block_idx = 0
+
+    s_idx, e_idx, title, body, full_text = blocks[crf_block_idx]
+    before = "\n".join(lines[:s_idx]).strip()
+    crf_block = full_text
+    after = "\n".join(lines[e_idx:]).strip()
+    return before, crf_block, after, title
+
+
+def extract_annexe1_block(annexes_md: str) -> Tuple[str, str, str]:
+    """
+    Split annexes_md into (before_crf, crf_block, after_crf).
+    Agnostic to whether the CRF is Annexe 1, Annexe 2, Annexe 3, or Annexe N.
+    Preserves all other annexes intact.
+    """
+    before, crf, after, _ = extract_crf_annexe_block(annexes_md)
+    return before, crf, after
 
 
 def _clean_md_text(raw: str) -> str:
@@ -697,16 +752,20 @@ def draw_field_control_markdown(field: CRFFieldSpec) -> str:
     return ctl
 
 
-def render_crf_annexe1_markdown(project: ProtocolProject) -> str:
-    """Render Annexe 1 Markdown using visual checkbox & fill-in box drawings."""
+def render_crf_annexe1_markdown(project: ProtocolProject, header_title: str = "") -> str:
+    """Render Annexe Markdown using visual checkbox & fill-in box drawings."""
     ensure_project_crf_fields(project)
     sites = extract_hospital_sites_from_project(project)
     author = project.cover.author_name or "[Nom de l'enquêteur]"
     matricule = f" (Matricule : {project.cover.matricule})" if project.cover.matricule else ""
     sites_boxes = "  ".join(f"☐ {s}" for s in sites) + "  ☐ Autre : ⟦________________⟧"
 
+    main_heading = header_title.strip() if header_title.strip() else "## ANNEXE 1 : FICHE DE COLLECTE DES DONNÉES"
+    if not main_heading.startswith("#"):
+        main_heading = f"## {main_heading}"
+
     lines = [
-        "## ANNEXE 1 : FICHE DE COLLECTE DES DONNÉES",
+        main_heading,
         f"**Code participant :** ⟦  |  |  |  -  |  |  ⟧ | **Date de collecte :** ⟦  |  ⟧ / ⟦  |  ⟧ / ⟦ 2 | 0 |  |  ⟧",
         f"**Hôpital d'inclusion :** {sites_boxes}",
         f"**Nom de l'enquêteur :** {author}{matricule}",
@@ -901,7 +960,7 @@ def render_crf_annexe1_html(project: ProtocolProject) -> str:
 def sync_crf_to_project(project: ProtocolProject, sync_annexe1_markdown: bool = True) -> None:
     """
     Synchronize `project.crf_fields` into `project.variables` and replace ONLY
-    the Annexe 1 block of `project.sections["annexes"]` (keeping Annexes 2..7 intact).
+    the CRF block of `project.sections["annexes"]` (keeping all other user annexes intact at their respective positions).
     """
     project.variables = crf_fields_to_variables(project.crf_fields)
 
@@ -912,9 +971,9 @@ def sync_crf_to_project(project: ProtocolProject, sync_annexe1_markdown: bool = 
     if ann_sec is None:
         return
 
-    rendered_ann1 = render_crf_annexe1_markdown(project)
     existing_md = ann_sec.content_markdown or ""
-    before, ann1, after = extract_annexe1_block(existing_md)
+    before, ann1, after, original_title = extract_crf_annexe_block(existing_md)
+    rendered_ann1 = render_crf_annexe1_markdown(project, header_title=original_title)
 
     parts: List[str] = []
     if before:
