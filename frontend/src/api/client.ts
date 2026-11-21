@@ -41,6 +41,7 @@ import type {
   PatientRecord,
   ProtocolProject,
   ResearchReport,
+  ResearchScope,
   SectionOrchestrationTrace,
   SegmentReport,
   StepStatus,
@@ -329,6 +330,7 @@ export const api = {
       custom_query?: string;
       max_per_source?: number;
       include_web_grounding?: boolean;
+      search_scope?: ResearchScope;
     },
     taskId?: string
   ) =>

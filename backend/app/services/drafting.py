@@ -280,12 +280,17 @@ def draft_section_with_ai(
 
     if matching_segments:
         segments_context = "\n".join(
-            f"- Réf [{ref_by_id[s.ref_id].order_index}] ({ref_by_id[s.ref_id].authors[0] if ref_by_id[s.ref_id].authors else ''}, {ref_by_id[s.ref_id].year or ''}) | Portée={s.epidemiology_scope or 'N/A'} : {s.summary} | Données exactes: {s.key_quote_or_data}"
+            f"- Réf [{ref_by_id[s.ref_id].order_index}]"
+            f"{f' [{ref_by_id[s.ref_id].african_source_label}]' if ref_by_id[s.ref_id].african_source_label else ''} "
+            f"({ref_by_id[s.ref_id].authors[0] if ref_by_id[s.ref_id].authors else ''}, {ref_by_id[s.ref_id].year or ''}) "
+            f"| Portée={s.epidemiology_scope or 'N/A'} : {s.summary} | Données exactes: {s.key_quote_or_data}"
             for s in matching_segments[:15]
         )
     else:
         segments_context = "\n".join(
-            f"- Réf [{r.order_index}] {r.title} ({r.year or ''}): {r.abstract[:280]}"
+            f"- Réf [{r.order_index}]"
+            f"{f' [{r.african_source_label}]' if r.african_source_label else ''} "
+            f"{r.title} ({r.year or ''}): {r.abstract[:280]}"
             for r in project.references[:6]
         ) or ("No segmented references available for this section yet." if lang == "en" else "Aucune référence segmentée pour cette section pour le moment.")
 

@@ -71,6 +71,8 @@ export interface CoverMetadata {
   ethics_committees: string[];
 }
 
+export type ResearchScope = "global" | "hybrid_africa" | "africa_only";
+
 export interface ReferenceItem {
   ref_id: string;
   order_index?: number | null;
@@ -78,6 +80,8 @@ export interface ReferenceItem {
   pmcid?: string | null;
   doi?: string | null;
   source_platform: string;
+  regional_scope?: "cameroun_fmsb" | "afrique_cames" | "international" | null;
+  african_source_label?: string | null;
   authors: string[];
   title: string;
   journal: string;
@@ -346,8 +350,10 @@ export interface ResearchReport {
     local_epidemiology_query: string;
     target_sites: string[];
   };
+  search_scope?: ResearchScope;
   web_summary: string;
   added_references_count: number;
+  african_references_count?: number;
   total_references_count: number;
   added_images_count: number;
   source_errors: string[];

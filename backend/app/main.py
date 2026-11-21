@@ -224,6 +224,7 @@ class ResearchRequest(BaseModel):
     custom_query: Optional[str] = None
     max_per_source: int = 4
     include_web_grounding: bool = True
+    search_scope: str = "hybrid_africa"
 
 
 class SegmentRequest(BaseModel):
@@ -801,6 +802,7 @@ def run_project_research(
             custom_query=payload.custom_query,
             max_per_source=payload.max_per_source,
             include_web_grounding=payload.include_web_grounding,
+            search_scope=payload.search_scope,
         )
         project_storage.save(project)
         record_usage_and_debit(

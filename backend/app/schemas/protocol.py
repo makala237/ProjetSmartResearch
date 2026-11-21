@@ -134,6 +134,8 @@ class ReferenceItem(BaseModel):
     pmcid: Optional[str] = None
     doi: Optional[str] = None
     source_platform: str = "pubmed"  # pubmed | europepmc | openalex | web
+    regional_scope: Optional[str] = None  # "cameroun_fmsb" | "afrique_cames" | "international"
+    african_source_label: Optional[str] = None  # ex. "Cameroun / FMSB" | "Afrique / CAMES"
     authors: List[str] = Field(default_factory=list)
     title: str
     journal: str = ""

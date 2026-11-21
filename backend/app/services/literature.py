@@ -15,6 +15,120 @@ from app.services.vancouver import format_vancouver_citation, refresh_vancouver_
 
 logger = logging.getLogger(__name__)
 
+AFRICAN_PUBMED_JOURNALS_CLAUSE = (
+    '("Pan Afr Med J"[Journal] OR "Health Sci Dis"[Journal] OR "Afr Health Sci"[Journal] '
+    'OR "East Afr Med J"[Journal] OR "S Afr Med J"[Journal] OR "West Afr J Med"[Journal] '
+    'OR "Mali Med"[Journal] OR "Dakar Med"[Journal] OR "Med Trop Sante Int"[Journal] '
+    'OR "Med Sante Trop"[Journal] OR "Bull Soc Pathol Exot"[Journal])'
+)
+
+AFRICAN_PUBMED_GEO_CLAUSE = (
+    '("Cameroon"[MeSH] OR "Cameroon"[Title/Abstract] OR "Africa, Central"[MeSH] '
+    'OR "Africa, Western"[MeSH] OR "Africa South of the Sahara"[MeSH] OR "Sub-Saharan Africa"[Title/Abstract])'
+)
+
+AFRICAN_OPENALEX_COUNTRIES = "CM|SN|CI|CD|BF|ML|BJ|TG|GA|CG|TD|CF|NE|GN|MG|GH|NG|KE|ZA|UG|TZ|ET|RW"
+
+_CAMEROON_FMSB_KEYWORDS = (
+    "hsd-fmsb.org",
+    "health sci dis",
+    "health sciences and disease",
+    "yaound",
+    "fmsb",
+    "minsante.gov.cm",
+    "cameroon",
+    "cameroun",
+    "douala",
+    "garoua",
+    "buea",
+    "bafoussam",
+)
+
+_AFRICA_CAMES_KEYWORDS = (
+    "pan afr med j",
+    "panafrican-med-journal",
+    "ajol.info",
+    "afr health sci",
+    "african health sciences",
+    "mali med",
+    "dakar med",
+    "ramur",
+    "cames",
+    "afro.who.int",
+    "west afr j med",
+    "east afr j med",
+    "east afr med j",
+    "s afr med j",
+    "med trop",
+    "med sante trop",
+    "bull soc pathol exot",
+    "afrique",
+    "africa",
+    "sub-saharan",
+    "subsaharienne",
+    "senegal",
+    "sénégal",
+    "dakar",
+    "abidjan",
+    "cote d'ivoire",
+    "côte d'ivoire",
+    "burkina",
+    "ouagadougou",
+    "bamako",
+    "mali",
+    "benin",
+    "bénin",
+    "togo",
+    "gabon",
+    "congo",
+    "kinshasa",
+    "nigeria",
+    "ghana",
+    "kenya",
+    "uganda",
+    "south africa",
+)
+
+
+def normalize_search_scope(scope: Optional[str]) -> str:
+    """Normalize search_scope parameter to global, hybrid_africa, or africa_only."""
+    val = (scope or "").strip().lower()
+    if val in ("global", "africa_only", "hybrid_africa"):
+        return val
+    return "hybrid_africa"
+
+
+def classify_reference_regional_scope(
+    ref: ReferenceItem, force_min_africa: bool = False
+) -> Tuple[str, Optional[str]]:
+    """Classify a bibliographic reference into cameroun_fmsb, afrique_cames, or international."""
+    haystack = " ".join(
+        [
+            ref.journal or "",
+            ref.url or "",
+            ref.title or "",
+            (ref.abstract or "")[:400],
+        ]
+    ).lower()
+
+    if any(kw in haystack for kw in _CAMEROON_FMSB_KEYWORDS):
+        return "cameroun_fmsb", "Cameroun / FMSB"
+    if any(kw in haystack for kw in _AFRICA_CAMES_KEYWORDS):
+        return "afrique_cames", "Afrique / CAMES"
+    if force_min_africa or ref.regional_scope in ("cameroun_fmsb", "afrique_cames"):
+        if ref.regional_scope == "cameroun_fmsb":
+            return "cameroun_fmsb", "Cameroun / FMSB"
+        return "afrique_cames", "Afrique / CAMES"
+    return "international", None
+
+
+def tag_reference_scope(ref: ReferenceItem, force_min_africa: bool = False) -> ReferenceItem:
+    """Populate regional_scope and african_source_label on a ReferenceItem."""
+    scope, label = classify_reference_regional_scope(ref, force_min_africa=force_min_africa)
+    ref.regional_scope = scope
+    ref.african_source_label = label
+    return ref
+
 
 class SearchPlan(BaseModel):
     pubmed_queries: List[str] = Field(
@@ -152,6 +266,7 @@ def search_pubmed(query: str, max_results: int = 5) -> List[ReferenceItem]:
                 verified=True,
             )
             ref.vancouver_citation = format_vancouver_citation(ref)
+            tag_reference_scope(ref)
             refs.append(ref)
     return refs
 
@@ -209,6 +324,7 @@ def search_europepmc(query: str, max_results: int = 5) -> List[ReferenceItem]:
             verified=True,
         )
         ref.vancouver_citation = format_vancouver_citation(ref)
+        tag_reference_scope(ref)
         refs.append(ref)
     return refs
 
@@ -220,8 +336,8 @@ def _clean_plain_query(query: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
-def search_openalex(query: str, max_results: int = 5) -> List[ReferenceItem]:
-    """Query OpenAlex works API (uses free OPENALEX_API_KEY if configured)."""
+def search_openalex(query: str, max_results: int = 5, africa_only: bool = False) -> List[ReferenceItem]:
+    """Query OpenAlex works API (optionally filtered to African institutional affiliations)."""
     settings = get_settings()
     url = "https://api.openalex.org/works"
     plain_q = _clean_plain_query(query)
@@ -232,6 +348,8 @@ def search_openalex(query: str, max_results: int = 5) -> List[ReferenceItem]:
         "per-page": max_results,
         "sort": "relevance_score:desc",
     }
+    if africa_only:
+        params["filter"] = f"institutions.country_code:{AFRICAN_OPENALEX_COUNTRIES}"
     if settings.openalex_api_key:
         params["api_key"] = settings.openalex_api_key
     elif settings.openalex_email:
@@ -294,13 +412,78 @@ def search_openalex(query: str, max_results: int = 5) -> List[ReferenceItem]:
             verified=True,
         )
         ref.vancouver_citation = format_vancouver_citation(ref)
+        tag_reference_scope(ref, force_min_africa=africa_only)
         refs.append(ref)
     return refs
 
 
-def search_web_institutional(query: str, lang: str = "fr") -> Tuple[str, List[ReferenceItem], str]:
-    """Use Gemini Google Search Grounding for WHO / MINSANTE / Cameroon epidemiology data."""
-    if normalize_lang(lang) == "en":
+def search_pubmed_african(query: str, max_results: int = 4) -> List[ReferenceItem]:
+    """Query PubMed targeting African/CAMES journals and Sub-Saharan/Cameroon geography."""
+    plain_q = _clean_plain_query(query)
+    if not plain_q:
+        return []
+    targeted = f"({plain_q}) AND ({AFRICAN_PUBMED_JOURNALS_CLAUSE} OR {AFRICAN_PUBMED_GEO_CLAUSE})"
+    refs = search_pubmed(targeted, max_results=max_results)
+    if not refs:
+        fallback_q = f"({plain_q}) AND (Africa[Title/Abstract] OR Cameroon[Title/Abstract])"
+        refs = search_pubmed(fallback_q, max_results=max_results)
+    for ref in refs:
+        tag_reference_scope(ref, force_min_africa=True)
+    return refs
+
+
+def search_europepmc_african(query: str, max_results: int = 4) -> List[ReferenceItem]:
+    """Query Europe PMC targeting African journals (PAMJ, HSD, AHS) and African affiliations."""
+    plain_q = _clean_plain_query(query)
+    if not plain_q:
+        return []
+    targeted = (
+        f'({plain_q}) AND (JOURNAL:"Pan African Medical Journal" OR '
+        'JOURNAL:"Health Sciences and Disease" OR JOURNAL:"African Health Sciences" OR '
+        'AFF:"Cameroon" OR AFF:"Africa" OR "Sub-Saharan Africa")'
+    )
+    refs = search_europepmc(targeted, max_results=max_results)
+    for ref in refs:
+        tag_reference_scope(ref, force_min_africa=True)
+    return refs
+
+
+def search_web_institutional(
+    query: str, lang: str = "fr", africa_focus: bool = False
+) -> Tuple[str, List[ReferenceItem], str]:
+    """Use Gemini Google Search Grounding for WHO / MINSANTE / Cameroon / African journals data."""
+    if africa_focus:
+        if normalize_lang(lang) == "en":
+            prompt = f"""
+Search specifically African and Cameroonian biomedical portals and medical journals on:
+{query}
+
+Prioritize authoritative African/CAMES sources:
+- Health Sciences and Disease (hsd-fmsb.org, FMSB Yaoundé I)
+- The Pan African Medical Journal (panafrican-med-journal.com)
+- African Journals Online (ajol.info)
+- WHO Regional Office for Africa (afro.who.int)
+- Cameroon Ministry of Public Health (minsante.gov.cm)
+- CAMES / DICAMES, Médecine d'Afrique Noire, Mali Médical, Dakar Médical
+
+Provide a concise factual summary of epidemiological data in Africa and Cameroon in English, citing the sources consulted.
+"""
+        else:
+            prompt = f"""
+Recherche en priorité sur les portails institutionnels et revues médicales africaines et camerounaises à propos de :
+{query}
+
+Cible explicitement ces sources de référence CAMES / Afrique :
+- Health Sciences and Disease (hsd-fmsb.org, FMSB Yaoundé I)
+- The Pan African Medical Journal (panafrican-med-journal.com)
+- African Journals Online (ajol.info)
+- OMS Bureau Régional Afrique (afro.who.int)
+- Ministère de la Santé Publique du Cameroun (minsante.gov.cm)
+- CAMES / DICAMES, Médecine d'Afrique Noire, Mali Médical, Dakar Médical
+
+Résume de manière factuelle les données épidémiologiques (Cameroun, Afrique subsaharienne) en citant les sources consultées.
+"""
+    elif normalize_lang(lang) == "en":
         prompt = f"""
 Search for reliable epidemiological figures and institutional guidelines (WHO, Cameroon Ministry of Public Health, CDC, African medical journals) on:
 {query}
@@ -335,6 +518,7 @@ Résume de manière factuelle les chiffres récents (Monde, Afrique, Cameroun) e
             verified=True,
         )
         ref.vancouver_citation = format_vancouver_citation(ref)
+        tag_reference_scope(ref, force_min_africa=False)
         web_refs.append(ref)
     return res["text"], web_refs, res["model_used"]
 
@@ -391,9 +575,11 @@ def run_research_pipeline(
     custom_query: Optional[str] = None,
     max_per_source: int = 4,
     include_web_grounding: bool = True,
+    search_scope: str = "hybrid_africa",
 ) -> Dict[str, Any]:
     """Execute full multi-source literature search and update project references & images."""
     lang = normalize_lang(getattr(project, "language", "fr"))
+    scope = normalize_search_scope(search_scope)
     emit_pipeline_step(
         "plan",
         "Formulation des requêtes biomédicales...",
@@ -405,36 +591,62 @@ def run_research_pipeline(
     collected: List[ReferenceItem] = []
     source_errors: List[str] = []
 
-    emit_pipeline_step(
-        "pubmed",
-        "Interrogation de PubMed & Europe PMC...",
-        "Querying PubMed & Europe PMC...",
-        detail=" | ".join(plan.pubmed_queries[:2]),
-        progress_pct=35,
-    )
-    for q in plan.pubmed_queries[:2]:
-        try:
-            collected.extend(search_pubmed(q, max_results=max_per_source))
-        except Exception as exc:
-            source_errors.append(f"PubMed ({q}): {exc}")
-
-        try:
-            collected.extend(search_europepmc(q, max_results=max_per_source))
-        except Exception as exc:
-            source_errors.append(f"EuropePMC ({q}): {exc}")
-
-    emit_pipeline_step(
-        "openalex",
-        "Collecte sur OpenAlex...",
-        "Searching OpenAlex...",
-        progress_pct=60,
-    )
     oa_queries = plan.openalex_queries[:2] if plan.openalex_queries else plan.pubmed_queries[:2]
-    for oq in oa_queries:
-        try:
-            collected.extend(search_openalex(oq, max_results=max_per_source))
-        except Exception as exc:
-            source_errors.append(f"OpenAlex ({oq}): {exc}")
+
+    if scope in ("global", "hybrid_africa"):
+        emit_pipeline_step(
+            "pubmed",
+            "Interrogation de PubMed & Europe PMC...",
+            "Querying PubMed & Europe PMC...",
+            detail=" | ".join(plan.pubmed_queries[:2]),
+            progress_pct=35,
+        )
+        for q in plan.pubmed_queries[:2]:
+            try:
+                collected.extend(search_pubmed(q, max_results=max_per_source))
+            except Exception as exc:
+                source_errors.append(f"PubMed ({q}): {exc}")
+
+            try:
+                collected.extend(search_europepmc(q, max_results=max_per_source))
+            except Exception as exc:
+                source_errors.append(f"EuropePMC ({q}): {exc}")
+
+        emit_pipeline_step(
+            "openalex",
+            "Collecte sur OpenAlex...",
+            "Searching OpenAlex...",
+            progress_pct=55,
+        )
+        for oq in oa_queries:
+            try:
+                collected.extend(search_openalex(oq, max_results=max_per_source, africa_only=False))
+            except Exception as exc:
+                source_errors.append(f"OpenAlex ({oq}): {exc}")
+
+    if scope in ("hybrid_africa", "africa_only"):
+        emit_pipeline_step(
+            "africa_cames",
+            "Recherche ciblée revues africaines & CAMES (HSD, PAMJ, AJOL, OpenAlex Afrique)...",
+            "Searching African & CAMES journals (HSD, PAMJ, AJOL, OpenAlex Africa)...",
+            progress_pct=68,
+        )
+        african_queries = oa_queries[:1] if scope == "hybrid_africa" else oa_queries[:2]
+        for aq in african_queries:
+            if not aq:
+                continue
+            try:
+                collected.extend(search_pubmed_african(aq, max_results=max_per_source))
+            except Exception as exc:
+                source_errors.append(f"PubMed Africa ({aq}): {exc}")
+            try:
+                collected.extend(search_europepmc_african(aq, max_results=max_per_source))
+            except Exception as exc:
+                source_errors.append(f"EuropePMC Africa ({aq}): {exc}")
+            try:
+                collected.extend(search_openalex(aq, max_results=max_per_source, africa_only=True))
+            except Exception as exc:
+                source_errors.append(f"OpenAlex Africa ({aq}): {exc}")
 
     web_summary = ""
     if include_web_grounding and plan.local_epidemiology_query:
@@ -445,7 +657,11 @@ def run_research_pipeline(
             progress_pct=78,
         )
         try:
-            web_summary, web_refs, _ = search_web_institutional(plan.local_epidemiology_query, lang=lang)
+            web_summary, web_refs, _ = search_web_institutional(
+                plan.local_epidemiology_query,
+                lang=lang,
+                africa_focus=scope in ("hybrid_africa", "africa_only"),
+            )
             collected.extend(web_refs[:3])
         except Exception as exc:
             source_errors.append(f"Web Grounding: {exc}")
@@ -466,6 +682,7 @@ def run_research_pipeline(
     added_images: List[ImageAsset] = []
 
     for ref in collected:
+        tag_reference_scope(ref, force_min_africa=False)
         norm_t = _normalize_title(ref.title)
         if ref.pmid and ref.pmid in existing_pmids:
             continue
@@ -491,12 +708,17 @@ def run_research_pipeline(
                 added_images.append(fig)
 
     refresh_vancouver_references(project)
+    african_refs_added = sum(
+        1 for r in added_refs if r.regional_scope in ("cameroun_fmsb", "afrique_cames")
+    )
 
     return {
         "planner_model": planner_model,
         "plan": plan.model_dump(),
+        "search_scope": scope,
         "web_summary": web_summary,
         "added_references_count": len(added_refs),
+        "african_references_count": african_refs_added,
         "total_references_count": len(project.references),
         "added_images_count": len(added_images),
         "source_errors": source_errors,

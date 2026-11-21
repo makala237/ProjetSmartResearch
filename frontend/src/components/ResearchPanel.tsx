@@ -17,6 +17,7 @@ import type {
   ImportReport,
   ProtocolProject,
   ResearchReport,
+  ResearchScope,
   SegmentReport,
 } from "../types/protocol";
 
@@ -38,6 +39,8 @@ export function ResearchPanel({
     project.entry_mode === "existing_protocol" ? "import" : "search"
   );
   const [customQuery, setCustomQuery] = useState("");
+  const [searchScope, setSearchScope] = useState<ResearchScope>("hybrid_africa");
+  const [refFilter, setRefFilter] = useState<"all" | "africa">("all");
   const [busyResearch, setBusyResearch] = useState(false);
   const [busySegment, setBusySegment] = useState(false);
   const [busyImport, setBusyImport] = useState(false);
@@ -45,6 +48,12 @@ export function ResearchPanel({
   const [researchReport, setResearchReport] = useState<ResearchReport | null>(null);
   const [segmentReport, setSegmentReport] = useState<SegmentReport | null>(null);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
+
+  const africanReferences = project.references.filter(
+    (r) => r.regional_scope === "cameroun_fmsb" || r.regional_scope === "afrique_cames"
+  );
+  const displayedReferences =
+    refFilter === "africa" ? africanReferences : project.references;
 
   async function runTask<T>(
     operation: string,
@@ -81,6 +90,7 @@ export function ResearchPanel({
               custom_query: customQuery.trim() || undefined,
               max_per_source: 4,
               include_web_grounding: true,
+              search_scope: searchScope,
             },
             taskId
           )
@@ -180,6 +190,58 @@ export function ResearchPanel({
 
       {tab === "search" && (
         <div className="mt-4 space-y-3">
+          <div className="flex flex-col gap-1.5 rounded-lg border border-slate-200 bg-slate-50/70 p-2.5">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="mr-1 text-[11px] font-semibold text-slate-600">
+                {lang === "en" ? "Scope:" : "Portée :"}
+              </span>
+              {(
+                [
+                  {
+                    value: "hybrid_africa" as ResearchScope,
+                    labelFr: "Hybride Afrique & Monde (FMSB / CAMES)",
+                    labelEn: "Hybrid Africa & Global (FMSB / CAMES)",
+                  },
+                  {
+                    value: "africa_only" as ResearchScope,
+                    labelFr: "Afrique & CAMES uniquement",
+                    labelEn: "Africa & CAMES Only",
+                  },
+                  {
+                    value: "global" as ResearchScope,
+                    labelFr: "Mondiale",
+                    labelEn: "Global",
+                  },
+                ] as const
+              ).map((opt) => {
+                const active = searchScope === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setSearchScope(opt.value)}
+                    className={`rounded-full px-2.5 py-1 text-[11px] font-semibold transition ${
+                      active
+                        ? opt.value === "global"
+                          ? "bg-indigo-600 text-white shadow-sm"
+                          : "bg-emerald-600 text-white shadow-sm"
+                        : "bg-white text-slate-700 ring-1 ring-slate-200 hover:bg-slate-100"
+                    }`}
+                  >
+                    {lang === "en" ? opt.labelEn : opt.labelFr}
+                  </button>
+                );
+              })}
+            </div>
+            {(searchScope === "hybrid_africa" || searchScope === "africa_only") && (
+              <p className="text-[11px] text-emerald-800">
+                {lang === "en"
+                  ? "Targeted African sources: HSD (FMSB Yaoundé I), PAMJ, AJOL, WHO AFRO, Mali/Dakar Médical, OpenAlex Africa, CAMES"
+                  : "Sources africaines ciblées : HSD (FMSB Yaoundé I), PAMJ, AJOL, OMS AFRO, Mali/Dakar Médical, OpenAlex Afrique, CAMES"}
+              </p>
+            )}
+          </div>
+
           <div className="flex flex-wrap gap-2">
             <input
               type="text"
@@ -233,10 +295,18 @@ export function ResearchPanel({
               <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-indigo-900">
                 <span>
                   <Sparkles className="mr-1 inline h-3.5 w-3.5" />
-                  Recherche documentaire :{" "}
-                  {researchReport.added_references_count} nouvelles références ajoutées (total{" "}
-                  {researchReport.total_references_count}) ·{" "}
-                  {researchReport.added_images_count} figures Open Access
+                  {lang === "en" ? "Literature search:" : "Recherche documentaire :"}{" "}
+                  {researchReport.added_references_count}{" "}
+                  {lang === "en" ? "new reference(s) added" : "nouvelles références ajoutées"}{" "}
+                  {(researchReport.african_references_count ?? 0) > 0 && (
+                    <span className="ml-1 inline-flex items-center rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                      {lang === "en"
+                        ? `incl. ${researchReport.african_references_count} Africa / CAMES`
+                        : `dont ${researchReport.african_references_count} Afrique / CAMES`}
+                    </span>
+                  )}{" "}
+                  ({lang === "en" ? "total" : "total"} {researchReport.total_references_count}) ·{" "}
+                  {researchReport.added_images_count} {lang === "en" ? "Open Access figures" : "figures Open Access"}
                 </span>
               </div>
               <div className="mt-1.5 text-slate-600">
@@ -348,38 +418,90 @@ export function ResearchPanel({
 
       {tab === "refs" && (
         <div className="mt-4 max-h-64 space-y-3 overflow-y-auto pr-1 text-xs">
-          {project.references.length === 0 ? (
+          {project.references.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-100 pb-2">
+              <button
+                type="button"
+                onClick={() => setRefFilter("all")}
+                className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold transition ${
+                  refFilter === "all"
+                    ? "bg-slate-800 text-white"
+                    : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                }`}
+              >
+                {lang === "en"
+                  ? `All (${project.references.length})`
+                  : `Toutes (${project.references.length})`}
+              </button>
+              <button
+                type="button"
+                onClick={() => setRefFilter("africa")}
+                className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold transition ${
+                  refFilter === "africa"
+                    ? "bg-emerald-700 text-white"
+                    : "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200 hover:bg-emerald-100"
+                }`}
+              >
+                {lang === "en"
+                  ? `Africa & CAMES (${africanReferences.length})`
+                  : `Afrique & CAMES (${africanReferences.length})`}
+              </button>
+            </div>
+          )}
+
+          {displayedReferences.length === 0 ? (
             <p className="text-slate-500">
-              {lang === "en"
-                ? "No references collected yet. Run a literature search in Tab 1."
-                : "Aucune référence collectée pour l'instant. Lancez une recherche dans l'onglet 1."}
+              {project.references.length === 0
+                ? lang === "en"
+                  ? "No references collected yet. Run a literature search in Tab 1."
+                  : "Aucune référence collectée pour l'instant. Lancez une recherche dans l'onglet 1."
+                : lang === "en"
+                  ? "No Africa / CAMES references found in current bibliography yet."
+                  : "Aucune référence Afrique / CAMES identifiée dans la bibliographie actuelle."}
             </p>
           ) : (
-            project.references.map((r) => (
-              <div
-                key={r.ref_id}
-                className="rounded-lg border border-slate-200 bg-slate-50 p-2.5"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <span className="font-semibold text-slate-900">
-                    [{r.order_index}] {r.vancouver_citation}
-                  </span>
-                  <span className="shrink-0 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] uppercase text-slate-700">
-                    {r.source_platform}
-                  </span>
+            displayedReferences.map((r) => {
+              const isAfrica =
+                r.regional_scope === "cameroun_fmsb" ||
+                r.regional_scope === "afrique_cames";
+              const africaLabel =
+                r.african_source_label ||
+                (r.regional_scope === "cameroun_fmsb"
+                  ? "Cameroun / FMSB"
+                  : "Afrique / CAMES");
+              return (
+                <div
+                  key={r.ref_id}
+                  className="rounded-lg border border-slate-200 bg-slate-50 p-2.5"
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="font-semibold text-slate-900">
+                      [{r.order_index}] {r.vancouver_citation}
+                    </span>
+                    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1">
+                      {isAfrica && (
+                        <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 ring-1 ring-emerald-200">
+                          {africaLabel}
+                        </span>
+                      )}
+                      <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[10px] uppercase text-slate-700">
+                        {r.source_platform}
+                      </span>
+                    </div>
+                  </div>
+                  {r.url && (
+                    <a
+                      href={r.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="mt-1 inline-flex items-center gap-1 text-[11px] text-indigo-600 hover:underline"
+                    >
+                      {lang === "en" ? "Open source" : "Consulter la source"} <ExternalLink className="h-3 w-3" />
+                    </a>
+                  )}
                 </div>
-                {r.url && (
-                  <a
-                    href={r.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-1 inline-flex items-center gap-1 text-[11px] text-indigo-600 hover:underline"
-                  >
-                    {lang === "en" ? "Open source" : "Consulter la source"} <ExternalLink className="h-3 w-3" />
-                  </a>
-                )}
-              </div>
-            ))
+              );
+            })
           )}
 
           {project.images.length > 0 && (
