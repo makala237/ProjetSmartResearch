@@ -989,12 +989,63 @@ def _verify_rate_limits_in_store() -> Optional[str]:
         )
         try:
             assert_ai_quota_available(store, stu, module_key="module1", action="audit_section")
-            raise AssertionError("Expected HTTP 429 AI_RATE_LIMIT_RPD")
+            raise AssertionError("Expected HTTP 429 AI_RATE_LIMIT_RPD for student")
         except HTTPException as exc:
             assert exc.status_code == 429, exc.detail
             assert exc.detail["code"] == "AI_RATE_LIMIT_RPD", exc.detail
 
         store.delete_user_cascade(stu.id)
+        created_uid = None
+
+        # Verify rate limits apply strictly to ADMINISTRATOR profiles as well
+        settings.ai_user_max_rpm = 2
+        settings.ai_user_max_rpd = 3
+        adm = create_user_account(
+            db=store,
+            email=f"rl.adm.{suffix}",
+            full_name=f"Rate Limit Admin {suffix}",
+            password="TempPassword123!",
+            role="admin",
+        )
+        created_uid = adm.id
+
+        for _ in range(2):
+            record_usage_and_debit(
+                store,
+                adm,
+                module_key="module1",
+                action="draft_section",
+                credits_cost=2,
+                model_used="gemini-3.8-flash",
+                status="ok",
+            )
+
+        try:
+            assert_ai_quota_available(store, adm, module_key="module1", action="draft_section")
+            raise AssertionError("Expected HTTP 429 AI_RATE_LIMIT_RPM for admin")
+        except HTTPException as exc:
+            assert exc.status_code == 429, exc.detail
+            assert exc.detail["code"] == "AI_RATE_LIMIT_RPM", exc.detail
+
+        settings.ai_user_max_rpm = 10
+        assert_ai_quota_available(store, adm, module_key="module1", action="draft_section")
+        record_usage_and_debit(
+            store,
+            adm,
+            module_key="module1",
+            action="audit_section",
+            credits_cost=1,
+            model_used="gemini-3.8-flash",
+            status="ok",
+        )
+        try:
+            assert_ai_quota_available(store, adm, module_key="module1", action="audit_section")
+            raise AssertionError("Expected HTTP 429 AI_RATE_LIMIT_RPD for admin")
+        except HTTPException as exc:
+            assert exc.status_code == 429, exc.detail
+            assert exc.detail["code"] == "AI_RATE_LIMIT_RPD", exc.detail
+
+        store.delete_user_cascade(adm.id)
         created_uid = None
         return None
     finally:

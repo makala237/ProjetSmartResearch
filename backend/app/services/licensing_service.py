@@ -111,7 +111,7 @@ def assert_module_write_allowed(db: Any, user: Any, module_key: str) -> None:
 
 
 def get_student_daily_38_usage(db: Any, user: Any) -> Dict[str, Any]:
-    """Compute today's Gemini 3.8 usage for a user and whether student 3.5 relay is active."""
+    """Compute today's Gemini 3.8 usage for a user (including admin) and whether 3.5 relay is active."""
     store = as_store(db)
     settings = get_settings()
     primary = (settings.gemini_primary_reasoning_model or "gemini-3.8-flash").strip()
@@ -125,15 +125,6 @@ def get_student_daily_38_usage(db: Any, user: Any) -> Dict[str, Any]:
     limit = int(configured_limit if configured_limit is not None else settings.student_daily_gemini38_limit)
 
     used_today = store.count_user_gemini38_today(user.id, day_start)
-
-    if user.role == "admin":
-        return {
-            "daily_limit": 0,
-            "used_today": used_today,
-            "remaining_today": 9999,
-            "fallback_active": False,
-            "active_reasoning_model": primary,
-        }
 
     fallback_active = bool(limit > 0 and used_today >= limit)
     remaining_today = max(0, limit - used_today)
@@ -153,7 +144,7 @@ def assert_ai_quota_available(
     action: str,
     credits_cost: Optional[int] = None,
 ) -> int:
-    """Verify both active module write entitlement and sufficient AI credits before Gemini calls."""
+    """Verify active module entitlement, rate limits (RPM/RPD) for all users, and AI credits before Gemini calls."""
     store = as_store(db)
     if module_key == "general":
         assert_any_module_active(store, user)
@@ -161,36 +152,12 @@ def assert_ai_quota_available(
         assert_module_write_allowed(store, user, module_key)
 
     cost = AI_ACTION_COSTS.get(action, 1) if credits_cost is None else int(credits_cost)
-    if user.role == "admin" or cost <= 0:
-        daily_38 = get_student_daily_38_usage(store, user)
-        set_ai_routing_policy(
-            prefer_fallback_35=daily_38["fallback_active"],
-            reason="student_daily_38_cap" if daily_38["fallback_active"] else "",
-            user_id=user.id,
-            daily_status=daily_38,
-        )
-        return max(0, cost)
 
-    quota = store.ensure_quota(user.id, credits_total=0)
-    remaining = max(0, quota.credits_total - quota.credits_used)
-    if remaining < cost:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "AI_QUOTA_EXCEEDED",
-                "credits_required": cost,
-                "credits_remaining": remaining,
-                "message": (
-                    f"Crédits IA insuffisants ({remaining} restant(s), {cost} requis). "
-                    "Contactez l'administrateur pour recharger votre quota."
-                ),
-            },
-        )
-
+    # 1. Enforce AI rate limits (RPM and RPD) for ALL users, including administrators
     settings = get_settings()
     max_rpm = int(getattr(settings, "ai_user_max_rpm", 10) or 0)
     max_rpd = int(getattr(settings, "ai_user_max_rpd", 40) or 0)
-    if max_rpm > 0 or max_rpd > 0:
+    if (max_rpm > 0 or max_rpd > 0) and cost > 0:
         now_utc = datetime.now(timezone.utc)
         day_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
         minute_ago = now_utc - timedelta(seconds=60)
@@ -222,6 +189,25 @@ def assert_ai_quota_available(
                 },
             )
 
+    # 2. For non-admin accounts, verify prepaid AI credits balance
+    if user.role != "admin" and cost > 0:
+        quota = store.ensure_quota(user.id, credits_total=0)
+        remaining = max(0, quota.credits_total - quota.credits_used)
+        if remaining < cost:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "AI_QUOTA_EXCEEDED",
+                    "credits_required": cost,
+                    "credits_remaining": remaining,
+                    "message": (
+                        f"Crédits IA insuffisants ({remaining} restant(s), {cost} requis). "
+                        "Contactez l'administrateur pour recharger votre quota."
+                    ),
+                },
+            )
+
+    # 3. Apply reasoning policy and daily Gemini 3.8 limit for all users (including admin)
     daily_38 = get_student_daily_38_usage(store, user)
     set_ai_routing_policy(
         prefer_fallback_35=daily_38["fallback_active"],
@@ -229,7 +215,7 @@ def assert_ai_quota_available(
         user_id=user.id,
         daily_status=daily_38,
     )
-    return cost
+    return max(0, cost)
 
 
 def record_usage_and_debit(
