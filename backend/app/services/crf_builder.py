@@ -46,8 +46,30 @@ def get_crf_checkbox_png_bytes(checked: bool = False) -> bytes:
 # Helpers for parsing Annexe 1 Markdown & project variables into CRFFieldSpec
 # ---------------------------------------------------------------------------
 
-_ANNEXE1_START_RE = re.compile(r"^#{1,3}\s*ANNEXE\s*1\b", re.IGNORECASE)
-_NEXT_ANNEXE_RE = re.compile(r"^#{1,3}\s*ANNEXE\s*[2-9]\b", re.IGNORECASE)
+_ANNEXE1_START_RE = re.compile(
+    r"^#{1,4}\s*(?:"
+    r"(?:ANNEXE|APPENDIX)\s*(?:1|I\b)|"
+    r"(?:(?:ANNEXE|APPENDIX)\s*(?:[1-9]|I+)\s*[:\-–]\s*)?(?:FICHE\s+DE\s+COLLECTE|FORMULAIRE\s+D['’]ENREGISTREMENT|FORMULAIRE\s+DE\s+COLLECTE|CAHIER\s+D['’]OBSERVATION|QUESTIONNAIRE\s+D['’]ENQU[ÊE]TE|QUESTIONNAIRE|CRF\b|CASE\s+REPORT\s+FORM|DATA\s+COLLECTION)"
+    r")\b",
+    re.IGNORECASE,
+)
+_NEXT_ANNEXE_RE = re.compile(
+    r"^#{1,4}\s*(?:"
+    r"(?:ANNEXE|APPENDIX)\s*(?:[2-9]|II|III|IV|V|VI|VII)\b|"
+    r"NOTICE\s+D['’]INFORMATION|"
+    r"INFORMATION\s+SHEET|"
+    r"FORMULAIRE\s+DE\s+CONSENTEMENT|"
+    r"CONSENT\s+FORM|"
+    r"CONSENTEMENT\s+[ÉE]CLAIR[ÉE]|"
+    r"CLAIRANCE\s+[ÉE]THIQUE|"
+    r"ETHICAL\s+CLEARANCE|"
+    r"DEMANDE\s+D['’]AUTORISATION|"
+    r"AUTORISATION\s+ADMINISTRATIVE|"
+    r"D[ÉE]CLARATION\s+DE\s+CONFIDENTIALIT[ÉE]|"
+    r"LETTRE\s+D['’]ENGAGEMENT"
+    r")\b",
+    re.IGNORECASE,
+)
 _SECTION_HEAD_RE = re.compile(r"^#{2,4}\s*(.+)$")
 _CHECKBOX_SPLIT_RE = re.compile(r"(?:\[\s*[xX ]?\s*\]|☐)")
 
@@ -96,6 +118,24 @@ def extract_annexe1_block(annexes_md: str) -> Tuple[str, str, str]:
             if _NEXT_ANNEXE_RE.match(s):
                 end_idx = idx
                 break
+    if start_idx is None:
+        # Fallback: scan for any line mentioning fiche de collecte, formulaire, questionnaire, or first section
+        fallback_re = re.compile(
+            r"(?:fiche\s+de\s+collecte|formulaire\s+d['’]enregistrement|formulaire\s+de\s+collecte|questionnaire|case\s+report\s+form|crf\b|###\s*section\s*a)",
+            re.IGNORECASE,
+        )
+        for idx, line in enumerate(lines):
+            s = line.strip()
+            if fallback_re.search(s):
+                start_idx = idx
+                break
+        if start_idx is not None:
+            for idx in range(start_idx + 1, len(lines)):
+                s = lines[idx].strip()
+                if _NEXT_ANNEXE_RE.match(s) or (s.startswith("#") and any(k in s.lower() for k in ("annexe 2", "annexe ii", "appendix 2", "consentement", "notice", "clairance"))):
+                    end_idx = idx
+                    break
+
     if start_idx is None:
         return "", "", annexes_md.strip()
     before = "\n".join(lines[:start_idx]).strip()
@@ -328,19 +368,25 @@ def extract_crf_fields_from_project(project: ProtocolProject) -> List[CRFFieldSp
                 i += 1
                 continue
 
-            # Top-level question bullet: - **A1. Label :** rest
+            # Top-level question bullet: - **A1. Label :** rest, or - A1. Label : rest, or 1. Label : rest
             top_m = re.match(
                 r"^-\s+\*\*([A-Z]\d+)\.\s*([^:*]+?)\s*:\*\*\s*(.*)$",
                 s,
             ) or re.match(
                 r"^-\s+\*\*([^:*]+?)\s*:\*\*\s*(.*)$",
                 s,
+            ) or re.match(
+                r"^(?:[-*•]\s+)?(?:\*\*)?(?:([A-Za-z]\d+|Q\d+|\d+)\.?\s+)?([^*:：]+?)(?:\*\*)?\s*[:：]\s*(.*)$",
+                s,
             )
             if top_m:
-                if len(top_m.groups()) == 3:
-                    q_code, q_label, q_rest = top_m.group(1).strip(), top_m.group(2).strip(), top_m.group(3).strip()
+                groups = top_m.groups()
+                if len(groups) == 3:
+                    q_code = (groups[0] or "").strip()
+                    q_label = (groups[1] or "").strip().strip("*").strip()
+                    q_rest = (groups[2] or "").strip().lstrip("*").strip()
                 else:
-                    q_code, q_label, q_rest = "", top_m.group(1).strip(), top_m.group(2).strip()
+                    q_code, q_label, q_rest = "", groups[0].strip(), groups[1].strip()
 
                 # Gather immediately following indented child lines (indent >= 2 spaces)
                 children: List[Tuple[int, str]] = []
