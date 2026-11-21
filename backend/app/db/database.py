@@ -205,6 +205,11 @@ def _ensure_schema_columns(eng) -> None:
             if "daily_38_limit" not in cols:
                 with eng.begin() as conn:
                     conn.execute(text("ALTER TABLE user_ai_quotas ADD COLUMN daily_38_limit INTEGER"))
+        if "usage_events" in insp.get_table_names():
+            ev_cols = {c["name"] for c in insp.get_columns("usage_events")}
+            if "tokens_used" not in ev_cols:
+                with eng.begin() as conn:
+                    conn.execute(text("ALTER TABLE usage_events ADD COLUMN tokens_used INTEGER NOT NULL DEFAULT 0"))
     except Exception as exc:
         logger.warning("Schema column check failed: %s", exc)
 

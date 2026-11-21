@@ -12,7 +12,11 @@ from app.db.datastore import (
     as_store,
 )
 from app.db.models import utcnow
-from app.services.gemini_client import set_ai_routing_policy
+from app.services.gemini_client import (
+    consume_request_tokens_used,
+    reset_request_tokens_used,
+    set_ai_routing_policy,
+)
 
 MODULE_KEYS: Tuple[str, ...] = ("module1", "module2", "module3", "module4")
 
@@ -111,11 +115,11 @@ def assert_module_write_allowed(db: Any, user: Any, module_key: str) -> None:
 
 
 def get_student_daily_38_usage(db: Any, user: Any) -> Dict[str, Any]:
-    """Compute today's Gemini 3.8 usage for a user (including admin) and whether 3.5 relay is active."""
+    """Compute today's primary reasoning model usage for a user (including admin) and whether fallback relay is active."""
     store = as_store(db)
     settings = get_settings()
-    primary = (settings.gemini_primary_reasoning_model or "gemini-3.8-flash").strip()
-    fallback = (settings.gemini_fallback_reasoning_model or "gemini-3.5-flash").strip()
+    primary = (settings.gemini_primary_reasoning_model or "gemini-3.5-flash").strip()
+    fallback = (settings.gemini_fallback_reasoning_model or "gemini-3.1-flash-lite").strip()
 
     now = datetime.now(timezone.utc)
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -153,41 +157,59 @@ def assert_ai_quota_available(
 
     cost = AI_ACTION_COSTS.get(action, 1) if credits_cost is None else int(credits_cost)
 
-    # 1. Enforce AI rate limits (RPM and RPD) for ALL users, including administrators
+    # 1. Enforce AI rate limits (RPM, RPD, and daily token cap) for ALL users, including administrators
+    reset_request_tokens_used()
     settings = get_settings()
     max_rpm = int(getattr(settings, "ai_user_max_rpm", 10) or 0)
     max_rpd = int(getattr(settings, "ai_user_max_rpd", 40) or 0)
-    if (max_rpm > 0 or max_rpd > 0) and cost > 0:
+    max_tokens_day = int(getattr(settings, "ai_user_max_tokens_per_day", 100_000) or 0)
+    if (max_rpm > 0 or max_rpd > 0 or max_tokens_day > 0) and cost > 0:
         now_utc = datetime.now(timezone.utc)
         day_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
         minute_ago = now_utc - timedelta(seconds=60)
-        used_rpm, used_rpd = store.count_user_ai_calls_since(user.id, day_start, minute_ago)
-        if max_rpm > 0 and used_rpm >= max_rpm:
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "code": "AI_RATE_LIMIT_RPM",
-                    "limit_rpm": max_rpm,
-                    "used_rpm": used_rpm,
-                    "message": (
-                        f"Limite de fréquence atteinte ({used_rpm}/{max_rpm} requêtes IA par minute). "
-                        "Veuillez patienter quelques secondes avant de relancer."
-                    ),
-                },
-            )
-        if max_rpd > 0 and used_rpd >= max_rpd:
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "code": "AI_RATE_LIMIT_RPD",
-                    "limit_rpd": max_rpd,
-                    "used_rpd": used_rpd,
-                    "message": (
-                        f"Plafond journalier atteint ({used_rpd}/{max_rpd} requêtes IA aujourd'hui). "
-                        "Votre quota journalier sera réinitialisé demain."
-                    ),
-                },
-            )
+        if max_rpm > 0 or max_rpd > 0:
+            used_rpm, used_rpd = store.count_user_ai_calls_since(user.id, day_start, minute_ago)
+            if max_rpm > 0 and used_rpm >= max_rpm:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "AI_RATE_LIMIT_RPM",
+                        "limit_rpm": max_rpm,
+                        "used_rpm": used_rpm,
+                        "message": (
+                            f"Limite de fréquence atteinte ({used_rpm}/{max_rpm} requêtes IA par minute). "
+                            "Veuillez patienter quelques secondes avant de relancer."
+                        ),
+                    },
+                )
+            if max_rpd > 0 and used_rpd >= max_rpd:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "AI_RATE_LIMIT_RPD",
+                        "limit_rpd": max_rpd,
+                        "used_rpd": used_rpd,
+                        "message": (
+                            f"Plafond journalier atteint ({used_rpd}/{max_rpd} requêtes IA aujourd'hui). "
+                            "Votre quota journalier sera réinitialisé demain."
+                        ),
+                    },
+                )
+        if max_tokens_day > 0:
+            used_tokens_today = store.sum_user_tokens_today(user.id, day_start)
+            if used_tokens_today >= max_tokens_day:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "AI_RATE_LIMIT_TOKENS_DAY",
+                        "limit_tokens_day": max_tokens_day,
+                        "used_tokens_today": used_tokens_today,
+                        "message": (
+                            f"Plafond journalier de tokens atteint ({used_tokens_today}/{max_tokens_day} tokens consommés aujourd'hui). "
+                            "Votre quota journalier sera réinitialisé demain."
+                        ),
+                    },
+                )
 
     # 2. For non-admin accounts, verify prepaid AI credits balance
     if user.role != "admin" and cost > 0:
@@ -228,11 +250,13 @@ def record_usage_and_debit(
     model_used: str = "",
     status: str = "ok",
     ip_address: str = "",
+    tokens_used: Optional[int] = None,
 ) -> None:
     """Debit AI credits (on successful non-admin action) and append an immutable telemetry event."""
     store = as_store(db)
     now = utcnow()
     effective_cost = max(0, int(credits_cost))
+    effective_tokens = max(0, int(tokens_used)) if tokens_used is not None else consume_request_tokens_used()
     if effective_cost > 0 and user.role != "admin" and status == "ok":
         store.debit_quota_atomic(user.id, effective_cost, now)
 
@@ -243,6 +267,7 @@ def record_usage_and_debit(
         action=action,
         model_used=(model_used or "")[:128],
         credits_cost=effective_cost if (status == "ok") else 0,
+        tokens_used=effective_tokens if (status == "ok") else 0,
         status=status[:32],
         ip_address=(ip_address or "")[:64],
         created_at=now,

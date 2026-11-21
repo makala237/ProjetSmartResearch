@@ -182,6 +182,7 @@ class UsageEventRecord:
     status: str
     ip_address: str
     created_at: datetime
+    tokens_used: int = 0
 
 
 @dataclass
@@ -403,6 +404,7 @@ class BaseDataStore(ABC):
         project_id: Optional[str] = None,
         model_used: str = "",
         credits_cost: int = 0,
+        tokens_used: int = 0,
         status: str = "ok",
         ip_address: str = "",
         created_at: Optional[datetime] = None,
@@ -419,6 +421,9 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     def count_user_gemini38_today(self, user_id: str, day_start: datetime) -> int: ...
+
+    @abstractmethod
+    def sum_user_tokens_today(self, user_id: str, day_start: datetime) -> int: ...
 
     @abstractmethod
     def count_user_ai_calls_since(
@@ -612,6 +617,7 @@ def _orm_to_event(row: UsageEventORM) -> UsageEventRecord:
         action=row.action,
         model_used=row.model_used or "",
         credits_cost=int(row.credits_cost or 0),
+        tokens_used=int(getattr(row, "tokens_used", 0) or 0),
         status=row.status or "ok",
         ip_address=row.ip_address or "",
         created_at=_to_utc(row.created_at) or utcnow(),
@@ -1100,6 +1106,7 @@ class SQLDataStore(BaseDataStore):
         project_id: Optional[str] = None,
         model_used: str = "",
         credits_cost: int = 0,
+        tokens_used: int = 0,
         status: str = "ok",
         ip_address: str = "",
         created_at: Optional[datetime] = None,
@@ -1111,6 +1118,7 @@ class SQLDataStore(BaseDataStore):
             action=action,
             model_used=(model_used or "")[:128],
             credits_cost=max(0, int(credits_cost)),
+            tokens_used=max(0, int(tokens_used)),
             status=(status or "ok")[:32],
             ip_address=(ip_address or "")[:64],
             created_at=created_at or utcnow(),
@@ -1140,17 +1148,42 @@ class SQLDataStore(BaseDataStore):
         return [_orm_to_event(r) for r in q.all()]
 
     def count_user_gemini38_today(self, user_id: str, day_start: datetime) -> int:
+        from app.core.config import get_settings
+
+        now = datetime.now(timezone.utc)
+        primary = (get_settings().gemini_primary_reasoning_model or "gemini-3.5-flash").strip().lower()
+        rows = (
+            self.db.query(UsageEventORM)
+            .filter(
+                UsageEventORM.user_id == user_id,
+                UsageEventORM.status == "ok",
+            )
+            .all()
+        )
+        count = 0
+        for ev in rows:
+            if (_to_utc(ev.created_at) or now) < day_start:
+                continue
+            model = str(ev.model_used or "").lower()
+            if "gemini-3.8" in model or (primary and primary in model):
+                count += 1
+        return count
+
+    def sum_user_tokens_today(self, user_id: str, day_start: datetime) -> int:
         now = datetime.now(timezone.utc)
         rows = (
             self.db.query(UsageEventORM)
             .filter(
                 UsageEventORM.user_id == user_id,
                 UsageEventORM.status == "ok",
-                func.lower(UsageEventORM.model_used).contains("gemini-3.8"),
             )
             .all()
         )
-        return sum(1 for ev in rows if (_to_utc(ev.created_at) or now) >= day_start)
+        return sum(
+            max(0, int(getattr(ev, "tokens_used", 0) or 0))
+            for ev in rows
+            if (_to_utc(ev.created_at) or now) >= day_start
+        )
 
     def count_user_ai_calls_since(
         self,
@@ -1522,6 +1555,7 @@ def _doc_to_event(doc_id: str, data: Dict[str, Any]) -> UsageEventRecord:
         action=str(data.get("action") or ""),
         model_used=str(data.get("model_used") or ""),
         credits_cost=int(data.get("credits_cost") or 0),
+        tokens_used=int(data.get("tokens_used") or 0),
         status=str(data.get("status") or "ok"),
         ip_address=str(data.get("ip_address") or ""),
         created_at=_to_utc(data.get("created_at")) or utcnow(),
@@ -2186,6 +2220,7 @@ class FirestoreDataStore(BaseDataStore):
         project_id: Optional[str] = None,
         model_used: str = "",
         credits_cost: int = 0,
+        tokens_used: int = 0,
         status: str = "ok",
         ip_address: str = "",
         created_at: Optional[datetime] = None,
@@ -2199,6 +2234,7 @@ class FirestoreDataStore(BaseDataStore):
             "action": action,
             "model_used": (model_used or "")[:128],
             "credits_cost": max(0, int(credits_cost)),
+            "tokens_used": max(0, int(tokens_used)),
             "status": (status or "ok")[:32],
             "ip_address": (ip_address or "")[:64],
             "created_at": created_at or utcnow(),
@@ -2233,6 +2269,9 @@ class FirestoreDataStore(BaseDataStore):
         return items
 
     def count_user_gemini38_today(self, user_id: str, day_start: datetime) -> int:
+        from app.core.config import get_settings
+
+        primary = (get_settings().gemini_primary_reasoning_model or "gemini-3.5-flash").strip().lower()
         q = self._col("usage_events")
         q = self._where(q, "user_id", "==", user_id)
         q = self._where(q, "status", "==", "ok")
@@ -2241,9 +2280,20 @@ class FirestoreDataStore(BaseDataStore):
         for snap in q.stream():
             data = snap.to_dict() or {}
             model = str(data.get("model_used") or "").lower()
-            if "gemini-3.8" in model:
+            if "gemini-3.8" in model or (primary and primary in model):
                 count += 1
         return count
+
+    def sum_user_tokens_today(self, user_id: str, day_start: datetime) -> int:
+        q = self._col("usage_events")
+        q = self._where(q, "user_id", "==", user_id)
+        q = self._where(q, "status", "==", "ok")
+        q = self._where(q, "created_at", ">=", day_start)
+        total = 0
+        for snap in q.stream():
+            data = snap.to_dict() or {}
+            total += max(0, int(data.get("tokens_used") or 0))
+        return total
 
     def count_user_ai_calls_since(
         self,

@@ -178,6 +178,7 @@ class UsageEventORM(Base):
     action: Mapped[str] = mapped_column(String(64), nullable=False)
     model_used: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     credits_cost: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     status: Mapped[str] = mapped_column(String(32), default="ok", nullable=False)
     ip_address: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True, nullable=False)

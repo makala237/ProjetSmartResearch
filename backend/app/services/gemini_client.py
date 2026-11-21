@@ -17,6 +17,27 @@ T = TypeVar("T", bound=BaseModel)
 GEMINI_DECISION_1_LABEL = "Gemini Decision 1"
 
 _ai_routing_policy: ContextVar[Dict[str, Any]] = ContextVar("ai_routing_policy", default={})
+_request_tokens_used: ContextVar[int] = ContextVar("request_tokens_used", default=0)
+
+
+def reset_request_tokens_used() -> None:
+    """Reset the token counter for the current request context."""
+    _request_tokens_used.set(0)
+
+
+def add_request_tokens_used(tokens: int) -> int:
+    """Accumulate tokens consumed during Gemini calls within the current request."""
+    clean = max(0, int(tokens or 0))
+    total = max(0, int(_request_tokens_used.get() or 0)) + clean
+    _request_tokens_used.set(total)
+    return total
+
+
+def consume_request_tokens_used() -> int:
+    """Return accumulated tokens for the current request and reset the counter to 0."""
+    total = max(0, int(_request_tokens_used.get() or 0))
+    _request_tokens_used.set(0)
+    return total
 
 
 def set_ai_routing_policy(
@@ -105,8 +126,14 @@ class GeminiRouter:
         if not prefer_35:
             return candidates, False
 
-        fallback_model = (self.settings.gemini_fallback_reasoning_model or "gemini-3.5-flash").strip()
-        filtered = [m for m in candidates if "gemini-3.8" not in m.lower()]
+        fallback_model = (self.settings.gemini_fallback_reasoning_model or "gemini-3.1-flash-lite").strip()
+        primary_model = (self.settings.gemini_primary_reasoning_model or "gemini-3.5-flash").strip().lower()
+        filtered = [
+            m
+            for m in candidates
+            if "gemini-3.8" not in m.lower()
+            and (not primary_model or primary_model == fallback_model.lower() or m.lower() != primary_model)
+        ]
 
         if role == "layout_decision":
             head = [m for m in filtered if "decision-1" in m.lower()]
@@ -152,10 +179,18 @@ class GeminiRouter:
                         config=config,
                     )
                     update_pipeline_model(model_id, fallback_triggered=is_fallback_step)
+                    usage = getattr(response, "usage_metadata", None)
+                    tokens_used = int(getattr(usage, "total_token_count", 0) or 0)
+                    if tokens_used <= 0 and usage is not None:
+                        prompt_toks = int(getattr(usage, "prompt_token_count", 0) or 0)
+                        cand_toks = int(getattr(usage, "candidates_token_count", 0) or 0)
+                        tokens_used = max(0, prompt_toks + cand_toks)
+                    add_request_tokens_used(tokens_used)
                     return {
                         "model_used": model_id,
                         "text": response.text or "",
                         "raw": response,
+                        "tokens_used": tokens_used,
                         "fallback_errors": errors_log,
                         "cap_fallback_active": cap_fallback_active,
                     }
