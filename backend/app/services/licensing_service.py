@@ -118,7 +118,7 @@ def get_student_daily_38_usage(db: Any, user: Any) -> Dict[str, Any]:
     """Compute today's primary reasoning model usage for a user (including admin) and whether fallback relay is active."""
     store = as_store(db)
     settings = get_settings()
-    primary = (settings.gemini_primary_reasoning_model or "gemini-3.5-flash").strip()
+    primary = (settings.gemini_primary_reasoning_model or "gemini-3.5-flash-lite").strip()
     fallback = (settings.gemini_fallback_reasoning_model or "gemini-3.1-flash-lite").strip()
 
     now = datetime.now(timezone.utc)

@@ -29,13 +29,13 @@ from tests.test_firestore_gcs_backend import FakeFirestoreClient
 class TestTokenLimitAndModels(unittest.TestCase):
     def test_default_and_env_model_chains_and_token_limit(self):
         default_cfg = Settings(_env_file=None)
-        self.assertEqual(default_cfg.gemini_primary_reasoning_model, "gemini-3.5-flash")
+        self.assertEqual(default_cfg.gemini_primary_reasoning_model, "gemini-3.5-flash-lite")
         self.assertEqual(default_cfg.gemini_fallback_reasoning_model, "gemini-3.1-flash-lite")
         self.assertEqual(default_cfg.ai_user_max_tokens_per_day, 100_000)
 
         chains = default_cfg.model_chains()
-        self.assertEqual(chains["drafting"][0], "gemini-3.5-flash")
-        self.assertEqual(chains["segmentation"][0], "gemini-3.5-flash")
+        self.assertEqual(chains["drafting"][0], "gemini-3.5-flash-lite")
+        self.assertEqual(chains["segmentation"][0], "gemini-3.5-flash-lite")
         self.assertEqual(chains["research"][0], "gemini-3.1-flash-lite")
         self.assertEqual(chains["audit"][0], "gemini-3.1-flash-lite")
         self.assertEqual(chains["live_translate"][0], "gemini-3.1-flash-lite")
@@ -47,10 +47,10 @@ class TestTokenLimitAndModels(unittest.TestCase):
         get_settings.cache_clear()
         loaded_cfg = get_settings()
         self.assertEqual(loaded_cfg.ai_user_max_tokens_per_day, 100_000)
-        self.assertEqual(loaded_cfg.gemini_primary_reasoning_model, "gemini-3.5-flash")
+        self.assertEqual(loaded_cfg.gemini_primary_reasoning_model, "gemini-3.5-flash-lite")
         self.assertEqual(loaded_cfg.gemini_fallback_reasoning_model, "gemini-3.1-flash-lite")
         loaded_chains = loaded_cfg.model_chains()
-        self.assertEqual(loaded_chains["drafting"][0], "gemini-3.5-flash")
+        self.assertEqual(loaded_chains["drafting"][0], "gemini-3.5-flash-lite")
         self.assertEqual(loaded_chains["research"][0], "gemini-3.1-flash-lite")
         self.assertEqual(loaded_chains["audit"][0], "gemini-3.1-flash-lite")
 

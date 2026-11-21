@@ -127,7 +127,7 @@ class GeminiRouter:
             return candidates, False
 
         fallback_model = (self.settings.gemini_fallback_reasoning_model or "gemini-3.1-flash-lite").strip()
-        primary_model = (self.settings.gemini_primary_reasoning_model or "gemini-3.5-flash").strip().lower()
+        primary_model = (self.settings.gemini_primary_reasoning_model or "gemini-3.5-flash-lite").strip().lower()
         filtered = [
             m
             for m in candidates

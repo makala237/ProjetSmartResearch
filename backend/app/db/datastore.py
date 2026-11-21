@@ -1151,7 +1151,7 @@ class SQLDataStore(BaseDataStore):
         from app.core.config import get_settings
 
         now = datetime.now(timezone.utc)
-        primary = (get_settings().gemini_primary_reasoning_model or "gemini-3.5-flash").strip().lower()
+        primary = (get_settings().gemini_primary_reasoning_model or "gemini-3.5-flash-lite").strip().lower()
         rows = (
             self.db.query(UsageEventORM)
             .filter(
@@ -2271,7 +2271,7 @@ class FirestoreDataStore(BaseDataStore):
     def count_user_gemini38_today(self, user_id: str, day_start: datetime) -> int:
         from app.core.config import get_settings
 
-        primary = (get_settings().gemini_primary_reasoning_model or "gemini-3.5-flash").strip().lower()
+        primary = (get_settings().gemini_primary_reasoning_model or "gemini-3.5-flash-lite").strip().lower()
         q = self._col("usage_events")
         q = self._where(q, "user_id", "==", user_id)
         q = self._where(q, "status", "==", "ok")

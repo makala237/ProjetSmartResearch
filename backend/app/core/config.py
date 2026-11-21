@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     gemini_api_key: str = ""
 
-    gemini_primary_reasoning_model: str = "gemini-3.5-flash"
+    gemini_primary_reasoning_model: str = "gemini-3.5-flash-lite"
     gemini_fallback_reasoning_model: str = "gemini-3.1-flash-lite"
     student_daily_gemini38_limit: int = 15
     ai_user_max_rpm: int = 10
@@ -32,11 +32,11 @@ class Settings(BaseSettings):
     ai_user_max_tokens_per_day: int = 100_000
 
     gemini_models_research: str = "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.5-flash"
-    gemini_models_segmentation: str = "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite"
-    gemini_models_drafting: str = "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+    gemini_models_segmentation: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.5-flash"
+    gemini_models_drafting: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.5-flash"
     gemini_models_audit: str = "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.5-flash"
     gemini_models_live_translate: str = "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.5-flash"
-    gemini_models_layout_decision: str = "gemini-decision-1,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite"
+    gemini_models_layout_decision: str = "gemini-decision-1,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.5-flash"
 
     ncbi_api_key: str = ""
     openalex_api_key: str = ""
