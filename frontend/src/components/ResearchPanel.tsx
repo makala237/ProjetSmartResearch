@@ -1,19 +1,24 @@
 import { useState } from "react";
 import {
+  BookOpen,
   CheckCircle2,
   Database,
   ExternalLink,
+  FileText,
   FileUp,
   Image as ImageIcon,
   Layers,
   Loader2,
   Search,
   Sparkles,
+  Trash2,
+  X,
 } from "lucide-react";
 import { api, withAuthToken } from "../api/client";
 import type { RunWithProgressFn } from "../hooks/usePipelineTracker";
 import { useLanguage } from "../i18n/LanguageContext";
 import type {
+  ImportMode,
   ImportReport,
   ProtocolProject,
   ResearchReport,
@@ -44,10 +49,18 @@ export function ResearchPanel({
   const [busyResearch, setBusyResearch] = useState(false);
   const [busySegment, setBusySegment] = useState(false);
   const [busyImport, setBusyImport] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [importMode, setImportMode] = useState<ImportMode>("internal_source");
+  const [busyDeleteSourceId, setBusyDeleteSourceId] = useState<string | null>(null);
 
   const [researchReport, setResearchReport] = useState<ResearchReport | null>(null);
   const [segmentReport, setSegmentReport] = useState<SegmentReport | null>(null);
   const [importReport, setImportReport] = useState<ImportReport | null>(null);
+
+  const internalSources = project.internal_sources ?? [];
+  const hasExistingDrafts = Object.values(project.sections).some(
+    (sec) => Boolean(sec?.content_markdown?.trim())
+  );
 
   const africanReferences = project.references.filter(
     (r) => r.regional_scope === "cameroun_fmsb" || r.regional_scope === "afrique_cames"
@@ -123,25 +136,53 @@ export function ResearchPanel({
     }
   }
 
-  async function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+  function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    onError("");
+    setImportReport(null);
+    setPendingFile(file);
+    // Protect existing drafts by defaulting to internal_source when sections already contain text.
+    setImportMode(hasExistingDrafts ? "internal_source" : "skeleton");
+    e.target.value = "";
+  }
+
+  async function handleConfirmImport() {
+    if (!pendingFile) return;
+    const fileToImport = pendingFile;
     setBusyImport(true);
     onError("");
     try {
       const res = await runTask(
         "import",
-        "Import & analyse du document",
-        "Document Import & Analysis",
-        (taskId) => api.importProtocol(project.project_id, file, taskId)
+        importMode === "internal_source"
+          ? "Indexation en bibliothèque interne"
+          : "Import & analyse du document",
+        importMode === "internal_source"
+          ? "Internal Library Indexing"
+          : "Document Import & Analysis",
+        (taskId) => api.importProtocol(project.project_id, fileToImport, importMode, taskId)
       );
       onProjectUpdated(res.project);
       setImportReport(res.report);
+      setPendingFile(null);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyImport(false);
-      e.target.value = "";
+    }
+  }
+
+  async function handleDeleteInternalSource(sourceId: string) {
+    setBusyDeleteSourceId(sourceId);
+    onError("");
+    try {
+      const res = await api.deleteInternalSource(project.project_id, sourceId);
+      onProjectUpdated(res.project);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyDeleteSourceId(null);
     }
   }
 
@@ -172,6 +213,11 @@ export function ResearchPanel({
           >
             <FileUp className="h-3.5 w-3.5" />
             {t("m1.import_tab")}
+            {internalSources.length > 0 && (
+              <span className="rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                {internalSources.length}
+              </span>
+            )}
           </button>
           <button
             type="button"
@@ -340,44 +386,214 @@ export function ResearchPanel({
 
           {tab === "import" && (
         <div className="mt-4 space-y-3">
-          <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center hover:border-emerald-500">
-            {busyImport ? (
-              <Loader2 className="h-6 w-6 animate-spin text-emerald-600" />
-            ) : (
-              <FileUp className="h-6 w-6 text-emerald-600" />
-            )}
-            <span className="mt-2 text-xs font-semibold text-slate-800">
-              {busyImport
-                ? lang === "en"
-                  ? "Analyzing and mapping sections..."
-                  : "Analyse et mapping vers les étapes FMSB en cours..."
-                : t("m1.import_btn")}
-            </span>
-            <span className="mt-0.5 text-[11px] text-slate-500">
-              {lang === "en"
-                ? "Automatically splits your document along the CAMES/FMSB canvas, extracts figures, and checks each section."
-                : "L'outil découpe votre document selon le canevas FMSB et génère un diagnostic par section."}
-            </span>
-            <input
-              type="file"
-              accept=".docx,.pdf,.txt,.md"
-              onChange={handleImportFile}
-              disabled={busyImport}
-              className="hidden"
-            />
-          </label>
+          {!pendingFile ? (
+            <label className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-slate-300 bg-slate-50 px-4 py-5 text-center hover:border-emerald-500">
+              {busyImport ? (
+                <Loader2 className="h-6 w-6 animate-spin text-emerald-600" />
+              ) : (
+                <FileUp className="h-6 w-6 text-emerald-600" />
+              )}
+              <span className="mt-2 text-xs font-semibold text-slate-800">
+                {busyImport
+                  ? lang === "en"
+                    ? "Analyzing and mapping sections..."
+                    : "Analyse et mapping vers les étapes FMSB en cours..."
+                  : t("m1.import_btn")}
+              </span>
+              <span className="mt-0.5 text-[11px] text-slate-500">
+                {lang === "en"
+                  ? "Select a .docx, .pdf, .txt or .md document, then choose whether it serves as the protocol skeleton or as an internal information source."
+                  : "Sélectionnez un document (.docx, .pdf, .txt, .md), puis choisissez s'il sert de squelette du protocole ou de source d'information interne."}
+              </span>
+              <input
+                type="file"
+                accept=".docx,.pdf,.txt,.md"
+                onChange={handleImportFile}
+                disabled={busyImport}
+                className="hidden"
+              />
+            </label>
+          ) : (
+            <div className="rounded-xl border border-indigo-200 bg-indigo-50/50 p-3.5 text-xs text-slate-900">
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <FileText className="h-4 w-4 shrink-0 text-indigo-700" />
+                  <div>
+                    <div className="font-bold text-slate-900">
+                      {lang === "en"
+                        ? "How should this document be integrated?"
+                        : "Comment intégrer ce document ?"}
+                    </div>
+                    <div className="text-[11px] text-slate-600">
+                      {pendingFile.name} ({Math.max(1, Math.round(pendingFile.size / 1024))} Ko)
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPendingFile(null)}
+                  disabled={busyImport}
+                  className="rounded p-1 text-slate-500 hover:bg-white hover:text-slate-800"
+                  title={lang === "en" ? "Cancel selection" : "Annuler la sélection"}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  disabled={busyImport}
+                  onClick={() => setImportMode("internal_source")}
+                  className={`flex flex-col items-start rounded-lg border p-3 text-left transition ${
+                    importMode === "internal_source"
+                      ? "border-emerald-600 bg-emerald-50/90 ring-2 ring-emerald-500/20"
+                      : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
+                >
+                  <div className="flex w-full items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 font-bold text-emerald-900">
+                      <BookOpen className="h-3.5 w-3.5 text-emerald-700" />
+                      {lang === "en"
+                        ? "Internal information source"
+                        : "Source d'information interne"}
+                    </span>
+                    <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                      {lang === "en" ? "Safe / Secondary memory" : "Bibliothèque secondaire"}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-slate-600">
+                    {lang === "en"
+                      ? "Preserves existing drafted sections. Segments text, tables & figures into each section's internal library and checks cover/header for Vancouver citability."
+                      : "Préserve vos rédactions actuelles. Segmente texte, tableaux et figures dans la bibliothèque interne de chaque section et analyse la page de garde pour une citation Vancouver si citable."}
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={busyImport}
+                  onClick={() => setImportMode("skeleton")}
+                  className={`flex flex-col items-start rounded-lg border p-3 text-left transition ${
+                    importMode === "skeleton"
+                      ? "border-indigo-600 bg-white ring-2 ring-indigo-500/20"
+                      : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
+                >
+                  <div className="flex w-full items-center justify-between gap-2">
+                    <span className="inline-flex items-center gap-1.5 font-bold text-slate-900">
+                      <Layers className="h-3.5 w-3.5 text-indigo-700" />
+                      {lang === "en"
+                        ? "Protocol skeleton"
+                        : "Squelette du protocole"}
+                    </span>
+                    {hasExistingDrafts && (
+                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-800">
+                        {lang === "en" ? "Overwrites sections" : "Remplace les sections"}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1.5 text-[11px] leading-relaxed text-slate-600">
+                    {lang === "en"
+                      ? "Populates the FMSB canvas sections directly as the primary protocol draft skeleton."
+                      : "Utilise ce document comme base principale et remplit directement les sections du canevas FMSB."}
+                  </p>
+                </button>
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={busyImport}
+                  onClick={() => setPendingFile(null)}
+                  className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                >
+                  {lang === "en" ? "Cancel" : "Annuler"}
+                </button>
+                <button
+                  type="button"
+                  disabled={busyImport}
+                  onClick={handleConfirmImport}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-1.5 text-xs font-semibold text-white shadow-sm disabled:opacity-50 ${
+                    importMode === "internal_source"
+                      ? "bg-emerald-600 hover:bg-emerald-700"
+                      : "bg-indigo-600 hover:bg-indigo-700"
+                  }`}
+                >
+                  {busyImport ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                  )}
+                  {busyImport
+                    ? lang === "en"
+                      ? "Analyzing..."
+                      : "Analyse en cours..."
+                    : importMode === "internal_source"
+                      ? lang === "en"
+                        ? "Add to internal library"
+                        : "Ajouter à la bibliothèque interne"
+                      : lang === "en"
+                        ? "Import as skeleton"
+                        : "Importer comme squelette"}
+                </button>
+              </div>
+            </div>
+          )}
 
           {importReport && (
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-950">
               <div className="font-semibold">
-                {lang === "en" ? "Import completed" : "Import réussi"} ({importReport.filename}) :{" "}
-                {importReport.mapped_sections_count}{" "}
-                {lang === "en" ? "sections populated" : "sections FMSB renseignées"}
-                {(importReport.extracted_images_count ?? 0) > 0
-                  ? `, ${importReport.extracted_images_count} ${lang === "en" ? "extracted figure(s)" : "figure(s) extraite(s)"}`
-                  : ""}
-                .
+                {importReport.import_mode === "internal_source" ? (
+                  <>
+                    {lang === "en"
+                      ? "Added to internal library"
+                      : "Ajouté à la bibliothèque interne"}{" "}
+                    ({importReport.filename}) :{" "}
+                    {importReport.internal_entries_added ?? importReport.mapped_sections_count}{" "}
+                    {lang === "en"
+                      ? "section segment(s) indexed"
+                      : "segment(s) indexé(s) par section"}
+                    {(importReport.extracted_images_count ?? 0) > 0
+                      ? `, ${importReport.extracted_images_count} ${lang === "en" ? "extracted figure(s)" : "figure(s) extraite(s)"}`
+                      : ""}
+                    .
+                  </>
+                ) : (
+                  <>
+                    {lang === "en" ? "Import completed" : "Import réussi"} ({importReport.filename}) :{" "}
+                    {importReport.mapped_sections_count}{" "}
+                    {lang === "en" ? "sections populated" : "sections FMSB renseignées"}
+                    {(importReport.extracted_images_count ?? 0) > 0
+                      ? `, ${importReport.extracted_images_count} ${lang === "en" ? "extracted figure(s)" : "figure(s) extraite(s)"}`
+                      : ""}
+                    .
+                  </>
+                )}
               </div>
+              {importReport.import_mode === "internal_source" && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[11px]">
+                  <span
+                    className={`rounded-full px-2 py-0.5 font-semibold ${
+                      importReport.citable
+                        ? "bg-emerald-200/80 text-emerald-950"
+                        : "bg-amber-100 text-amber-900"
+                    }`}
+                  >
+                    {importReport.citable
+                      ? lang === "en"
+                        ? "Citable source (Vancouver)"
+                        : "Source citable (référence Vancouver créée)"
+                      : lang === "en"
+                        ? "Unreferenced internal draft"
+                        : "Brouillon interne exploitable (non citable)"}
+                  </span>
+                  {importReport.citable && importReport.vancouver_citation && (
+                    <span className="italic text-emerald-900">
+                      {importReport.vancouver_citation}
+                    </span>
+                  )}
+                </div>
+              )}
               <p className="mt-1 text-emerald-900">{importReport.global_summary}</p>
               {importReport.extracted_images && importReport.extracted_images.length > 0 && (
                 <div className="mt-2.5 border-t border-emerald-200/80 pt-2">
@@ -411,6 +627,79 @@ export function ResearchPanel({
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {internalSources.length > 0 && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 font-bold text-slate-800">
+                  <BookOpen className="h-3.5 w-3.5 text-emerald-700" />
+                  {lang === "en"
+                    ? `Internal Library — Secondary Memory (${internalSources.length})`
+                    : `Bibliothèque interne — Mémoire secondaire (${internalSources.length})`}
+                </span>
+              </div>
+              <div className="space-y-2">
+                {internalSources.map((src) => (
+                  <div
+                    key={src.source_id}
+                    className="flex items-start justify-between gap-2 rounded-lg border border-slate-200 bg-white p-2.5"
+                  >
+                    <div className="min-w-0 flex-1 space-y-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="truncate font-semibold text-slate-900" title={src.filename}>
+                          {src.filename}
+                        </span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                            src.citable
+                              ? "bg-emerald-100 text-emerald-800"
+                              : "bg-slate-100 text-slate-700"
+                          }`}
+                        >
+                          {src.citable
+                            ? lang === "en"
+                              ? `Citable (${src.source_kind})`
+                              : `Citable — ${src.source_kind}`
+                            : lang === "en"
+                              ? "Unreferenced draft"
+                              : "Brouillon interne non référencé"}
+                        </span>
+                        <span className="text-[10px] text-slate-500">
+                          {src.mapped_sections.length}{" "}
+                          {lang === "en" ? "section(s)" : "section(s)"}
+                          {src.extracted_images_count > 0
+                            ? ` • ${src.extracted_images_count} ${lang === "en" ? "figure(s)" : "figure(s)"}`
+                            : ""}
+                        </span>
+                      </div>
+                      {src.citable && src.vancouver_citation && (
+                        <div className="text-[11px] italic text-slate-600">
+                          {src.vancouver_citation}
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      type="button"
+                      disabled={busyDeleteSourceId === src.source_id}
+                      onClick={() => handleDeleteInternalSource(src.source_id)}
+                      className="shrink-0 rounded p-1.5 text-slate-400 hover:bg-rose-50 hover:text-rose-700 disabled:opacity-50"
+                      title={
+                        lang === "en"
+                          ? "Remove from internal library"
+                          : "Retirer de la bibliothèque interne"
+                      }
+                    >
+                      {busyDeleteSourceId === src.source_id ? (
+                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-3.5 w-3.5" />
+                      )}
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>

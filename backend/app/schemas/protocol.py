@@ -337,6 +337,37 @@ class SectionDiagram(BaseModel):
     connections: List[DiagramConnection] = Field(default_factory=list)
 
 
+class InternalLibraryEntry(BaseModel):
+    entry_id: str = Field(default_factory=lambda: str(uuid4())[:10])
+    source_id: str
+    source_filename: str = ""
+    source_kind: str = "unreferenced_draft"  # thesis | article | institutional_report | unreferenced_draft
+    citable: bool = False
+    ref_id: Optional[str] = None
+    vancouver_citation: str = ""
+    content_markdown: str = ""
+    tables_markdown: List[str] = Field(default_factory=list)
+    image_asset_ids: List[str] = Field(default_factory=list)
+    diagnostic_note: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class InternalSourceDocument(BaseModel):
+    source_id: str = Field(default_factory=lambda: str(uuid4())[:10])
+    filename: str
+    source_kind: str = "unreferenced_draft"  # thesis | article | institutional_report | unreferenced_draft
+    citable: bool = False
+    ref_id: Optional[str] = None
+    vancouver_citation: str = ""
+    authors: List[str] = Field(default_factory=list)
+    title: str = ""
+    year: Optional[int] = None
+    institution_or_journal: str = ""
+    mapped_sections: List[str] = Field(default_factory=list)
+    extracted_images_count: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class SectionState(BaseModel):
     section_id: str
     status: StepStatus = StepStatus.PENDING
@@ -347,6 +378,7 @@ class SectionState(BaseModel):
     user_notes: str = ""
     custom_tables: List[SectionTable] = Field(default_factory=list)
     custom_diagrams: List[SectionDiagram] = Field(default_factory=list)
+    internal_library: List[InternalLibraryEntry] = Field(default_factory=list)
     suppress_structured_table: bool = False
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -405,6 +437,7 @@ class ProtocolProject(BaseModel):
     sections: Dict[str, SectionState] = Field(default_factory=dict)
     coherence_alerts: List[CoherenceAlert] = Field(default_factory=list)
     references: List[ReferenceItem] = Field(default_factory=list)
+    internal_sources: List[InternalSourceDocument] = Field(default_factory=list)
     article_segments: List[ArticleSegment] = Field(default_factory=list)
     images: List[ImageAsset] = Field(default_factory=list)
     abbreviations: List[AbbreviationItem] = Field(default_factory=list)

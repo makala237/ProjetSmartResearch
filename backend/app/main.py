@@ -104,7 +104,7 @@ from app.services.humanizer import (
     humanize_entire_protocol,
     humanize_section_with_ai,
 )
-from app.services.importer import analyze_and_import_protocol
+from app.services.importer import analyze_and_import_protocol, remove_internal_source_from_project
 from app.services.list_builder import generate_all_lists_and_toc
 from app.services.literature import run_research_pipeline
 from app.services.media_transport import (
@@ -249,6 +249,7 @@ class ToggleImageRequest(BaseModel):
 
 class DraftSectionRequest(BaseModel):
     instruction: Optional[str] = None
+    force_external_research: bool = False
 
 
 class SuggestTableRequest(BaseModel):
@@ -1069,6 +1070,7 @@ def draft_section(
             project,
             section_id=section_id,
             user_instruction=payload.instruction,
+            force_external_research=bool(getattr(payload, "force_external_research", False)),
         )
         if section_id == "references":
             emit_pipeline_step(
@@ -1699,10 +1701,12 @@ async def import_existing_protocol(
     project_id: str,
     request: Request,
     file: UploadFile = File(...),
+    import_mode: str = Form("skeleton"),
     current_user: UserRecord = Depends(get_active_user),
     db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
+    normalized_mode = "internal_source" if (import_mode or "").strip().lower() == "internal_source" else "skeleton"
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="import_protocol")
     cover_snapshot = project.cover.model_copy(deep=True)
     name_snapshot = project.name
@@ -1716,8 +1720,8 @@ async def import_existing_protocol(
         current_user,
         project,
         operation="import",
-        title_fr="Import & analyse du document",
-        title_en="Document Import & Analysis",
+        title_fr="Import source interne (Bibliothèque)" if normalized_mode == "internal_source" else "Import & analyse du document",
+        title_en="Internal Source Import (Library)" if normalized_mode == "internal_source" else "Document Import & Analysis",
     )
     content = await file.read()
     try:
@@ -1725,8 +1729,9 @@ async def import_existing_protocol(
             project,
             filename=file.filename or "protocole.docx",
             content_bytes=content,
+            import_mode=normalized_mode,
         )
-        if current_user.role != "admin":
+        if normalized_mode == "internal_source" or current_user.role != "admin":
             project.name = name_snapshot
             project.cover = cover_snapshot
             if cover_sec_snapshot is not None:
@@ -1749,6 +1754,21 @@ async def import_existing_protocol(
         if tracked:
             finish_pipeline_task("error", error_message=str(exc))
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.delete("/api/projects/{project_id}/internal-sources/{source_id}")
+def delete_internal_source(
+    project_id: str,
+    source_id: str,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> Dict[str, object]:
+    """Delete an internal library source document and all its mapped section entries."""
+    project = get_authorized_project(project_id, current_user)
+    removed = remove_internal_source_from_project(project, source_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Source interne introuvable.")
+    saved = project_storage.save(project)
+    return {"project": saved.model_dump(mode="json"), "removed_source_id": source_id}
 
 
 @app.post("/api/projects/{project_id}/global-audit")

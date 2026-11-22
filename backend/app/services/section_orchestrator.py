@@ -185,6 +185,75 @@ Réponds en JSON structuré (`needs_external_info`, `needs_images`, `missing_foc
         )
 
 
+def build_section_internal_library_context(
+    project: ProtocolProject,
+    section_id: str,
+) -> Dict[str, Any]:
+    """Assemble the secondary working memory (`internal_library`) available for a specific section."""
+    sec = project.sections.get(section_id)
+    entries = list(getattr(sec, "internal_library", []) or []) if sec else []
+    if not entries:
+        return {
+            "entries_count": 0,
+            "total_words": 0,
+            "citable_ref_ids": [],
+            "tables_count": 0,
+            "images_count": 0,
+            "context_markdown": "",
+        }
+
+    ref_by_id = {r.ref_id: r for r in project.references}
+    citable_ref_ids: List[str] = []
+    seen_refs: set[str] = set()
+    blocks: List[str] = []
+    total_words = 0
+    tables_count = 0
+    images_count = 0
+
+    for idx, entry in enumerate(entries, start=1):
+        txt = (entry.content_markdown or "").strip()
+        total_words += _count_words(txt)
+        tables_count += len(entry.tables_markdown or [])
+        images_count += len(entry.image_asset_ids or [])
+
+        if entry.citable and entry.ref_id and entry.ref_id in ref_by_id:
+            ref_obj = ref_by_id[entry.ref_id]
+            if entry.ref_id not in seen_refs:
+                seen_refs.add(entry.ref_id)
+                citable_ref_ids.append(entry.ref_id)
+            tag = (
+                f"[Source interne citable #{idx} — Réf [{ref_obj.order_index or '?'}] "
+                f"({entry.source_kind}) — {entry.source_filename}]"
+            )
+            cit_line = f"Citation Vancouver : {ref_obj.vancouver_citation or entry.vancouver_citation}"
+        elif entry.citable and entry.vancouver_citation:
+            tag = f"[Source interne citable #{idx} ({entry.source_kind}) — {entry.source_filename}]"
+            cit_line = f"Citation Vancouver : {entry.vancouver_citation}"
+        else:
+            tag = (
+                f"[Brouillon interne non référencé #{idx} — {entry.source_filename} "
+                "— EXPLOITER LE CONTENU MAIS NE PAS INVENTER DE CITATION [n]]"
+            )
+            cit_line = ""
+
+        tables_snip = (
+            "\nTableaux extraits :\n" + "\n\n".join((entry.tables_markdown or [])[:2])
+            if entry.tables_markdown
+            else ""
+        )
+        block = f"{tag}\n{cit_line}\n{txt[:2200]}{tables_snip}".strip()
+        blocks.append(block)
+
+    return {
+        "entries_count": len(entries),
+        "total_words": total_words,
+        "citable_ref_ids": citable_ref_ids,
+        "tables_count": tables_count,
+        "images_count": images_count,
+        "context_markdown": "\n\n---\n\n".join(blocks),
+    }
+
+
 def route_section_with_gemini_decision_1(
     project: ProtocolProject,
     section_id: str,
@@ -193,25 +262,38 @@ def route_section_with_gemini_decision_1(
     gap_analysis: Optional[ExistingTextGapAnalysis],
     user_instruction: Optional[str],
     force_antigravity: bool = False,
+    force_external_research: bool = False,
+    internal_lib: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Use Gemini Decision 1 (`models/gemini-decision-1`) as the central tri-engine router
-    deciding when to invoke Agent Antigravity for research/Vancouver/image capture.
+    inspecting the section's secondary working memory (`internal_library`) FIRST before deciding
+    whether to mobilize external bibliographic platforms (PubMed/EuropePMC/OpenAlex).
     """
     allow_web_images = section_id == "chap2_rappel_connaissances"
+    lib_info = internal_lib or build_section_internal_library_context(project, section_id)
+    has_internal = int(lib_info.get("entries_count", 0) or 0) > 0
 
-    if force_antigravity:
+    if force_antigravity or force_external_research:
         return {
-            "decision_model": "Gemini Decision 1 (appel direct demandé)",
+            "decision_model": "Gemini Decision 1 (enrichissement externe demandé)",
             "call_antigravity_research": True,
-            "call_antigravity_images": allow_web_images,
+            "call_antigravity_images": allow_web_images and force_antigravity,
+            "internal_library_sufficient": False,
+            "used_internal_library_only": False,
+            "can_enrich_externally": False,
             "scores": {
                 "call_antigravity_research": 1.0,
-                "call_antigravity_images": 1.0 if allow_web_images else 0.0,
+                "call_antigravity_images": 1.0 if (allow_web_images and force_antigravity) else 0.0,
+                "internal_library_sufficient": 0.0,
             },
             "notes": (
-                "Mission directe confiée à Antigravity (références + images Rappel des connaissances)."
-                if allow_web_images
-                else "Mission directe confiée à Antigravity (références Vancouver uniquement)."
+                "Enrichissement externe explicite vers PubMed / Europe PMC / OpenAlex demandé par l'utilisateur."
+                if force_external_research and not force_antigravity
+                else (
+                    "Mission directe confiée à Antigravity (références + images Rappel des connaissances)."
+                    if allow_web_images
+                    else "Mission directe confiée à Antigravity (références Vancouver uniquement)."
+                )
             ),
         }
 
@@ -226,6 +308,9 @@ def route_section_with_gemini_decision_1(
             "decision_model": "Non sollicité (texte initial suffisant)",
             "call_antigravity_research": False,
             "call_antigravity_images": False,
+            "internal_library_sufficient": bool(has_internal),
+            "used_internal_library_only": False,
+            "can_enrich_externally": has_internal,
             "scores": {},
             "notes": gap_analysis.reasoning or "Texte existant suffisant : Gemini Flash raisonne directement dessus.",
         }
@@ -240,31 +325,68 @@ def route_section_with_gemini_decision_1(
             "decision_model": "Non requis (section liminaire auto-calculée)",
             "call_antigravity_research": False,
             "call_antigravity_images": False,
+            "internal_library_sufficient": False,
+            "used_internal_library_only": False,
+            "can_enrich_externally": False,
             "scores": {},
             "notes": "Section liminaire gérée par le moteur de listes A4.",
         }
 
+    min_words = int(spec.constraints.min_words or 120) if spec and spec.constraints else 120
+    min_refs = int(spec.constraints.min_references or 0) if spec and spec.constraints else 0
+    existing_section_refs = len(
+        [
+            seg
+            for seg in project.article_segments
+            if seg.approved and section_id in seg.target_section_ids
+        ]
+    )
+    internal_words = int(lib_info.get("total_words", 0) or 0)
+    internal_citable_count = len(lib_info.get("citable_ref_ids", []) or [])
+    det_internal_ok = bool(
+        has_internal
+        and internal_words >= max(60, int(min_words * 0.35))
+        and (min_refs == 0 or (internal_citable_count + existing_section_refs) >= min_refs)
+    )
+
     context_input = (
-        f"ROUTAGE PROTOCOLE FMSB\n"
+        f"ROUTAGE PROTOCOLE FMSB (BIBLIOTHÈQUE INTERNE D'ABORD)\n"
         f"Action engagée : {action}\n"
         f"Section : {sec_title} ({section_id})\n"
+        f"Normes OMS/CAMES attendues : min_words={min_words}, min_references={min_refs}\n"
         f"Thème : {topic}\n"
         f"Texte initial présent dans la section : {'OUI' if initial_text_present else 'NON (section vide)'}\n"
-        f"Analyse manques (Gemini Flash) : {gap_analysis.model_dump() if gap_analysis else 'Section vide — recherche bibliographique initiale requise'}\n"
+        f"Bibliothèque interne (mémoire secondaire de la section) : {lib_info['entries_count']} entrée(s), "
+        f"{internal_words} mots, {internal_citable_count} source(s) citable(s) Vancouver, "
+        f"{lib_info['tables_count']} tableau(x), {lib_info['images_count']} figure(s).\n"
+        f"Extraits bibliothèque interne :\n{lib_info['context_markdown'][:1800] or '(Vide)'}\n"
+        f"Analyse manques (Gemini Flash) : {gap_analysis.model_dump() if gap_analysis else 'Section vide — évaluer la bibliothèque interne puis les bases externes si insuffisant'}\n"
         f"Consigne étudiant : {user_instruction or 'Standard'}\n"
-        f"Nombre de références actuelles : {len(project.references)}"
+        f"Nombre de références globales du projet : {len(project.references)}"
     )
 
     questions = {
+        "internal_library_sufficient": {
+            "type": "noul",
+            "instructions": (
+                "La bibliothèque interne de cette section contient-elle déjà des connaissances pertinentes "
+                "et suffisantes pour rédiger une section conforme aux normes OMS/CAMES (volume de mots, "
+                "objectifs attendus, références requises) sans appeler les bases externes ?"
+            ),
+            "criteria": {
+                "true_description": "La bibliothèque interne couvre de manière pertinente les besoins de la section selon les normes OMS/CAMES.",
+                "false_description": "La bibliothèque interne est vide, hors-sujet ou insuffisante (mots ou références manquants).",
+            },
+        },
         "call_antigravity_research": {
             "type": "noul",
             "instructions": (
-                "Faut-il charger l'agent Antigravity d'effectuer une recherche documentaire sur PubMed/EuropePMC/OpenAlex "
-                "et d'annoter de nouvelles références Vancouver pour cette section ?"
+                "Faut-il lancer une recherche bibliographique externe sur PubMed/EuropePMC/OpenAlex "
+                "pour compléter cette section ?"
             ),
             "criteria": {
-                "true_description": "Section vide nécessitant des références de base, ou texte existant nécessitant de nouvelles preuves absentes.",
-                "false_description": "La section n'a pas besoin de recherche documentaire externe supplémentaire.",
+                "true_description": "La bibliothèque interne est vide ou insuffisante pour atteindre les normes OMS/CAMES.",
+                "false_description": "La bibliothèque interne suffit pour la rédaction actuelle sans appel externe.",
             },
         },
         "call_antigravity_images": {
@@ -281,17 +403,25 @@ def route_section_with_gemini_decision_1(
     }
 
     decision_model = "Gemini Decision 1 (models/gemini-decision-1)"
-    call_research = not initial_text_present or bool(gap_analysis and gap_analysis.needs_external_info)
+    used_internal_only = False
+    internal_sufficient = det_internal_ok
+    call_research = (not initial_text_present and not det_internal_ok) or bool(
+        gap_analysis and gap_analysis.needs_external_info and not det_internal_ok
+    )
     call_images = allow_web_images and (
-        bool(gap_analysis and gap_analysis.needs_images) or not initial_text_present
+        bool(gap_analysis and gap_analysis.needs_images) or (not initial_text_present and lib_info["images_count"] == 0)
     )
     scores: Dict[str, float] = {}
 
     try:
         dres = gemini_router.run_decision_1(input_text=context_input, questions=questions)
         scores = dres.get("scores", {})
-        if not initial_text_present:
-            # Rule from specification: when no initial text is present, Decision 1 ALWAYS routes to Antigravity research
+        d_internal_ok = scores.get("internal_library_sufficient", 0.5 if det_internal_ok else 0.0) >= 0.50
+        internal_sufficient = bool(det_internal_ok and d_internal_ok)
+        if internal_sufficient:
+            call_research = False
+            used_internal_only = True
+        elif not initial_text_present:
             call_research = True
         else:
             call_research = call_research or (scores.get("call_antigravity_research", 0.0) >= 0.55)
@@ -300,17 +430,29 @@ def route_section_with_gemini_decision_1(
         )
         notes = (
             f"Gemini Decision 1 ({dres.get('total_tokens', 0)} tokens) → "
-            f"Antigravity recherche={'OUI' if call_research else 'NON'}, images={'OUI' if call_images else 'NON'}."
+            + (
+                "Bibliothèque interne suffisante (rédaction locale uniquement)."
+                if used_internal_only
+                else f"Antigravity recherche={'OUI' if call_research else 'NON'}, images={'OUI' if call_images else 'NON'}."
+            )
         )
     except Exception as exc:
         logger.warning("Gemini Decision 1 routing deterministic fallback (%s)", exc)
         decision_model = "Gemini Decision 1 (routage-deterministe)"
-        notes = "Routage par règle de base (Decision 1 repli)."
+        if det_internal_ok:
+            call_research = False
+            used_internal_only = True
+            notes = "Routage bibliothèque interne d'abord : contenu interne suffisant selon normes CAMES/OMS."
+        else:
+            notes = "Routage bibliothèque interne insuffisante : complément bibliographique externe déclenché."
 
     return {
         "decision_model": decision_model,
         "call_antigravity_research": call_research,
         "call_antigravity_images": call_images,
+        "internal_library_sufficient": internal_sufficient,
+        "used_internal_library_only": used_internal_only,
+        "can_enrich_externally": has_internal and not call_research,
         "scores": scores,
         "notes": notes,
     }
@@ -523,6 +665,7 @@ def orchestrate_section_action(
     action: str = "draft",
     user_instruction: Optional[str] = None,
     force_antigravity: bool = False,
+    force_external_research: bool = False,
 ) -> Dict[str, Any]:
     """Master Tri-Engine Orchestrator for any section action (`draft`, `audit`, `fix`, `antigravity`)."""
     lang = normalize_lang(getattr(project, "language", "fr"))
@@ -530,14 +673,15 @@ def orchestrate_section_action(
     existing_text = (current_sec.content_markdown or "").strip() if current_sec else ""
     initial_text_present = _count_words(existing_text) >= 15
 
-    # Step 1: Cross-section memory
+    # Step 1: Cross-section memory + Secondary working memory (per-section Internal Library)
     emit_pipeline_step(
         "memory",
-        "Lecture de la mémoire transversale du protocole...",
-        "Reading cross-section working memory...",
+        "Lecture des mémoires de travail (primaire & bibliothèque interne)...",
+        "Reading primary working memory & section internal library...",
         progress_pct=12,
     )
     cross_section_memory, memory_sections_count = build_cross_section_memory(project, section_id)
+    internal_lib = build_section_internal_library_context(project, section_id)
 
     # Step 2: Check initial text & evaluate gap if present
     gap_analysis: Optional[ExistingTextGapAnalysis] = None
@@ -557,11 +701,11 @@ def orchestrate_section_action(
             cross_section_memory=cross_section_memory,
         )
 
-    # Step 3: Route via Gemini Decision 1
+    # Step 3: Route via Gemini Decision 1 (Inspects Internal Library FIRST)
     emit_pipeline_step(
         "decision_route",
-        "Décision d'orchestration documentaire...",
-        "Routing literature & figure needs...",
+        "Arbitrage Gemini Decision 1 (bibliothèque interne d'abord)...",
+        "Gemini Decision 1 routing (internal library first)...",
         progress_pct=38,
     )
     routing = route_section_with_gemini_decision_1(
@@ -572,6 +716,8 @@ def orchestrate_section_action(
         gap_analysis=gap_analysis,
         user_instruction=user_instruction,
         force_antigravity=force_antigravity,
+        force_external_research=force_external_research,
+        internal_lib=internal_lib,
     )
 
     # Step 4: Mobilize Antigravity if Decision 1 triggers research or image capture
@@ -631,11 +777,18 @@ def orchestrate_section_action(
         "antigravity_called": antigravity_called,
         "added_references_count": antigravity_report["added_references_count"] if antigravity_report else 0,
         "added_images_count": antigravity_report["added_images_count"] if antigravity_report else 0,
+        "internal_library_entries_used": internal_lib["entries_count"],
+        "used_internal_library_only": bool(routing.get("used_internal_library_only", False)),
+        "can_enrich_externally": bool(routing.get("can_enrich_externally", False)),
         "routing_summary": routing_summary,
     }
 
     return {
         "orchestration_trace": trace,
         "cross_section_memory": cross_section_memory,
+        "internal_library_context": internal_lib["context_markdown"],
+        "used_internal_library_only": bool(routing.get("used_internal_library_only", False)),
+        "internal_library_entries_used": internal_lib["entries_count"],
+        "can_enrich_externally": bool(routing.get("can_enrich_externally", False)),
         "antigravity_report": antigravity_report,
     }

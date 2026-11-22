@@ -231,6 +231,39 @@ export interface FormattingRules {
   header_footer_rule_width_pt?: number;
 }
 
+export type ImportMode = "skeleton" | "internal_source";
+
+export interface InternalLibraryEntry {
+  entry_id: string;
+  source_id: string;
+  source_filename: string;
+  source_kind: "thesis" | "article" | "institutional_report" | "unreferenced_draft" | string;
+  citable: boolean;
+  ref_id?: string | null;
+  vancouver_citation: string;
+  content_markdown: string;
+  tables_markdown: string[];
+  image_asset_ids: string[];
+  diagnostic_note: string;
+  created_at: string;
+}
+
+export interface InternalSourceDocument {
+  source_id: string;
+  filename: string;
+  source_kind: "thesis" | "article" | "institutional_report" | "unreferenced_draft" | string;
+  citable: boolean;
+  ref_id?: string | null;
+  vancouver_citation: string;
+  authors: string[];
+  title: string;
+  year?: number | null;
+  institution_or_journal: string;
+  mapped_sections: string[];
+  extracted_images_count: number;
+  created_at: string;
+}
+
 export interface SectionState {
   section_id: string;
   status: StepStatus;
@@ -240,6 +273,7 @@ export interface SectionState {
   audit_notes: string[];
   custom_tables?: SectionTable[];
   custom_diagrams?: SectionDiagram[];
+  internal_library?: InternalLibraryEntry[];
   suppress_structured_table?: boolean;
   user_notes: string;
   updated_at: string;
@@ -294,6 +328,7 @@ export interface ProtocolProject {
   sections: Record<string, SectionState>;
   coherence_alerts?: CoherenceAlert[];
   references: ReferenceItem[];
+  internal_sources?: InternalSourceDocument[];
   article_segments: ArticleSegment[];
   images: ImageAsset[];
   abbreviations: AbbreviationItem[];
@@ -388,6 +423,9 @@ export interface DraftResult {
   assistant_commentary: string;
   deterministic_notes: string[];
   orchestration_trace?: SectionOrchestrationTrace;
+  used_internal_library_only?: boolean;
+  internal_library_entries_used?: number;
+  can_enrich_externally?: boolean;
 }
 
 export interface AuditResult {
@@ -410,6 +448,7 @@ export interface ExtractedImportImageSummary {
 export interface ImportReport {
   model_used: string;
   filename: string;
+  import_mode?: ImportMode | string;
   extracted_chars: number;
   total_blocks: number;
   global_summary: string;
@@ -417,6 +456,10 @@ export interface ImportReport {
   extracted_references_count?: number;
   extracted_images_count?: number;
   extracted_images?: ExtractedImportImageSummary[];
+  source_document?: InternalSourceDocument | null;
+  internal_entries_added?: number;
+  citable?: boolean;
+  vancouver_citation?: string;
 }
 
 export interface GlobalAuditCheck {

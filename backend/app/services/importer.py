@@ -9,7 +9,15 @@ from pypdf import PdfReader
 
 from app.data.fmsb_canvas import FMSB_SECTIONS
 from app.data.i18n import get_localized_canvas, normalize_lang
-from app.schemas.protocol import EntryMode, ProtocolProject, ReferenceItem, SectionState, StepStatus
+from app.schemas.protocol import (
+    EntryMode,
+    InternalLibraryEntry,
+    InternalSourceDocument,
+    ProtocolProject,
+    ReferenceItem,
+    SectionState,
+    StepStatus,
+)
 from app.services.crf_builder import (
     extract_crf_annexe_block,
     extract_crf_fields_from_project,
@@ -268,12 +276,158 @@ def _fallback_map_blocks_to_sections(blocks: List[DocBlock]) -> ImportedProtocol
     )
 
 
+class SourceCitabilityMetadata(BaseModel):
+    citable: bool = Field(
+        default=False,
+        description="True uniquement si l'en-tête/page de garde identifie une source citable (thèse, mémoire, article publié, rapport OMS/MINSANTE).",
+    )
+    source_kind: Literal["thesis", "article", "institutional_report", "unreferenced_draft"] = "unreferenced_draft"
+    authors: List[str] = Field(default_factory=list, description="Liste des auteurs principaux format Vancouver si trouvés")
+    title: str = Field(default="", description="Titre exact du document ou de l'article/thèse")
+    year: Optional[int] = Field(default=None, description="Année de publication ou soutenance")
+    institution_or_journal: str = Field(default="", description="Faculté/Université, revue scientifique ou institution (OMS, MINSANTE...)")
+    city: str = Field(default="", description="Ville d'édition ou de soutenance (ex: Yaoundé)")
+    doi: str = Field(default="", description="DOI ou identifiant si présent")
+    vancouver_citation: str = Field(
+        default="",
+        description="Citation formatée strictement au style Vancouver si citable=True, sinon vide.",
+    )
+
+
+def _extract_markdown_tables(md: str) -> List[str]:
+    """Extract Markdown pipe tables from a block of Markdown text."""
+    tables: List[str] = []
+    curr: List[str] = []
+    for line in (md or "").splitlines():
+        s = line.strip()
+        if s.startswith("|") and s.endswith("|") and len(s) > 2:
+            curr.append(line)
+        else:
+            if len(curr) >= 3 and any("---" in l or ":---" in l for l in curr[:3]):
+                tables.append("\n".join(curr).strip())
+            curr = []
+    if len(curr) >= 3 and any("---" in l or ":---" in l for l in curr[:3]):
+        tables.append("\n".join(curr).strip())
+    return tables
+
+
+def _fallback_detect_citability(filename: str, front_text: str) -> SourceCitabilityMetadata:
+    """Deterministic fallback to detect whether an uploaded source has citable cover/header metadata."""
+    low = (front_text or "").lower()
+    year_m = re.search(r"\b(19\d{2}|20[0-3]\d)\b", front_text or "")
+    year_val = int(year_m.group(1)) if year_m else None
+    doi_m = re.search(r"\b(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)\b", front_text or "")
+    doi_val = doi_m.group(1) if doi_m else ""
+
+    lines = [l.strip(" #*") for l in (front_text or "").splitlines() if len(l.strip()) >= 8]
+    guess_title = lines[0][:200] if lines else filename
+
+    if any(k in low for k in ("thèse", "these", "mémoire", "memoire", "soutenu", "directeur de thèse", "faculté de médecine")):
+        yr_part = f" {year_val}." if year_val else "."
+        cit = f"Auteur non précisé. {guess_title} [Thèse/Mémoire]. Faculté / Université ;{yr_part}"
+        return SourceCitabilityMetadata(
+            citable=True,
+            source_kind="thesis",
+            title=guess_title,
+            year=year_val,
+            institution_or_journal="Thèse / Mémoire universitaire",
+            vancouver_citation=cit,
+        )
+    if doi_val or any(k in low for k in ("pmid", "issn", "vol.", "journal", "revue ", "original article", "article original")):
+        yr_part = f" {year_val}." if year_val else "."
+        cit = f"Auteur non précisé. {guess_title}. Revue scientifique.{yr_part}" + (f" doi:{doi_val}" if doi_val else "")
+        return SourceCitabilityMetadata(
+            citable=True,
+            source_kind="article",
+            title=guess_title,
+            year=year_val,
+            doi=doi_val,
+            institution_or_journal="Article scientifique",
+            vancouver_citation=cit.strip(),
+        )
+    if any(k in low for k in ("organisation mondiale de la santé", "world health organization", "who ", "oms ", "minsante", "ministère de la santé", "unicef", "cdc")):
+        yr_part = f" {year_val}." if year_val else "."
+        cit = f"Institution sanitaire. {guess_title}. Rapport technique ;{yr_part}"
+        return SourceCitabilityMetadata(
+            citable=True,
+            source_kind="institutional_report",
+            title=guess_title,
+            year=year_val,
+            institution_or_journal="Rapport institutionnel",
+            vancouver_citation=cit,
+        )
+    return SourceCitabilityMetadata(citable=False, source_kind="unreferenced_draft", title=guess_title)
+
+
+def detect_document_citability(filename: str, blocks: List[DocBlock], lang: str = "fr") -> SourceCitabilityMetadata:
+    """Inspect document header / cover page to decide if it is citable (Vancouver) or an unreferenced draft."""
+    front_chunks = [b.full_text for b in blocks[:4] if b.full_text]
+    front_text = "\n\n".join(front_chunks)[:3500]
+    if not front_text.strip():
+        return SourceCitabilityMetadata(citable=False, source_kind="unreferenced_draft", title=filename)
+
+    prompt = f"""
+Analyse uniquement l'en-tête / la page de garde / les premières lignes de ce document importé (`{filename}`) :
+
+{front_text}
+
+Détermine :
+1. S'il s'agit d'une source académique ou officielle **citable** selon les normes Vancouver (ICMJE/CAMES) :
+   - `thesis` (Thèse de médecine, Mémoire DES/Master, Université/Faculté, année/auteur visibles)
+   - `article` (Article de revue scientifique, titre, auteurs, revue/DOI/PMID/année)
+   - `institutional_report` (Rapport officiel OMS/WHO, MINSANTE, UNICEF, CDC, société savante)
+2. S'il s'agit d'un simple brouillon personnel ou notes sans référence bibliographique exploitable → `citable = false`, `source_kind = "unreferenced_draft"`, `vancouver_citation = ""`.
+3. Si `citable = true`, génère une citation Vancouver propre et fidèle aux éléments visibles (ex: "Dupont J. Titre [Thèse de Doctorat en Médecine]. Yaoundé : Université de Yaoundé I, FMSB ; 2024.") sans inventer d'auteurs ou DOI absents.
+Langue cible du résumé/mention : {'anglais' if lang == 'en' else 'français'}.
+"""
+    try:
+        res = gemini_router.generate_structured(
+            role="audit",
+            contents=prompt,
+            schema=SourceCitabilityMetadata,
+            temperature=0.0,
+        )
+        meta: SourceCitabilityMetadata = res["data"]
+        if meta.citable and not meta.vancouver_citation.strip():
+            title_s = meta.title.strip() or filename
+            auth_s = ", ".join(meta.authors[:3]) or "Collectif"
+            inst_s = meta.institution_or_journal.strip() or "Document académique"
+            yr_s = f" {meta.year}." if meta.year else "."
+            meta.vancouver_citation = f"{auth_s}. {title_s}. {inst_s};{yr_s}"
+        if not meta.citable:
+            meta.source_kind = "unreferenced_draft"
+            meta.vancouver_citation = ""
+        return meta
+    except Exception:
+        return _fallback_detect_citability(filename, front_text)
+
+
+def remove_internal_source_from_project(project: ProtocolProject, source_id: str) -> bool:
+    """Remove an internal source document and all its mapped section entries."""
+    before_len = len(project.internal_sources)
+    project.internal_sources = [s for s in project.internal_sources if s.source_id != source_id]
+    removed_entries = 0
+    for sec in project.sections.values():
+        kept = [e for e in (getattr(sec, "internal_library", []) or []) if e.source_id != source_id]
+        removed_entries += len(getattr(sec, "internal_library", []) or []) - len(kept)
+        sec.internal_library = kept
+    return len(project.internal_sources) < before_len or removed_entries > 0
+
+
 def analyze_and_import_protocol(
     project: ProtocolProject,
     filename: str,
     content_bytes: bytes,
+    import_mode: str = "skeleton",
 ) -> Dict[str, object]:
-    """Fast hybrid import: Python splits structural blocks; Gemini maps block IDs only."""
+    """Fast hybrid import: Python splits structural blocks; Gemini maps block IDs only.
+    Supports `import_mode`:
+      - 'skeleton': populates/updates protocol sections directly (existing behavior).
+      - 'internal_source': checks header/cover citability and stores extracted blocks,
+        tables & figures in each section's secondary working memory (`internal_library`)
+        WITHOUT overwriting any drafted protocol content.
+    """
+    resolved_mode = "internal_source" if (import_mode or "").strip().lower() == "internal_source" else "skeleton"
     lang = normalize_lang(getattr(project, "language", "fr"))
     emit_pipeline_step(
         "parse",
@@ -317,7 +471,7 @@ def analyze_and_import_protocol(
         else "Rédige `global_summary` et chaque `diagnostic_note` en français."
     )
     prompt = f"""
-Tu es un expert méthodologiste FMSB. Un étudiant importe son protocole ({filename}, {len(blocks)} blocs structurels).
+Tu es un expert méthodologiste FMSB. Un étudiant importe un document ({filename}, {len(blocks)} blocs structurels).
 Voici les sections du canevas FMSB :
 {sections_list}
 
@@ -343,6 +497,144 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
         analysis = _fallback_map_blocks_to_sections(blocks)
         model_used = "deterministic-importer-fallback"
 
+    if resolved_mode == "internal_source":
+        emit_pipeline_step(
+            "citability",
+            "Analyse de l'en-tête / page de garde (source citable vs brouillon)...",
+            "Inspecting cover/header for Vancouver citability...",
+            progress_pct=68,
+        )
+        meta = detect_document_citability(filename, blocks, lang=lang)
+        source_ref_id: Optional[str] = None
+        if meta.citable and meta.vancouver_citation:
+            existing_by_cit = {
+                r.vancouver_citation.strip().lower(): r
+                for r in project.references
+                if r.vancouver_citation.strip()
+            }
+            key = meta.vancouver_citation.strip().lower()
+            if key in existing_by_cit:
+                source_ref_id = existing_by_cit[key].ref_id
+            else:
+                new_ref = ReferenceItem(
+                    source_platform="internal_library",
+                    authors=meta.authors,
+                    title=meta.title or filename,
+                    journal=meta.institution_or_journal,
+                    year=meta.year,
+                    doi=meta.doi or None,
+                    vancouver_citation=meta.vancouver_citation,
+                    verified=True,
+                )
+                project.references.append(new_ref)
+                refresh_vancouver_references(project)
+                source_ref_id = new_ref.ref_id
+
+        source_doc = InternalSourceDocument(
+            filename=filename,
+            source_kind=meta.source_kind,
+            citable=meta.citable,
+            ref_id=source_ref_id,
+            vancouver_citation=meta.vancouver_citation,
+            authors=meta.authors,
+            title=meta.title or filename,
+            year=meta.year,
+            institution_or_journal=meta.institution_or_journal,
+        )
+
+        page_to_section: Dict[int, str] = {}
+        elem_idx_to_section: Dict[int, str] = {}
+        prepared_sections: List[Tuple[str, str, List[str], str]] = []
+        for item in analysis.mapped_sections:
+            if item.section_id not in project.sections or item.section_id == "cover_page":
+                continue
+            valid_blocks: List[str] = []
+            for bid in item.block_ids:
+                blk = blocks_by_id.get(bid)
+                if blk is None:
+                    continue
+                for pno in blk.page_numbers:
+                    if pno not in page_to_section or page_to_section[pno] == "cover_page":
+                        page_to_section[pno] = item.section_id
+                for eidx in blk.elem_indices:
+                    if eidx not in elem_idx_to_section or elem_idx_to_section[eidx] == "cover_page":
+                        elem_idx_to_section[eidx] = item.section_id
+                if blk.full_text:
+                    valid_blocks.append(blk.full_text)
+            if not valid_blocks:
+                continue
+            reassembled_text = "\n\n".join(valid_blocks)
+            tables_md = _extract_markdown_tables(reassembled_text)
+            prepared_sections.append((item.section_id, reassembled_text, tables_md, item.diagnostic_note or ""))
+
+        emit_pipeline_step(
+            "extract_images",
+            "Extraction des figures vers la bibliothèque interne...",
+            "Extracting figures into internal section library...",
+            progress_pct=82,
+        )
+        extracted_imgs = extract_images_from_uploaded_document(
+            project,
+            filename,
+            content_bytes,
+            section_context={
+                "page_to_section": page_to_section,
+                "elem_idx_to_section": elem_idx_to_section,
+            },
+        )
+        imgs_by_sec: Dict[str, List[str]] = {}
+        for img in extracted_imgs:
+            imgs_by_sec.setdefault(img.target_section_id, []).append(img.asset_id)
+
+        entries_added = 0
+        for sid, text_md, tables_md, diag in prepared_sections:
+            sec = project.sections[sid]
+            entry = InternalLibraryEntry(
+                source_id=source_doc.source_id,
+                source_filename=filename,
+                source_kind=meta.source_kind,
+                citable=meta.citable,
+                ref_id=source_ref_id,
+                vancouver_citation=meta.vancouver_citation,
+                content_markdown=text_md,
+                tables_markdown=tables_md,
+                image_asset_ids=imgs_by_sec.get(sid, []),
+                diagnostic_note=diag,
+            )
+            sec.internal_library.append(entry)
+            source_doc.mapped_sections.append(sid)
+            entries_added += 1
+
+        source_doc.extracted_images_count = len(extracted_imgs)
+        project.internal_sources.append(source_doc)
+
+        return {
+            "model_used": model_used,
+            "filename": filename,
+            "import_mode": "internal_source",
+            "extracted_chars": total_chars,
+            "total_blocks": len(blocks),
+            "extracted_references_count": len(project.references),
+            "extracted_images_count": len(extracted_imgs),
+            "extracted_images": [
+                {
+                    "asset_id": img.asset_id,
+                    "title": img.title,
+                    "target_section_id": img.target_section_id,
+                    "source_url": img.source_url,
+                    "caption": img.caption,
+                    "anchor_hint": img.anchor_hint,
+                }
+                for img in extracted_imgs
+            ],
+            "global_summary": analysis.global_summary,
+            "mapped_sections_count": entries_added,
+            "internal_entries_added": entries_added,
+            "citable": meta.citable,
+            "vancouver_citation": meta.vancouver_citation,
+            "source_document": source_doc.model_dump(mode="json"),
+        }
+
     project.entry_mode = EntryMode.EXISTING_PROTOCOL
     if not project.topic_locked and analysis.detected_title and (not project.cover.title or project.cover.title == project.name):
         project.cover.title = analysis.detected_title
@@ -350,13 +642,13 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
         project.study_type = analysis.detected_study_type
 
     mapped_count = 0
-    page_to_section: Dict[int, str] = {}
-    elem_idx_to_section: Dict[int, str] = {}
+    page_to_section = {}
+    elem_idx_to_section = {}
 
     for item in analysis.mapped_sections:
         if item.section_id not in project.sections:
             continue
-        valid_blocks: List[str] = []
+        valid_blocks = []
         for bid in item.block_ids:
             blk = blocks_by_id.get(bid)
             if blk is None:
@@ -429,6 +721,7 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
     return {
         "model_used": model_used,
         "filename": filename,
+        "import_mode": "skeleton",
         "extracted_chars": total_chars,
         "total_blocks": len(blocks),
         "extracted_references_count": len(project.references),

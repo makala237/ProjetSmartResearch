@@ -157,9 +157,11 @@ export function Module1Assistant({
   const [showMethodGuide, setShowMethodGuide] = useState(false);
   const [showCamesRequirements, setShowCamesRequirements] = useState(false);
   const [showAssignedSegments, setShowAssignedSegments] = useState(false);
+  const [showInternalLibrary, setShowInternalLibrary] = useState(false);
   const [showPersonalNotes, setShowPersonalNotes] = useState(() =>
     Boolean(activeState?.user_notes?.trim())
   );
+  const internalLibraryEntries = activeState?.internal_library ?? [];
   const [aiInstruction, setAiInstruction] = useState("");
   const [coverForm, setCoverForm] = useState<CoverMetadata>(() =>
     withStructuredSupervisors(project.cover)
@@ -454,7 +456,10 @@ export function Module1Assistant({
     ? t("m1.instruction_placeholder_generate")
     : t("m1.instruction_placeholder_refine");
 
-  async function handleDraftWithAI(instruction?: string) {
+  async function handleDraftWithAI(
+    instruction?: string,
+    forceExternalResearch = false
+  ) {
     const targetSectionId = activeSpec.id;
     const targetTitle = activeSpec.title;
     setBusyDraftBySec((prev) => ({ ...prev, [targetSectionId]: true }));
@@ -463,12 +468,22 @@ export function Module1Assistant({
       const res = await tracker.runWithProgress(
         {
           operation: "draft",
-          titleFr: `Rédaction : ${targetTitle}`,
-          titleEn: `Drafting: ${targetTitle}`,
+          titleFr: forceExternalResearch
+            ? `Enrichissement bibliographique : ${targetTitle}`
+            : `Rédaction : ${targetTitle}`,
+          titleEn: forceExternalResearch
+            ? `Bibliographic Enrichment: ${targetTitle}`
+            : `Drafting: ${targetTitle}`,
           projectId: project.project_id,
         },
         (taskId) =>
-          api.draftSection(project.project_id, targetSectionId, instruction, taskId)
+          api.draftSection(
+            project.project_id,
+            targetSectionId,
+            instruction,
+            taskId,
+            forceExternalResearch
+          )
       );
       const merged = mergeSectionProjectUpdate(res.project, targetSectionId);
       onProjectUpdated(merged);
@@ -1395,6 +1410,81 @@ export function Module1Assistant({
                 </div>
               )}
 
+              {internalLibraryEntries.length > 0 && (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-3 text-xs text-emerald-950">
+                  <button
+                    type="button"
+                    onClick={() => setShowInternalLibrary((v) => !v)}
+                    className="flex w-full items-center justify-between gap-2 font-semibold text-emerald-900"
+                  >
+                    <span className="inline-flex items-center gap-1.5">
+                      <BookOpen className="h-3.5 w-3.5 text-emerald-700" />
+                      {lang === "en"
+                        ? `Section Internal Library (${internalLibraryEntries.length} secondary source(s))`
+                        : `Bibliothèque interne de cette section (${internalLibraryEntries.length} source(s) secondaire(s))`}
+                    </span>
+                    {showInternalLibrary ? (
+                      <ChevronUp className="h-4 w-4 text-emerald-700" />
+                    ) : (
+                      <ChevronDown className="h-4 w-4 text-emerald-700" />
+                    )}
+                  </button>
+                  {showInternalLibrary && (
+                    <div className="mt-2.5 space-y-2 border-t border-emerald-200/70 pt-2.5">
+                      {internalLibraryEntries.map((entry) => (
+                        <div
+                          key={entry.entry_id}
+                          className="rounded-lg border border-emerald-200/80 bg-white p-2.5"
+                        >
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-semibold text-slate-900">
+                              {entry.source_filename}
+                            </span>
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                                entry.citable
+                                  ? "bg-emerald-100 text-emerald-800"
+                                  : "bg-slate-100 text-slate-700"
+                              }`}
+                            >
+                              {entry.citable
+                                ? lang === "en"
+                                  ? `Citable (${entry.source_kind})`
+                                  : `Citable — ${entry.source_kind}`
+                                : lang === "en"
+                                  ? "Unreferenced draft"
+                                  : "Brouillon non référencé"}
+                            </span>
+                            {entry.tables_markdown.length > 0 && (
+                              <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-[10px] font-medium text-indigo-800">
+                                {entry.tables_markdown.length}{" "}
+                                {lang === "en" ? "table(s)" : "tableau(x)"}
+                              </span>
+                            )}
+                            {entry.image_asset_ids.length > 0 && (
+                              <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800">
+                                {entry.image_asset_ids.length}{" "}
+                                {lang === "en" ? "figure(s)" : "figure(s)"}
+                              </span>
+                            )}
+                          </div>
+                          {entry.citable && entry.vancouver_citation && (
+                            <p className="mt-1 text-[11px] italic text-emerald-800">
+                              {entry.vancouver_citation}
+                            </p>
+                          )}
+                          {entry.content_markdown && (
+                            <p className="mt-1.5 line-clamp-4 whitespace-pre-line text-[11px] leading-relaxed text-slate-700">
+                              {entry.content_markdown}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Cas A : Section courante ciblée par une alerte de cohérence inter-sections */}
               {activeSectionAlerts.map((alert) => (
                 <div
@@ -1494,11 +1584,48 @@ export function Module1Assistant({
               )}
 
               {lastDraftResult && (
-                <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3 text-xs text-indigo-950">
-                  <strong>
-                    {lang === "en" ? "Methodological Assistant:" : "Assistant méthodologique FMSB :"}
-                  </strong>{" "}
-                  {lastDraftResult.assistant_commentary.replace(/gemini[^,.;)]*/gi, "Smart Research")}
+                <div className="space-y-2">
+                  {lastDraftResult.used_internal_library_only && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-300 bg-emerald-50/70 p-3 text-xs text-emerald-950">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-bold text-emerald-900">
+                          {lang === "en"
+                            ? "Drafted primarily from your Internal Library (WHO/CAMES compliant)"
+                            : "Rédigé en priorité depuis votre bibliothèque interne (conforme OMS/CAMES)"}
+                        </div>
+                        <p className="mt-0.5 text-[11px] text-emerald-800">
+                          {lang === "en"
+                            ? `Built using ${lastDraftResult.internal_library_entries_used ?? internalLibraryEntries.length} internal source segment(s) without external bibliographic queries.`
+                            : `Basé sur ${lastDraftResult.internal_library_entries_used ?? internalLibraryEntries.length} segment(s) de votre bibliothèque interne sans requête externe superflue.`}
+                        </p>
+                      </div>
+                      {lastDraftResult.can_enrich_externally && (
+                        <button
+                          type="button"
+                          disabled={busyDraft}
+                          onClick={() =>
+                            handleDraftWithAI(aiInstruction.trim() || undefined, true)
+                          }
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-1.5 text-[11px] font-semibold text-white shadow-xs transition hover:bg-emerald-800 disabled:opacity-50"
+                        >
+                          {busyDraft ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Globe className="h-3.5 w-3.5" />
+                          )}
+                          {lang === "en"
+                            ? "Enrich via PubMed / AJOL / OpenAlex"
+                            : "Enrichir via PubMed / AJOL / OpenAlex"}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  <div className="rounded-lg border border-indigo-200 bg-indigo-50/40 p-3 text-xs text-indigo-950">
+                    <strong>
+                      {lang === "en" ? "Methodological Assistant:" : "Assistant méthodologique FMSB :"}
+                    </strong>{" "}
+                    {lastDraftResult.assistant_commentary.replace(/gemini[^,.;)]*/gi, "Smart Research")}
+                  </div>
                 </div>
               )}
 

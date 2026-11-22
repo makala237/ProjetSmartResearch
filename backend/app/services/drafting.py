@@ -236,6 +236,7 @@ def draft_section_with_ai(
     project: ProtocolProject,
     section_id: str,
     user_instruction: Optional[str] = None,
+    force_external_research: bool = False,
 ) -> Dict[str, object]:
     """Draft or refine a section grounded strictly in approved ArticleSegments and FMSB rules."""
     lang = normalize_lang(getattr(project, "language", "fr"))
@@ -284,9 +285,11 @@ def draft_section_with_ai(
         section_id=section_id,
         action="draft",
         user_instruction=user_instruction,
+        force_external_research=force_external_research,
     )
     orch_trace = orch["orchestration_trace"]
     cross_memory = orch["cross_section_memory"]
+    internal_library_ctx = (orch.get("internal_library_context") or "").strip()
 
     ref_by_id = {r.ref_id: r for r in project.references}
     matching_segments = [
@@ -362,9 +365,12 @@ USER INSTRUCTION:
 VERIFIED SCIENTIFIC SEGMENTS AVAILABLE:
 {segments_context}
 
+INTERNAL SECTION LIBRARY (SECONDARY WORKING MEMORY):
+{internal_library_ctx if internal_library_ctx else '(Empty for this section)'}
+
 STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
 1. NEVER invent any statistic, rate, sample figure, or reference.
-2. Cite ONLY the provided references above using [n] notation (e.g., [1], [2]).
+2. Cite ONLY the provided references above using [n] notation (e.g., [1], [2]). For citable internal sources (`Réf [n]`), cite `[n]` normally. For `Brouillon interne non référencé`, exploit its scientific/clinical content but NEVER invent a fake `[n]` citation.
 3. NEVER repeat explanations, definitions, or statistics already written in the CROSS-SECTION WORKING MEMORY.
 4. If local institutional data is missing from sources, explicitly write {'[To be completed by investigator: ...]' if lang == 'en' else '[À compléter par l’investigateur : ...]'}.
 {style_instructions}
@@ -423,6 +429,9 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
         "assistant_commentary": dto.assistant_commentary,
         "deterministic_notes": det_notes,
         "orchestration_trace": orch_trace,
+        "used_internal_library_only": bool(orch.get("used_internal_library_only", False)),
+        "internal_library_entries_used": int(orch.get("internal_library_entries_used", 0) or 0),
+        "can_enrich_externally": bool(orch.get("can_enrich_externally", False)),
     }
 
 

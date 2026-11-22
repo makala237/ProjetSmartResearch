@@ -35,6 +35,7 @@ import type {
   HarmonizeSectionResult,
   HumanizeProtocolReport,
   HumanizeSectionResult,
+  ImportMode,
   ImportReport,
   LiteratureSynthesisItem,
   ModelsStatus,
@@ -419,14 +420,18 @@ export const api = {
     projectId: string,
     sectionId: string,
     instruction?: string,
-    taskId?: string
+    taskId?: string,
+    forceExternalResearch = false
   ) =>
     request<{ project: ProtocolProject; result: DraftResult }>(
       `/api/projects/${projectId}/sections/${sectionId}/draft`,
       {
         method: "POST",
         headers: pipelineHeaders(taskId),
-        body: JSON.stringify({ instruction: instruction || null }),
+        body: JSON.stringify({
+          instruction: instruction || null,
+          force_external_research: forceExternalResearch,
+        }),
       }
     ),
 
@@ -674,10 +679,12 @@ export const api = {
   importProtocol: async (
     projectId: string,
     file: File,
+    importMode: ImportMode = "skeleton",
     taskId?: string
   ): Promise<{ project: ProtocolProject; report: ImportReport }> => {
     const form = new FormData();
     form.append("file", file);
+    form.append("import_mode", importMode);
     const res = await fetch(`/api/projects/${projectId}/import`, {
       method: "POST",
       headers: {
@@ -696,6 +703,12 @@ export const api = {
     }
     return res.json();
   },
+
+  deleteInternalSource: (projectId: string, sourceId: string) =>
+    request<{ project: ProtocolProject; removed_source_id: string }>(
+      `/api/projects/${projectId}/internal-sources/${sourceId}`,
+      { method: "DELETE" }
+    ),
 
   exportDocxUrl: (projectId: string) => `/api/projects/${projectId}/export/docx`,
 
