@@ -14,8 +14,10 @@ import {
   Save,
   Search,
   Settings2,
+  Sparkles,
   Trash2,
   UserPlus,
+  Wand2,
 } from "lucide-react";
 import { api } from "../api/client";
 import { useLanguage } from "../i18n/LanguageContext";
@@ -77,6 +79,14 @@ export function Module3DataEntry({
   const { lang, t } = useLanguage();
   const [subTab, setSubTab] = useState<SubTab>("entry");
   const [busy, setBusy] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiInstruction, setAiInstruction] = useState("");
+  const [aiReport, setAiReport] = useState<{
+    model_used: string;
+    mode_applied: string;
+    assistant_commentary: string;
+    cames_compliance_checklist: string[];
+  } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   // Paper preview HTML from backend crf_builder
@@ -256,6 +266,36 @@ export function Module3DataEntry({
     }
   }
 
+  async function handleAiGenerateOrImproveCrf(mode: "generate" | "improve" | "auto") {
+    setAiBusy(true);
+    setNotice(null);
+    onError("");
+    try {
+      const res = await api.aiGenerateCrf(project.project_id, {
+        mode,
+        user_instruction: aiInstruction,
+      });
+      onProjectUpdated(res.project);
+      setDraftFields(res.crf_fields);
+      setAnnexe1Html(res.annexe1_html);
+      setAiReport({
+        model_used: res.model_used,
+        mode_applied: res.mode_applied,
+        assistant_commentary: res.assistant_commentary,
+        cames_compliance_checklist: res.cames_compliance_checklist ?? [],
+      });
+      setNotice(
+        lang === "en"
+          ? `CAMES CRF ${res.mode_applied === "improve" ? "improved" : "generated"} (${res.crf_fields.length} items) using ${res.model_used} and rebuilt into the data mask.`
+          : `Fiche de collecte CAMES ${res.mode_applied === "improve" ? "améliorée" : "générée"} (${res.crf_fields.length} champs) via ${res.model_used} et reconstruite dans le masque de saisie.`
+      );
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAiBusy(false);
+    }
+  }
+
   async function handleSyncFromAnnexe1(forceExtract: boolean) {
     setBusy(true);
     onError("");
@@ -265,7 +305,9 @@ export function Module3DataEntry({
       setDraftFields(res.crf_fields);
       setAnnexe1Html(res.annexe1_html);
       setNotice(
-        `Masque de saisie synchronisé (${res.crf_fields.length} questions) avec dessins d'Annexe 1 mis à jour.`
+        lang === "en"
+          ? `Mask synchronized (${res.crf_fields.length} fields) from dedicated Data Collection sub-section (Appendix 1).`
+          : `Masque de saisie reconstruit (${res.crf_fields.length} questions) depuis la sous-partie Fiche de Collecte (Annexe 1).`
       );
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -377,17 +419,17 @@ export function Module3DataEntry({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              disabled={busy}
+              disabled={busy || aiBusy}
               onClick={() => handleSyncFromAnnexe1(true)}
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               title={
                 lang === "en"
-                  ? "Re-parse Appendix 1 and update drawn checkboxes and fields"
-                  : "Ré-analyser le texte d'Annexe 1 et mettre à jour les dessins de cases et cadres"
+                  ? "Rebuild the data mask directly from the dedicated Data Collection Form sub-section"
+                  : "Reconstruire le masque de saisie depuis la sous-partie dédiée Fiche de Collecte (Annexes)"
               }
             >
               <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
-              {t("m3.regenerate_crf")}
+              {lang === "en" ? "Rebuild Mask from CRF" : "Construire Masque depuis la Fiche"}
             </button>
 
             <a
@@ -451,6 +493,99 @@ export function Module3DataEntry({
             <span>{notice}</span>
           </div>
         )}
+
+        {/* Phase 2: CAMES AI CRF Generator & Improver */}
+        <div className="mt-4 rounded-xl border border-indigo-200/80 bg-gradient-to-br from-indigo-50/70 via-white to-rose-50/40 p-4">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="max-w-2xl">
+              <div className="flex items-center gap-2 text-xs font-bold text-indigo-950">
+                <Sparkles className="h-4 w-4 text-indigo-600" />
+                {lang === "en"
+                  ? "AI Assistant — CAMES Data Collection Form & Mask Builder"
+                  : "Assistant IA — Création & Amélioration de la Fiche de Collecte (Normes CAMES)"}
+              </div>
+              <p className="mt-0.5 text-[11px] text-slate-600">
+                {lang === "en"
+                  ? "Generates or refines your dedicated Data Collection Form (Appendix 1) using your objectives, operational variables, literature scores, user needs, and strict CAMES/GCP anonymization rules, then rebuilds this mask."
+                  : "Génère une nouvelle fiche ou améliore la fiche existante en croisant vos besoins, les scores issus de la revue de la littérature, vos objectifs/variables et les 7 normes CAMES/BPC, puis construit automatiquement le masque."}
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={busy || aiBusy}
+                onClick={() => handleAiGenerateOrImproveCrf("generate")}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {aiBusy ? (
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="h-3.5 w-3.5" />
+                )}
+                {lang === "en" ? "Generate Form (CAMES AI)" : "Générer Fiche (IA CAMES)"}
+              </button>
+              <button
+                type="button"
+                disabled={busy || aiBusy}
+                onClick={() => handleAiGenerateOrImproveCrf("improve")}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-white px-3 py-2 text-xs font-semibold text-indigo-800 hover:bg-indigo-50 disabled:opacity-50"
+              >
+                {aiBusy ? (
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Wand2 className="h-3.5 w-3.5" />
+                )}
+                {lang === "en" ? "Improve Existing Form" : "Améliorer Fiche Existante"}
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <input
+              type="text"
+              value={aiInstruction}
+              onChange={(e) => setAiInstruction(e.target.value)}
+              placeholder={
+                lang === "en"
+                  ? "Specific needs (e.g., include Apgar score at 1/5 min, stratify blood pressure categories, maternal comorbidities...)"
+                  : "Vos besoins précis (ex. inclure le score d'Apgar à 1 et 5 min, détailler les comorbidités maternelles, ajouter le coût en FCFA...)"
+              }
+              className="w-full rounded-lg border border-indigo-200 bg-white px-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none"
+            />
+          </div>
+
+          {aiReport && (
+            <div className="mt-3 rounded-lg border border-indigo-100 bg-white/90 p-3 text-xs">
+              <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-indigo-900">
+                <span>
+                  {lang === "en" ? "Methodological Report" : "Rapport méthodologique IA"} (
+                  {aiReport.model_used})
+                </span>
+                <span className="rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-bold uppercase text-indigo-700">
+                  {aiReport.mode_applied}
+                </span>
+              </div>
+              {aiReport.assistant_commentary && (
+                <p className="mt-1 text-[11px] leading-relaxed text-slate-700">
+                  {aiReport.assistant_commentary}
+                </p>
+              )}
+              {aiReport.cames_compliance_checklist.length > 0 && (
+                <ul className="mt-2 grid grid-cols-1 gap-1 sm:grid-cols-2">
+                  {aiReport.cames_compliance_checklist.map((chk, i) => (
+                    <li
+                      key={i}
+                      className="flex items-start gap-1.5 text-[11px] text-emerald-800"
+                    >
+                      <CheckCircle2 className="mt-0.5 h-3 w-3 shrink-0 text-emerald-600" />
+                      <span>{chk}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
 
         {/* Sub-navigation Tabs */}
         <div className="mt-4 flex flex-nowrap gap-2 overflow-x-auto no-scrollbar border-t border-slate-100 pt-3 pb-1">

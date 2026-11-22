@@ -4,11 +4,13 @@ import csv
 import io
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from PIL import Image, ImageDraw
+from pydantic import BaseModel, Field
 
-from app.schemas.protocol import CRFFieldSpec, ProtocolProject, VariableItem
+from app.data.i18n import normalize_lang
+from app.schemas.protocol import CRFFieldSpec, ProtocolProject, SectionState, StepStatus, VariableItem
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +201,29 @@ def extract_annexe1_block(annexes_md: str) -> Tuple[str, str, str]:
     return before, crf, after
 
 
+def get_crf_markdown_from_project(project: ProtocolProject) -> str:
+    """
+    Retrieve the project's CRF / data collection Markdown, prioritizing the dedicated
+    `annexe_fiche_collecte` sub-section and falling back to `annexes` for legacy projects.
+    """
+    crf_sec = project.sections.get("annexe_fiche_collecte")
+    if crf_sec and crf_sec.content_markdown and crf_sec.content_markdown.strip():
+        return crf_sec.content_markdown.strip()
+
+    ann_sec = project.sections.get("annexes")
+    if ann_sec and ann_sec.content_markdown and ann_sec.content_markdown.strip():
+        _, crf_block, _, title = extract_crf_annexe_block(ann_sec.content_markdown)
+        if crf_block and (
+            is_crf_annexe_content(title, crf_block)
+            or "[ ]" in crf_block
+            or "☐" in crf_block
+            or "____" in crf_block
+            or bool(re.search(r"(?m)^(?:-\s+\*\*|\d+\.\s+).*[:：]", crf_block))
+        ):
+            return crf_block.strip()
+    return ""
+
+
 def _clean_md_text(raw: str) -> str:
     txt = re.sub(r"\*\*([^*]+)\*\*", r"\1", raw or "")
     txt = re.sub(r"\*([^*]+)\*", r"\1", txt)
@@ -359,14 +384,14 @@ def _infer_field_from_spec(
 
 
 def extract_hospital_sites_from_project(project: ProtocolProject) -> List[str]:
-    """Extract hospital site choices from cover metadata or Annexe 1 markdown header."""
+    """Extract hospital site choices from cover metadata or dedicated CRF markdown header."""
     sites: List[str] = [s.strip() for s in (project.cover.host_institutions or []) if s and s.strip()]
-    ann_sec = project.sections.get("annexes")
-    if ann_sec and ann_sec.content_markdown:
-        _, ann1, _ = extract_annexe1_block(ann_sec.content_markdown)
-        for line in ann1.splitlines()[:12]:
-            if "hôpital" in line.lower() or "site" in line.lower():
-                opts = _parse_checkbox_options(re.sub(r"(?i)/?\s*Autre\s*:.*$", "", line))
+    crf_md = get_crf_markdown_from_project(project)
+    if crf_md:
+        for line in crf_md.splitlines()[:15]:
+            lower_l = line.lower()
+            if "hôpital" in lower_l or "hospital" in lower_l or "site" in lower_l:
+                opts = _parse_checkbox_options(re.sub(r"(?i)/?\s*(?:Autre|Other)\s*:.*$", "", line))
                 for o in opts:
                     if o and o not in sites:
                         sites.append(o)
@@ -375,9 +400,9 @@ def extract_hospital_sites_from_project(project: ProtocolProject) -> List[str]:
 
 def extract_crf_fields_from_project(project: ProtocolProject) -> List[CRFFieldSpec]:
     """
-    Extract structured CRFFieldSpec objects from Annexe 1 Markdown (sections A..E,
-    questions A1..E3 with nested sub-questions and multi-line checkbox options)
-    and merge any additional variables from `project.variables`.
+    Extract structured CRFFieldSpec objects from the dedicated CRF sub-section
+    (`annexe_fiche_collecte` or fallback `annexes`) and merge any additional
+    variables from `project.variables`.
     """
     fields: List[CRFFieldSpec] = []
     seen_ids: set[str] = set()
@@ -391,9 +416,8 @@ def extract_crf_fields_from_project(project: ProtocolProject) -> List[CRFFieldSp
         seen_ids.add(spec.field_id)
         fields.append(spec)
 
-    ann_sec = project.sections.get("annexes")
-    if ann_sec and ann_sec.content_markdown:
-        _, ann1_md, _ = extract_annexe1_block(ann_sec.content_markdown)
+    ann1_md = get_crf_markdown_from_project(project)
+    if ann1_md:
         lines = ann1_md.splitlines()
         current_section = "SECTION A : IDENTIFICATION ET CARACTÉRISTIQUES SOCIODÉMOGRAPHIQUES"
 
@@ -957,34 +981,309 @@ def render_crf_annexe1_html(project: ProtocolProject) -> str:
     )
 
 
-def sync_crf_to_project(project: ProtocolProject, sync_annexe1_markdown: bool = True) -> None:
+def sync_crf_to_project(
+    project: ProtocolProject,
+    sync_annexe1_markdown: bool = True,
+    header_title: str = "",
+) -> None:
     """
-    Synchronize `project.crf_fields` into `project.variables` and replace ONLY
-    the CRF block of `project.sections["annexes"]` (keeping all other user annexes intact at their respective positions).
+    Synchronize `project.crf_fields` into `project.variables` and update the dedicated
+    `annexe_fiche_collecte` sub-section (preserving custom heading and updating any legacy
+    embedded CRF block inside `annexes` only if one already existed there).
     """
+    from app.services.rich_formatter import markdown_to_clean_html
+
     project.variables = crf_fields_to_variables(project.crf_fields)
 
     if not sync_annexe1_markdown:
         return
 
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    default_title = (
+        "## APPENDIX 1: DATA COLLECTION FORM (CRF)"
+        if lang == "en"
+        else "## ANNEXE 1 : FICHE DE COLLECTE DES DONNÉES"
+    )
+
+    crf_sec = project.sections.get("annexe_fiche_collecte")
+    if crf_sec is None:
+        crf_sec = SectionState(section_id="annexe_fiche_collecte")
+        project.sections["annexe_fiche_collecte"] = crf_sec
+
+    resolved_title = header_title.strip()
+    if not resolved_title and crf_sec.content_markdown.strip():
+        first_line = crf_sec.content_markdown.strip().splitlines()[0].strip()
+        if first_line.startswith("#"):
+            resolved_title = first_line
+
     ann_sec = project.sections.get("annexes")
-    if ann_sec is None:
-        return
+    has_embedded_crf_in_annexes = False
+    if ann_sec and ann_sec.content_markdown.strip():
+        before, old_crf, after, orig_ann_title = extract_crf_annexe_block(ann_sec.content_markdown)
+        if old_crf and is_crf_annexe_content(orig_ann_title, old_crf):
+            has_embedded_crf_in_annexes = True
+            if not resolved_title:
+                resolved_title = orig_ann_title
+            rendered_for_ann = render_crf_annexe1_markdown(project, header_title=resolved_title or default_title)
+            parts: List[str] = []
+            if before:
+                parts.append(before)
+            elif not ann_sec.content_markdown.strip().startswith("# "):
+                parts.append("# ANNEXES DU PROTOCOLE DE RECHERCHE")
+            parts.append(rendered_for_ann)
+            if after:
+                parts.append("---\n\n" + after if not after.startswith("---") else after)
+            ann_sec.content_markdown = "\n\n".join(p for p in parts if p).strip()
+            ann_sec.content_html = markdown_to_clean_html(ann_sec.content_markdown)
 
-    existing_md = ann_sec.content_markdown or ""
-    before, ann1, after, original_title = extract_crf_annexe_block(existing_md)
-    rendered_ann1 = render_crf_annexe1_markdown(project, header_title=original_title)
+    rendered_crf = render_crf_annexe1_markdown(project, header_title=resolved_title or default_title)
+    crf_sec.content_markdown = rendered_crf
+    crf_sec.content_html = markdown_to_clean_html(rendered_crf)
+    if crf_sec.status == StepStatus.PENDING and project.crf_fields:
+        crf_sec.status = StepStatus.IN_PROGRESS
+    _ = has_embedded_crf_in_annexes
 
-    parts: List[str] = []
-    if before:
-        parts.append(before)
-    elif not existing_md.strip().startswith("# "):
-        parts.append("# ANNEXES DU PROTOCOLE DE RECHERCHE")
-    parts.append(rendered_ann1)
-    if after:
-        parts.append("---\n\n" + after if not after.startswith("---") else after)
 
-    ann_sec.content_markdown = "\n\n".join(p for p in parts if p).strip()
+# ---------------------------------------------------------------------------
+# Phase 2: AI CAMES-Compliant CRF Generator & Improver
+# ---------------------------------------------------------------------------
+
+class _AICRFFieldOut(BaseModel):
+    code: str = Field(description="Code hiérarchique unique, ex: A1, A2, B1, C1, D1, E1")
+    section_title: str = Field(description="Titre de section clinique (SECTION A .. SECTION E)")
+    label: str = Field(description="Libellé clinique clair, sans donnée nominative")
+    field_type: Literal["dichotomous", "single_choice", "multi_choice", "number", "date", "text"]
+    options: List[str] = Field(
+        default_factory=list,
+        description="Modalités fermées mutuellement exclusives pour dichotomous / single_choice / multi_choice",
+    )
+    unit: str = Field(default="", description="Unité explicite pour champ number (ex: ans, kg, mmHg, g/dL, SA)")
+    sub_field_label: str = Field(default="", description="Sous-question conditionnelle, ex: Si oui, préciser")
+    required: bool = Field(default=False)
+
+
+class _AICRFGenerationOut(BaseModel):
+    form_title: str = Field(description="Titre de la fiche de collecte (ex: ## ANNEXE 1 : FICHE DE COLLECTE DES DONNÉES)")
+    assistant_commentary: str = Field(
+        description="Commentaire méthodologique synthétique expliquant les choix (variables, scores issus de la littérature, conformité CAMES)"
+    )
+    cames_compliance_checklist: List[str] = Field(
+        default_factory=list,
+        description="Liste des critères CAMES / BPC vérifiés (anonymat, concordance objectifs, unités, etc.)",
+    )
+    fields: List[_AICRFFieldOut] = Field(default_factory=list)
+
+
+def _collect_crf_ai_context(project: ProtocolProject, lang: str) -> str:
+    """Gather objectives, literature, scores, variables, and methodology for CRF AI synthesis."""
+    parts: List[str] = [
+        f"Titre / Sujet : {project.cover.title or project.name}",
+        f"Type d'étude : {project.study_type or 'Non spécifié'}",
+        f"Idée / Cadre : {project.research_idea or 'Non spécifié'}",
+        f"Sites hospitaliers : {', '.join(project.cover.host_institutions or []) or 'Non spécifiés'}",
+    ]
+
+    sec_map = [
+        ("Objectifs (I.4)", "chap1_objectifs"),
+        ("Hypothèses (I.3)", "chap1_hypotheses"),
+        ("Variables opérationnelles (I.5)", "chap1_variables"),
+        ("Rappel & scores (II.1)", "chap2_rappel_connaissances"),
+        ("Revue / État des connaissances (II.2)", "chap2_etat_connaissances"),
+        ("Type, lieu & durée (III.1)", "chap3_type_site_duree"),
+        ("Population & sélection (III.2)", "chap3_population_echantillon"),
+        ("Outils & procédures (III.3)", "chap3_outils_procedure"),
+        ("Plan d'analyse statistique (III.4)", "chap3_analyse_donnees"),
+    ]
+    for lbl, sid in sec_map:
+        sec = project.sections.get(sid)
+        if sec and sec.content_markdown and sec.content_markdown.strip():
+            parts.append(f"\n### {lbl}\n{sec.content_markdown.strip()[:1800]}")
+
+    if project.variables:
+        var_lines = [
+            f"- {v.name} [{v.category} | {v.role} | {v.measurement_scale} | Modalités: {v.modalities}]"
+            for v in project.variables[:40]
+        ]
+        parts.append("\n### Tableau structuré des variables du protocole\n" + "\n".join(var_lines))
+
+    if project.references:
+        ref_lines = []
+        for idx, r in enumerate(project.references[:8], start=1):
+            abs_snip = (r.abstract or "").strip().replace("\n", " ")[:240]
+            ref_lines.append(f"[{idx}] {r.title} ({r.year or 's.d.'}) — {abs_snip}")
+        parts.append("\n### Revue de la littérature & scores cliniques identifiés\n" + "\n".join(ref_lines))
+
+    return "\n".join(parts)
+
+
+def generate_or_improve_crf_with_ai(
+    project: ProtocolProject,
+    user_instruction: str = "",
+    mode: str = "auto",
+) -> Dict[str, Any]:
+    """
+    Use Gemini (drafting role -> gemini-3.5-flash-lite) to generate a new CAMES/BPC-compliant
+    data collection form (CRF) OR improve an existing one using user needs, literature review,
+    protocol objectives/variables, and CAMES/GCP standards. Rebuilds project.crf_fields & Mask.
+    """
+    from app.services.gemini_client import gemini_router
+    from app.services.rich_formatter import markdown_to_clean_html
+
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    existing_md = get_crf_markdown_from_project(project)
+    has_existing = bool(existing_md.strip()) or len(project.crf_fields or []) >= 3
+    if mode in ("generate", "improve"):
+        effective_mode = mode
+    else:
+        effective_mode = "improve" if has_existing else "generate"
+
+    study_ctx = _collect_crf_ai_context(project, lang=lang)
+    existing_fields_summary = "\n".join(
+        f"- {f.code}. {f.label} ({f.field_type}) [{f.section_title}]"
+        + (f" Options: {' / '.join(f.options)}" if f.options else "")
+        + (f" Unité: {f.unit}" if f.unit else "")
+        + (f" Sous-question: {f.sub_field_label}" if f.sub_field_label else "")
+        for f in (project.crf_fields or [])[:50]
+    )
+
+    if lang == "en":
+        system_inst = (
+            "You are a senior CAMES/FMSB medical biostatistician and clinical research methodologist. "
+            "Design or refine a Case Report Form (CRF) strictly compliant with CAMES, ICMJE, and ICH-GCP standards."
+        )
+        lang_rules = (
+            "Write 100% of labels, section titles, options, commentary, and checklist items in academic medical English. "
+            "For dichotomous fields, use options [\"Yes\", \"No\"]."
+        )
+        mode_block = (
+            f"TASK MODE: IMPROVE EXISTING CRF (preserve valid clinical items while fixing gaps, missing units, vague open fields, or missing literature scores).\nEXISTING CRF MARKDOWN:\n{existing_md[:3000]}\nEXISTING FIELDS:\n{existing_fields_summary}"
+            if effective_mode == "improve"
+            else "TASK MODE: GENERATE A COMPLETE NEW CRF FROM SCRATCH aligned with all protocol sections and variables."
+        )
+    else:
+        system_inst = (
+            "Tu es un biostatisticien et méthodologiste senior en médecine (espace CAMES / FMSB). "
+            "Tu conçois ou améliores une Fiche de Collecte des Données (Cahier d'Observation / CRF) "
+            "parfaitement conforme aux exigences CAMES, ICMJE et Bonnes Pratiques Cliniques (BPC / ICH-GCP)."
+        )
+        lang_rules = (
+            "Rédige 100 % des libellés, sections, modalités, commentaire et checklist en français médical académique. "
+            "Pour les champs dichotomiques (`dichotomous`), utilise obligatoirement les options [\"Oui\", \"Non\"]."
+        )
+        mode_block = (
+            f"MODE : AMÉLIORATION DE LA FICHE EXISTANTE (conserve les items cliniques pertinents, corrige les manques d'unités, ferme les questions vagues en cases à cocher, et ajoute les scores/variables issus des objectifs et de la littérature).\nFICHE EXISTANTE :\n{existing_md[:3000]}\nCHAMPS ACTUELS :\n{existing_fields_summary}"
+            if effective_mode == "improve"
+            else "MODE : CRÉATION COMPLÈTE D'UNE NOUVELLE FICHE DE COLLECTE alignée 1-pour-1 sur les objectifs, variables, méthodologie et revue de la littérature."
+        )
+
+    prompt = f"""
+{mode_block}
+
+BESOINS ET INSTRUCTIONS EXPLICITES DE L'UTILISATEUR :
+{user_instruction.strip() or ("Aucun besoin spécifique supplémentaire : couverture complète et rigoureuse selon le protocole et la littérature." if lang == "fr" else "No extra user constraint: produce complete coverage aligned with protocol and literature.")}
+
+RÈGLES MÉTHODOLOGIQUES OBLIGATOIRES (CAMES / BPC / ICH-GCP) :
+1. ANONYMAT STRICT : Aucune donnée nominative (ni nom, ni prénom, ni téléphone, ni CNI). Le code participant, la date d'inclusion, le site hospitalier et l'enquêteur sont déjà gérés par l'en-tête fixe du CRF — ne crée pas de doublon de champ « Nom du patient ».
+2. CONCORDANCE 1-POUR-1 : Chaque variable du protocole (notamment critère de jugement principal et covariables), chaque objectif spécifique et les scores cliniques validés trouvés dans la revue de la littérature (ex. NYHA, Glasgow, Apgar, CIM-10, classification OMS, biomarqueurs) doivent être collectés sans variables superflues.
+3. STANDARDISATION STATISTIQUE : Privilégie fortement les questions fermées (`dichotomous`, `single_choice`, `multi_choice`) avec des modalités mutuellement exclusives et une option `Autre` + `sub_field_label="Si Autre, préciser"` si pertinent. Réserve `text` aux seules précisions indispensables.
+4. UNITÉS ET DATES EXPLICITES : Indique toujours `unit` pour tout champ `number` (ex. `ans`, `mois`, `kg`, `cm`, `kg/m²`, `mmHg`, `g/dL`, `SA`, `FCFA`, `heures`). Utilise `date` pour les dates.
+5. PROGRESSION CLINIQUE LOGIQUE A–E (12 à 26 questions bien structurées) :
+   - `SECTION A : CARACTÉRISTIQUES SOCIODÉMOGRAPHIQUES` (A1..An)
+   - `SECTION B : ANTÉCÉDENTS ET FACTEURS D'EXPOSITION / RISQUE` (B1..Bn)
+   - `SECTION C : DONNÉES CLINIQUES À L'ADMISSION` (C1..Cn)
+   - `SECTION D : DONNÉES PARACLINIQUES ET SCORES VALIDÉS` (D1..Dn)
+   - `SECTION E : PRISE EN CHARGE, ÉVOLUTION ET CRITÈRE DE JUGEMENT PRINCIPAL` (E1..En)
+6. CODIFICATION & LOGIQUE CONDITIONNELLE : Codes A1, A2, B1... et `sub_field_label` clair quand une réponse appelle une précision (ex. « Si oui, préciser »).
+7. {lang_rules}
+
+CONTEXTE COMPLET DU PROTOCOLE ET DE LA LITTÉRATURE :
+{study_ctx}
+"""
+
+    res = gemini_router.generate_structured(
+        role="drafting",
+        contents=prompt,
+        schema=_AICRFGenerationOut,
+        system_instruction=system_inst,
+        temperature=0.2,
+    )
+    dto: _AICRFGenerationOut = res["data"]
+
+    valid_types = {"dichotomous", "single_choice", "multi_choice", "number", "date", "text"}
+    built_fields: List[CRFFieldSpec] = []
+    seen_ids: set[str] = set()
+    for idx, item in enumerate(dto.fields, start=1):
+        ftype = item.field_type if item.field_type in valid_types else "text"
+        opts = [o.strip() for o in (item.options or []) if o and o.strip()]
+        if ftype == "dichotomous" and not opts:
+            opts = ["Yes", "No"] if lang == "en" else ["Oui", "Non"]
+        elif ftype in ("single_choice", "multi_choice") and len(opts) < 2:
+            if len(opts) == 1:
+                opts.append("Other" if lang == "en" else "Autre")
+            else:
+                opts = ["Option 1", "Option 2"]
+
+        code = (item.code or f"Q{idx}").strip()
+        label = _clean_md_text(item.label)
+        if not label:
+            continue
+        # Reject inadvertent PII fields
+        lower_lbl = label.lower()
+        if any(pii in lower_lbl for pii in ("nom complet", "prénom", "téléphone", "phone number", "full name", "adresse exacte")):
+            continue
+
+        base_fid = _slug_id(f"{code}_{label}", f"field_{idx}")
+        fid = base_fid
+        suffix_n = 2
+        while fid in seen_ids:
+            fid = f"{base_fid}_{suffix_n}"
+            suffix_n += 1
+        seen_ids.add(fid)
+
+        unit = (item.unit or "").strip() if ftype == "number" else ""
+        placeholder = (
+            ("DD / MM / YYYY" if lang == "en" else "JJ / MM / AAAA")
+            if ftype == "date"
+            else (f"Ex. ({unit})" if unit else "")
+        )
+        built_fields.append(
+            CRFFieldSpec(
+                field_id=fid,
+                code=code,
+                section_title=_clean_md_text(item.section_title) or "SECTION A : IDENTIFICATION ET CARACTÉRISTIQUES SOCIODÉMOGRAPHIQUES",
+                label=label,
+                field_type=ftype,
+                options=opts if ftype in ("dichotomous", "single_choice", "multi_choice") else [],
+                unit=unit,
+                placeholder=placeholder,
+                sub_field_label=_clean_md_text(item.sub_field_label),
+                required=bool(item.required),
+            )
+        )
+
+    if built_fields:
+        project.crf_fields = built_fields
+    else:
+        ensure_project_crf_fields(project)
+
+    sync_crf_to_project(project, sync_annexe1_markdown=True, header_title=dto.form_title)
+    crf_sec = project.sections.get("annexe_fiche_collecte")
+    if crf_sec is not None:
+        crf_sec.status = StepStatus.IN_PROGRESS
+        if crf_sec.content_markdown:
+            crf_sec.content_html = markdown_to_clean_html(crf_sec.content_markdown)
+
+    return {
+        "model_used": res["model_used"],
+        "mode_applied": effective_mode,
+        "form_title": dto.form_title,
+        "content_markdown": crf_sec.content_markdown if crf_sec else "",
+        "content_html": crf_sec.content_html if crf_sec else "",
+        "crf_fields": project.crf_fields,
+        "annexe1_html": render_crf_annexe1_html(project),
+        "assistant_commentary": dto.assistant_commentary,
+        "cames_compliance_checklist": dto.cames_compliance_checklist,
+    }
 
 
 # ---------------------------------------------------------------------------

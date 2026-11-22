@@ -1,10 +1,14 @@
+from unittest.mock import patch
 import unittest
-from app.schemas.protocol import ProtocolProject, SectionState, VariableItem
+from app.schemas.protocol import ProtocolProject, ReferenceItem, SectionState, StepStatus, VariableItem
 from app.services.crf_builder import (
+    _AICRFFieldOut,
+    _AICRFGenerationOut,
     extract_annexe1_block,
     extract_crf_fields_from_project,
     ensure_project_crf_fields,
     crf_fields_to_variables,
+    generate_or_improve_crf_with_ai,
 )
 
 
@@ -180,6 +184,152 @@ Description de l'échelle visuelle analogique...
 
         self.assertIn("ÉCHELLE DE DOULEUR", pack[3]["title"])
         self.assertEqual(pack[3]["kind"], "letter")
+
+    def test_phase1_dedicated_crf_subsection_in_fr_and_en_canvases(self):
+        from app.data.fmsb_canvas import FMSB_SECTIONS
+        from app.data.i18n import get_localized_canvas
+        from app.services.humanizer import NON_NARRATIVE_SECTION_IDS
+        from app.services.segmentation import ALLOWED_TARGET_SECTIONS
+
+        fr_ids = [s.id for s in FMSB_SECTIONS]
+        en_sections = get_localized_canvas("en")
+        en_ids = [s.id for s in en_sections]
+
+        self.assertEqual(len(FMSB_SECTIONS), 25)
+        self.assertEqual(len(en_sections), 25)
+        self.assertIn("annexe_fiche_collecte", fr_ids)
+        self.assertIn("annexe_fiche_collecte", en_ids)
+
+        crf_fr = next(s for s in FMSB_SECTIONS if s.id == "annexe_fiche_collecte")
+        ann_fr = next(s for s in FMSB_SECTIONS if s.id == "annexes")
+        self.assertEqual(crf_fr.chapter_id, "annexes")
+        self.assertLess(crf_fr.order, ann_fr.order)
+
+        crf_en = next(s for s in en_sections if s.id == "annexe_fiche_collecte")
+        self.assertIn("Data Collection Form", crf_en.title)
+
+        self.assertNotIn("annexe_fiche_collecte", ALLOWED_TARGET_SECTIONS)
+        self.assertIn("annexe_fiche_collecte", NON_NARRATIVE_SECTION_IDS)
+
+    def test_phase2_and_3_ai_generate_improve_crf_and_build_pack_without_duplication(self):
+        from app.services.annexes_generator import build_annexes_pack
+        from app.services.drafting import draft_section_with_ai
+
+        project = ProtocolProject(
+            project_id="cames-crf-proj",
+            name="Facteurs associés à l'hypertension artérielle non contrôlée",
+            research_idea="Étude transversale analytique à l'Hôpital Central de Yaoundé",
+            study_type="Étude transversale analytique",
+            variables=[
+                VariableItem(
+                    name="Observance thérapeutique",
+                    category="SECTION E : PRISE EN CHARGE ET ÉVOLUTION",
+                    role="Dépendante",
+                    measurement_scale="Qualitative nominale",
+                    modalities="Bonne / Moyenne / Mauvaise",
+                )
+            ],
+            references=[
+                ReferenceItem(
+                    title="Classification OMS de l'hypertension et score d'observance de Morisky (MMAS-8)",
+                    journal="Cardiol Trop",
+                    year=2024,
+                    abstract="L'évaluation repose sur le score MMAS-8 et le contrôle tensionnel < 140/90 mmHg.",
+                )
+            ],
+            sections={
+                "chap1_objectifs": SectionState(
+                    section_id="chap1_objectifs",
+                    content_markdown="Déterminer la prévalence du non-contrôle tensionnel et évaluer l'observance.",
+                ),
+                "annexe_fiche_collecte": SectionState(section_id="annexe_fiche_collecte"),
+                "annexes": SectionState(
+                    section_id="annexes",
+                    content_markdown="## ANNEXE 2 : NOTICE D'INFORMATION\nTexte d'information au participant.\n\n## ANNEXE 3 : CONSENTEMENT ÉCLAIRÉ\nJe soussigné(e)...",
+                ),
+            },
+        )
+
+        mock_out = _AICRFGenerationOut(
+            form_title="## ANNEXE 1 : FICHE DE COLLECTE DES DONNÉES (HTA)",
+            assistant_commentary="Fiche structurée CAMES incluant pression artérielle en mmHg et score MMAS-8 issu de la revue.",
+            cames_compliance_checklist=[
+                "Anonymat strict vérifié (aucun nom/téléphone)",
+                "Concordance 1-pour-1 avec objectifs et variables",
+            ],
+            fields=[
+                _AICRFFieldOut(
+                    code="A0",
+                    section_title="SECTION A : IDENTIFICATION",
+                    label="Nom complet et téléphone du patient",
+                    field_type="text",
+                    options=[],
+                ),
+                _AICRFFieldOut(
+                    code="A1",
+                    section_title="SECTION A : CARACTÉRISTIQUES SOCIODÉMOGRAPHIQUES",
+                    label="Âge révolu",
+                    field_type="number",
+                    unit="ans",
+                    required=True,
+                ),
+                _AICRFFieldOut(
+                    code="D1",
+                    section_title="SECTION D : PARACLINIQUE ET SCORES",
+                    label="Pression artérielle systolique",
+                    field_type="number",
+                    unit="mmHg",
+                    required=True,
+                ),
+                _AICRFFieldOut(
+                    code="E1",
+                    section_title="SECTION E : PRISE EN CHARGE ET ÉVOLUTION",
+                    label="Observance thérapeutique (MMAS-8)",
+                    field_type="single_choice",
+                    options=["Bonne", "Moyenne", "Mauvaise"],
+                    sub_field_label="Si mauvaise, motif principal",
+                    required=True,
+                ),
+            ],
+        )
+
+        with patch(
+            "app.services.gemini_client.gemini_router.generate_structured",
+            return_value={"model_used": "gemini-3.5-flash-lite", "data": mock_out, "fallback_errors": []},
+        ):
+            res = draft_section_with_ai(project, "annexe_fiche_collecte", user_instruction="Inclure MMAS-8")
+
+        self.assertEqual(res["model_used"], "gemini-3.5-flash-lite")
+        self.assertEqual(res["orchestration_trace"]["crf_mode"], "generate")
+        # PII field ("Nom complet et téléphone du patient") must be stripped automatically
+        labels = [f.label for f in project.crf_fields]
+        self.assertFalse(any("téléphone" in l.lower() for l in labels))
+        self.assertIn("Âge révolu", labels)
+        self.assertIn("Observance thérapeutique (MMAS-8)", labels)
+
+        # Dedicated sub-section populated cleanly and drives extraction
+        crf_sec = project.sections["annexe_fiche_collecte"]
+        self.assertIn("ANNEXE 1 : FICHE DE COLLECTE", crf_sec.content_markdown)
+        self.assertEqual(crf_sec.status, StepStatus.IN_PROGRESS)
+        re_extracted = extract_crf_fields_from_project(project)
+        self.assertTrue(any(f.unit == "mmHg" for f in re_extracted))
+
+        # Word / export pack combines dedicated CRF (1) + custom non-CRF annexes (2, 3) with zero duplication
+        pack = build_annexes_pack(project)
+        self.assertEqual(len(pack), 3)
+        self.assertEqual(pack[0]["kind"], "data_collection")
+        self.assertEqual(pack[1]["kind"], "letter")
+        self.assertIn("NOTICE", pack[1]["title"])
+        self.assertEqual(pack[2]["kind"], "letter")
+        self.assertIn("CONSENTEMENT", pack[2]["title"])
+
+        # Subsequent auto run switches cleanly to improve mode
+        with patch(
+            "app.services.gemini_client.gemini_router.generate_structured",
+            return_value={"model_used": "gemini-3.5-flash-lite", "data": mock_out, "fallback_errors": []},
+        ):
+            res_imp = generate_or_improve_crf_with_ai(project, user_instruction="Affiner les tranches d'âge", mode="auto")
+        self.assertEqual(res_imp["mode_applied"], "improve")
 
 
 if __name__ == "__main__":

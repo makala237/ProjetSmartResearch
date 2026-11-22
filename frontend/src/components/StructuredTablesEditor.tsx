@@ -811,7 +811,7 @@ export function StructuredTablesEditor({
                 className="rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
               >
                 {Object.keys(project.sections)
-                  .filter((id) => !["cover_page", "references", "annexes"].includes(id))
+                  .filter((id) => !["cover_page", "references", "annexes", "annexe_fiche_collecte"].includes(id))
                   .map((id) => (
                     <option key={id} value={id}>
                       Section : {id}

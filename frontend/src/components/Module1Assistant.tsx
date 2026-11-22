@@ -91,6 +91,7 @@ const NON_MEDIA_SECTION_IDS = new Set([
   "list_of_tables",
   "list_of_figures",
   "references",
+  "annexe_fiche_collecte",
   "annexes",
 ]);
 

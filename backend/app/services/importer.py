@@ -9,7 +9,12 @@ from pypdf import PdfReader
 
 from app.data.fmsb_canvas import FMSB_SECTIONS
 from app.data.i18n import get_localized_canvas, normalize_lang
-from app.schemas.protocol import EntryMode, ProtocolProject, ReferenceItem, StepStatus
+from app.schemas.protocol import EntryMode, ProtocolProject, ReferenceItem, SectionState, StepStatus
+from app.services.crf_builder import (
+    extract_crf_annexe_block,
+    extract_crf_fields_from_project,
+    is_crf_annexe_content,
+)
 from app.services.drafting import deterministic_section_checks
 from app.services.figure_extractor import extract_images_from_uploaded_document
 from app.services.gemini_client import gemini_router
@@ -376,6 +381,23 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
         det_notes = deterministic_section_checks(project, item.section_id, reassembled_text)
         sec.audit_notes = det_notes + ([item.diagnostic_note] if item.diagnostic_note else [])
         mapped_count += 1
+
+        if item.section_id == "annexes":
+            before_crf, crf_block, after_crf, crf_title = extract_crf_annexe_block(reassembled_text)
+            if crf_block and is_crf_annexe_content(crf_title, crf_block):
+                if "annexe_fiche_collecte" not in project.sections:
+                    project.sections["annexe_fiche_collecte"] = SectionState(section_id="annexe_fiche_collecte")
+                crf_sec = project.sections["annexe_fiche_collecte"]
+                crf_sec.content_markdown = crf_block
+                crf_sec.content_html = markdown_to_clean_html(crf_block)
+                crf_sec.status = StepStatus(item.status)
+                # Keep non-CRF appendices in `annexes` when separating into dedicated CRF sub-section
+                other_parts = [p for p in (before_crf, after_crf) if p and p.strip()]
+                if other_parts:
+                    cleaned_other = "\n\n---\n\n".join(other_parts)
+                    sec.content_markdown = cleaned_other
+                    sec.content_html = markdown_to_clean_html(cleaned_other)
+                project.crf_fields = extract_crf_fields_from_project(project)
 
         if item.section_id == "references":
             parsed_refs = _parse_imported_references(reassembled_text)

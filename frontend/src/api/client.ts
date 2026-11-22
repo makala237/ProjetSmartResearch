@@ -765,6 +765,23 @@ export const api = {
       }
     ),
 
+  aiGenerateCrf: (
+    projectId: string,
+    payload: { mode?: "auto" | "generate" | "improve"; user_instruction?: string }
+  ) =>
+    request<{
+      project: ProtocolProject;
+      crf_fields: CRFFieldSpec[];
+      annexe1_html: string;
+      model_used: string;
+      mode_applied: string;
+      assistant_commentary: string;
+      cames_compliance_checklist: string[];
+    }>(`/api/projects/${projectId}/crf/ai-generate`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   syncProjectCrf: (projectId: string, forceExtract = false) =>
     request<{
       project: ProtocolProject;

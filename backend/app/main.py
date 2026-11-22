@@ -55,6 +55,7 @@ from app.schemas.protocol import (
     CRFFieldSpec,
     DiagramConnection,
     DiagramNode,
+    GenerateCRFRequest,
     ImageAsset,
     PatientRecord,
     ProtocolProject,
@@ -77,6 +78,7 @@ from app.services.crf_builder import (
     ensure_project_crf_fields,
     export_patient_records_csv,
     extract_crf_fields_from_project,
+    generate_or_improve_crf_with_ai,
     render_crf_annexe1_html,
     sync_crf_to_project,
 )
@@ -2023,6 +2025,62 @@ def export_pdf(
 
 
 # --- Phase 5: CRF / Fiche de Collecte (Annexe 1) & Module 3 Patient Data Entry ---
+
+
+@app.post("/api/projects/{project_id}/crf/ai-generate")
+def ai_generate_project_crf(
+    project_id: str,
+    payload: GenerateCRFRequest,
+    request: Request,
+    current_user: UserRecord = Depends(require_module_write("module3")),
+    db: Any = Depends(get_db),
+) -> Dict[str, object]:
+    """Generate or improve the CAMES/BPC data collection form (Annexe 1) and rebuild the CRF mask."""
+    project = get_authorized_project(project_id, current_user)
+    cost = assert_ai_quota_available(db, current_user, module_key="module3", action="generate_crf")
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="generate_crf",
+        title_fr="Création / Amélioration IA de la Fiche de Collecte (CAMES)",
+        title_en="AI Generation / Improvement of Data Collection Form (CAMES)",
+    )
+    try:
+        res = generate_or_improve_crf_with_ai(
+            project,
+            user_instruction=payload.user_instruction,
+            mode=payload.mode,
+        )
+        evaluate_project_coherence(project, changed_section_id="annexe_fiche_collecte")
+        saved = project_storage.save(project)
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module3",
+            action="generate_crf",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(res.get("model_used", "")),
+            ip_address=get_client_ip(request),
+        )
+        if tracked:
+            finish_pipeline_task("done")
+        return {
+            "project": saved.model_dump(mode="json"),
+            "crf_fields": [f.model_dump(mode="json") for f in saved.crf_fields],
+            "annexe1_html": res["annexe1_html"],
+            "model_used": res["model_used"],
+            "mode_applied": res["mode_applied"],
+            "assistant_commentary": res["assistant_commentary"],
+            "cames_compliance_checklist": res["cames_compliance_checklist"],
+        }
+    except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        reset_ai_routing_policy()
 
 
 @app.post("/api/projects/{project_id}/crf/sync")

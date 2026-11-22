@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List
+from typing import Dict, List, Tuple
 from app.data.i18n import normalize_lang
 from app.schemas.protocol import ProtocolProject
 from app.services.crf_builder import (
@@ -109,13 +109,114 @@ def parse_user_annexes_from_markdown(project: ProtocolProject, md: str) -> List[
     return annexes
 
 
+def _build_data_collection_annex_entry(
+    project: ProtocolProject,
+    number: int,
+    custom_title: str = "",
+    paragraphs: List[str] | None = None,
+) -> Dict[str, object]:
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    c = project.cover
+    author = c.author_name or ("[Candidate Full Name]" if lang == "en" else "[Noms & Prénoms de l'étudiant(e)]")
+    matricule = c.matricule or ("[Reg. No.]" if lang == "en" else "[Matricule]")
+    title = c.title or project.name
+    ensure_project_crf_fields(project)
+    crf_serialized = [f.model_dump() for f in project.crf_fields]
+    hospital_sites = extract_hospital_sites_from_project(project)
+    default_sec_title = "General Variables" if lang == "en" else "Variables générales"
+    free_lbl = "Free text" if lang == "en" else "Champ libre"
+
+    grouped: Dict[str, List[Dict[str, str]]] = {}
+    for f in project.crf_fields:
+        grouped.setdefault(f.section_title or default_sec_title, []).append(
+            {
+                "code": f.code,
+                "name": f.label,
+                "field_type": f.field_type,
+                "options": " | ".join(f.options),
+                "unit": f.unit,
+                "sub_field_label": f.sub_field_label,
+                "modalities": " / ".join(f.options) if f.options else (f.unit or free_lbl),
+            }
+        )
+
+    resolved_title = (custom_title or "").strip()
+    if not resolved_title:
+        resolved_title = (
+            f"APPENDIX {number}: DATA COLLECTION FORM (CRF)"
+            if lang == "en"
+            else f"ANNEXE {number} : FICHE DE COLLECTE DES DONNÉES"
+        )
+
+    default_paras = (
+        [
+            f"Study Title: {title}",
+            "Instructions: Check the appropriate box or write the value legibly inside the designated field.",
+        ]
+        if lang == "en"
+        else [
+            f"Titre de l'étude : {title}",
+            "Consigne : Cocher la case correspondante ou inscrire lisiblement la valeur dans le cadre réservé.",
+        ]
+    )
+
+    return {
+        "number": number,
+        "title": resolved_title,
+        "kind": "data_collection",
+        "grouped_variables": grouped,
+        "crf_fields": crf_serialized,
+        "hospital_sites": hospital_sites,
+        "author_label": f"{author} ({'Reg. No.' if lang == 'en' else 'Matricule'} : {matricule})",
+        "study_title": title,
+        "paragraphs": paragraphs or default_paras,
+    }
+
+
+def _extract_crf_heading_from_section(project: ProtocolProject) -> Tuple[str, List[str]]:
+    crf_sec = project.sections.get("annexe_fiche_collecte")
+    if not crf_sec or not crf_sec.content_markdown or not crf_sec.content_markdown.strip():
+        return "", []
+    lines = [l.strip() for l in crf_sec.content_markdown.splitlines() if l.strip()]
+    heading = ""
+    body: List[str] = []
+    for idx, line in enumerate(lines):
+        if idx == 0 and line.startswith("#"):
+            heading = line.lstrip("#").strip()
+        else:
+            body.append(line)
+    return heading, body
+
+
 def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
-    """Generate clean FMSB ethical & administrative annexes from project metadata or custom markdown."""
+    """
+    Generate the protocol appendices list from the dedicated `annexe_fiche_collecte`
+    sub-section plus custom `annexes` (or default ethical/admin appendices 2..7),
+    avoiding duplication while preserving custom ordering when `annexes` embeds its own CRF.
+    """
     ann_sec = project.sections.get("annexes")
+    user_annexes: List[Dict[str, object]] = []
     if ann_sec and ann_sec.content_markdown and ann_sec.content_markdown.strip():
         user_annexes = parse_user_annexes_from_markdown(project, ann_sec.content_markdown)
-        if user_annexes:
+
+    has_crf_in_user_annexes = any(a.get("kind") == "data_collection" for a in user_annexes)
+    crf_heading, crf_body = _extract_crf_heading_from_section(project)
+
+    if user_annexes:
+        if has_crf_in_user_annexes:
             return user_annexes
+        if crf_heading or crf_body or getattr(project.annexes_config, "include_data_collection_form", True):
+            crf_entry = _build_data_collection_annex_entry(
+                project,
+                number=1,
+                custom_title=crf_heading,
+                paragraphs=crf_body or None,
+            )
+            combined = [crf_entry] + user_annexes
+            for idx_item, item in enumerate(combined, start=1):
+                item["number"] = idx_item
+            return combined
+        return user_annexes
 
     lang = normalize_lang(getattr(project, "language", "fr"))
     c = project.cover

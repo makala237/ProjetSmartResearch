@@ -476,22 +476,47 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ],
         "concepts_to_avoid": ["Reference tables", "Uncited orphan bibliography entries"],
     },
-    "annexes": {
+    "annexe_fiche_collecte": {
         "chapter_title": "APPENDICES",
-        "title": "Appendices (CRF, Information Sheet, Consent Form, Ethics & Admin Requests)",
-        "description": "Numbered attachments referenced in the protocol (each appendix beginning on a new page).",
+        "title": "Appendix 1: Data Collection Form (CRF)",
+        "description": (
+            "Dedicated sub-section exclusively for the blank Case Report Form (CRF / Data Collection Sheet), "
+            "serving as the direct source for the Module 3 Electronic Data Entry Mask."
+        ),
         "guidance_points": [
-            "Appendix 1: Case Report Form / Data Collection Sheet (drawn checkboxes and input boxes)",
-            "Appendix 2: Participant Information Sheet",
-            "Appendix 3: Informed Consent Form (and assent form for minors if applicable)",
-            "Appendices 4–7: Ethical clearance request, hospital authorizations, confidentiality declaration, and commitment letter",
+            "Strict anonymization: unique participant ID (e.g., PAT-001), collection date, study site, and investigator ID — no personally identifiable data.",
+            "1-to-1 alignment with study objectives, literature review (validated clinical scores/classifications), and operational variables.",
+            "Prefer closed-ended checkboxes (Yes/No, single-choice, multi-choice) with mutually exclusive options and an optional 'Other, specify' field.",
+            "Specify explicit measurement units (years, kg, cm, mmHg, g/dL, etc.) and segmented date formats (DD/MM/YYYY).",
+            "Logical clinical flow across Sections A–E: Identification/Sociodemographics (A), Medical History/Risk Factors (B), Clinical Exam (C), Paraclinical/Scores (D), Management & Outcome/Primary Endpoint (E).",
         ],
         "cames_concepts_required": [
-            "100% alignment between Appendix 1 CRF fields, Chapter I.5 variables, and Module 3 data mask",
-            "Complete ethical compliance across participant information and consent forms",
+            "Strict GCP / CAMES anonymization and data minimization matching the statistical analysis plan",
+            "100% alignment between CRF items, Objectives, Chapter I.5 Variables, and Module 3 Electronic Mask",
+            "Hierarchical coding (A1..E5), standardized closed checkboxes, explicit units, and conditional follow-ups ('If yes, specify...')",
+        ],
+        "concepts_to_avoid": [
+            "Direct patient identifiers (full name, phone number, address)",
+            "Open-ended vague items lacking units or statistical coding categories",
+        ],
+        "table_guidance": "Structured Case Report Form across Sections A–E rendered with drawn checkboxes, units, and fill-in boxes.",
+    },
+    "annexes": {
+        "chapter_title": "APPENDICES",
+        "title": "Other Appendices (Information Sheet, Consent Form, Ethics & Admin Requests)",
+        "description": "Numbered ethical and administrative attachments (each appendix beginning on a new page).",
+        "guidance_points": [
+            "Participant Information Sheet",
+            "Informed Consent Form (and assent form for minors if applicable)",
+            "Ethical clearance and hospital administrative authorization requests",
+            "Researcher confidentiality declaration, commitment letter, and supplementary clinical scales",
+        ],
+        "cames_concepts_required": [
+            "Complete ethical compliance across participant information and consent forms (Declaration of Helsinki)",
+            "Preservation of custom appendix order when importing an existing protocol",
         ],
         "concepts_to_avoid": ["Repeating body protocol paragraphs"],
-        "table_guidance": "Appendix 1 rendered as a graphical Case Report Form with drawn checkboxes and input boxes.",
+        "table_guidance": "Ethical and administrative documents paginated cleanly.",
     },
 }
 

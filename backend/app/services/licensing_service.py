@@ -45,6 +45,7 @@ AI_ACTION_COSTS: Dict[str, int] = {
     "import_protocol": 2,
     "global_audit": 2,
     "validate_references": 2,
+    "generate_crf": 2,
     "humanize_protocol": 3,
     "pptx_generate_all": 5,
 }

@@ -133,6 +133,9 @@ def _build_special_section_markdown(project: ProtocolProject, section_id: str) -
 
     if section_id == "annexes":
         pack = build_annexes_pack(project)
+        ann_crf = project.sections.get("annexe_fiche_collecte")
+        if ann_crf and ann_crf.content_markdown.strip():
+            pack = [a for a in pack if a.get("kind") != "data_collection"]
         heading = "### PROTOCOL APPENDICES" if lang == "en" else "### ANNEXES DU PROTOCOLE FMSB"
         lines = [heading, ""]
         for ann in pack:

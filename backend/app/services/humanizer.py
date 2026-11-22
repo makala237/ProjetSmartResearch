@@ -21,6 +21,7 @@ NON_NARRATIVE_SECTION_IDS = {
     "list_of_tables",
     "list_of_figures",
     "references",
+    "annexe_fiche_collecte",
     "annexes",
 }
 

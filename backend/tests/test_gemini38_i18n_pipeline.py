@@ -332,7 +332,7 @@ def test_i18n_canvas_language_docx_pptx_and_live_pipeline(tmp_path: Path) -> Non
     en_payload = r_en_canvas.json()
     assert en_payload["language"] == "en"
     en_sections = en_payload["sections"]
-    assert len(en_sections) == 24
+    assert len(en_sections) == 25
     chap1_items = [s for s in en_sections if s.get("chapter_id") == "chapitre_1"]
     assert chap1_items and chap1_items[0]["chapter_title"] == "Chapter I: Problem Statement"
 

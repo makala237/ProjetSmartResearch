@@ -240,6 +240,23 @@ def draft_section_with_ai(
     """Draft or refine a section grounded strictly in approved ArticleSegments and FMSB rules."""
     lang = normalize_lang(getattr(project, "language", "fr"))
     spec = _get_section_spec(section_id, lang)
+    if section_id == "annexe_fiche_collecte":
+        from app.services.crf_builder import generate_or_improve_crf_with_ai
+
+        crf_res = generate_or_improve_crf_with_ai(
+            project,
+            user_instruction=user_instruction or "",
+            mode="auto",
+        )
+        return {
+            "model_used": crf_res["model_used"],
+            "content_markdown": crf_res["content_markdown"],
+            "content_html": crf_res["content_html"],
+            "cited_ref_ids": [],
+            "assistant_commentary": crf_res["assistant_commentary"],
+            "deterministic_notes": crf_res.get("cames_compliance_checklist") or [],
+            "orchestration_trace": {"crf_mode": crf_res["mode_applied"], "crf_fields_count": len(crf_res["crf_fields"])},
+        }
     if section_id in ("toc", "abbreviations", "list_of_tables", "list_of_figures", "references", "annexes"):
         from app.services.storage import sync_special_sections
 

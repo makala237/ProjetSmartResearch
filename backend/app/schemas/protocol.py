@@ -460,6 +460,11 @@ class UpdateCRFSchemaRequest(BaseModel):
     sync_annexe1: bool = True
 
 
+class GenerateCRFRequest(BaseModel):
+    mode: str = "auto"  # "auto" | "generate" | "improve"
+    user_instruction: str = ""
+
+
 class UpsertPatientRecordRequest(BaseModel):
     record_id: Optional[str] = None
     patient_code: str = ""
