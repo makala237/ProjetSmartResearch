@@ -160,13 +160,14 @@ def assert_ai_quota_available(
 
     cost = AI_ACTION_COSTS.get(action, 1) if credits_cost is None else int(credits_cost)
 
-    # 1. Enforce AI rate limits (RPM, RPD, and daily token cap) for ALL users, including administrators
+    # 1. Enforce AI rate limits (RPM, TPM, RPD, and optional daily token cap) for ALL users
     reset_request_tokens_used()
     settings = get_settings()
     max_rpm = int(getattr(settings, "ai_user_max_rpm", 10) or 0)
-    max_rpd = int(getattr(settings, "ai_user_max_rpd", 40) or 0)
-    max_tokens_day = int(getattr(settings, "ai_user_max_tokens_per_day", 100_000) or 0)
-    if (max_rpm > 0 or max_rpd > 0 or max_tokens_day > 0) and cost > 0:
+    max_rpd = int(getattr(settings, "ai_user_max_rpd", 250) or 0)
+    max_tpm = int(getattr(settings, "ai_user_max_tpm", 100_000) or 0)
+    max_tokens_day = int(getattr(settings, "ai_user_max_tokens_per_day", 0) or 0)
+    if (max_rpm > 0 or max_rpd > 0 or max_tpm > 0 or max_tokens_day > 0) and cost > 0:
         now_utc = datetime.now(timezone.utc)
         day_start = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
         minute_ago = now_utc - timedelta(seconds=60)
@@ -195,6 +196,21 @@ def assert_ai_quota_available(
                         "message": (
                             f"Plafond journalier atteint ({used_rpd}/{max_rpd} requêtes IA aujourd'hui). "
                             "Votre quota journalier sera réinitialisé demain."
+                        ),
+                    },
+                )
+        if max_tpm > 0:
+            used_tokens_min = store.sum_user_tokens_today(user.id, minute_ago)
+            if used_tokens_min >= max_tpm:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "code": "AI_RATE_LIMIT_TPM",
+                        "limit_tpm": max_tpm,
+                        "used_tpm": used_tokens_min,
+                        "message": (
+                            f"Limite de débit atteinte ({used_tokens_min}/{max_tpm} tokens IA par minute). "
+                            "Veuillez patienter quelques secondes avant de relancer."
                         ),
                     },
                 )

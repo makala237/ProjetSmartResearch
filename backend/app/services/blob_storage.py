@@ -125,11 +125,13 @@ class GCSBlobStorage(BlobStorage):
     def __init__(self, bucket_name: str) -> None:
         if not bucket_name:
             raise ValueError("CLOUD_STORAGE_BUCKET requis lorsque STORAGE_BACKEND=gcs.")
+        from google.api_core.exceptions import NotFound
         from google.cloud import storage  # Lazy import so local dev runs without cloud SDKs
 
         self.bucket_name = bucket_name
         self._client = storage.Client()
         self._bucket = self._client.bucket(bucket_name)
+        self._not_found_exc = NotFound
 
     def upload_file(
         self,
@@ -143,18 +145,25 @@ class GCSBlobStorage(BlobStorage):
         return f"gs://{self.bucket_name}/{object_key}"
 
     def download_to_path(self, object_key: str, dest_path: Path) -> bool:
-        blob = self._bucket.blob(object_key)
-        if not blob.exists():
-            return False
         dest_path.parent.mkdir(parents=True, exist_ok=True)
-        blob.download_to_filename(str(dest_path))
-        return dest_path.exists() and dest_path.stat().st_size > 0
+        try:
+            blob = self._bucket.blob(object_key)
+            blob.download_to_filename(str(dest_path))
+            return dest_path.exists() and dest_path.stat().st_size > 0
+        except self._not_found_exc:
+            dest_path.unlink(missing_ok=True)
+            return False
+        except Exception as exc:
+            dest_path.unlink(missing_ok=True)
+            logger.warning("GCS download_to_path failed for %s: %s", object_key, exc)
+            return False
 
     def delete(self, object_key: str) -> None:
         try:
             blob = self._bucket.blob(object_key)
-            if blob.exists():
-                blob.delete()
+            blob.delete()
+        except self._not_found_exc:
+            return
         except Exception as exc:
             logger.warning("GCS delete failed for %s: %s", object_key, exc)
 
@@ -171,9 +180,9 @@ class GCSBlobStorage(BlobStorage):
     def download_bytes(self, object_key: str) -> Optional[bytes]:
         try:
             blob = self._bucket.blob(object_key)
-            if not blob.exists():
-                return None
             return blob.download_as_bytes()
+        except self._not_found_exc:
+            return None
         except Exception as exc:
             logger.warning("GCS download_bytes failed for %s: %s", object_key, exc)
             return None

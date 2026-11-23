@@ -5,7 +5,6 @@ import {
   Image as ImageIcon,
   Lock,
   Plus,
-  Sparkles,
   Trash2,
   Upload,
 } from "lucide-react";
@@ -177,7 +176,6 @@ export function CoverPageForm({
     }
   };
 
-  const [translatingField, setTranslatingField] = useState<string | null>(null);
   const [uploadingLogoSlot, setUploadingLogoSlot] = useState<
     "university" | "faculty" | null
   >(null);
@@ -191,8 +189,6 @@ export function CoverPageForm({
   const [stagedUniUrl, setStagedUniUrl] = useState<string | null>(null);
   const [stagedFacUrl, setStagedFacUrl] = useState<string | null>(null);
 
-  const translationTimersRef = useRef<Record<string, number>>({});
-  const translationSeqRef = useRef<Record<string, number>>({});
   const latestValueRef = useRef<CoverMetadata>(value);
   latestValueRef.current = value;
 
@@ -215,56 +211,6 @@ export function CoverPageForm({
     setStagedFacUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [stagedLogos?.faculty]);
-
-  const scheduleBilingualCoverTranslation = (
-    field: "university" | "faculty" | "department",
-    rawText: string,
-    sourceLang: "fr" | "en"
-  ) => {
-    if (readOnly) return;
-    const prevTimer = translationTimersRef.current[field];
-    if (prevTimer !== undefined) {
-      window.clearTimeout(prevTimer);
-    }
-    const trimmed = rawText.trim();
-    if (!trimmed) {
-      setTranslatingField((curr) =>
-        curr?.startsWith(`${field}:`) ? null : curr
-      );
-      return;
-    }
-    const seq = (translationSeqRef.current[field] ?? 0) + 1;
-    translationSeqRef.current[field] = seq;
-    const targetLang = sourceLang === "fr" ? "en" : "fr";
-
-    translationTimersRef.current[field] = window.setTimeout(async () => {
-      setTranslatingField(`${field}:${sourceLang}`);
-      try {
-        const res = await api.translateDepartment({
-          text: trimmed,
-          source_lang: sourceLang,
-          target_lang: targetLang,
-          field_type: field,
-        });
-        if (translationSeqRef.current[field] !== seq) return;
-        if (res.translated_text) {
-          const targetKey = `${field}_${targetLang}` as keyof CoverMetadata;
-          onChange({
-            ...latestValueRef.current,
-            [targetKey]: res.translated_text,
-          });
-        }
-      } catch {
-        // Keep user input untouched if live translation fails transiently
-      } finally {
-        if (translationSeqRef.current[field] === seq) {
-          setTranslatingField((curr) =>
-            curr === `${field}:${sourceLang}` ? null : curr
-          );
-        }
-      }
-    }, 420);
-  };
 
   const handleCoverLogoUpload = async (
     slot: "university" | "faculty",
@@ -428,16 +374,8 @@ export function CoverPageForm({
         <div className="md:col-span-2 space-y-3 rounded-xl border border-indigo-200 bg-indigo-50/40 p-3.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-bold text-indigo-950">
-              En-tête institutionnel bilingue (CAMES — FR ↔ EN) &amp; Logos
+              En-tête institutionnel bilingue (CAMES — FR / EN) &amp; Logos
             </span>
-            {!readOnly && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-indigo-100 px-2.5 py-0.5 text-[11px] font-medium text-indigo-800">
-                <Sparkles className="h-3 w-3" />
-                {translatingField
-                  ? "Traduction automatique en cours..."
-                  : "Traduction auto FR ↔ EN"}
-              </span>
-            )}
           </div>
 
           {/* Étage 3 : Université */}
@@ -455,9 +393,7 @@ export function CoverPageForm({
                 placeholder="Ex : UNIVERSITÉ DE YAOUNDÉ I"
                 value={value.university_fr ?? ""}
                 onChange={(e) => {
-                  const val = e.target.value;
-                  onChange({ ...value, university_fr: val });
-                  scheduleBilingualCoverTranslation("university", val, "fr");
+                  onChange({ ...value, university_fr: e.target.value });
                 }}
                 className={compactInputCls}
               />
@@ -472,9 +408,7 @@ export function CoverPageForm({
                 placeholder="Ex : THE UNIVERSITY OF YAOUNDÉ I"
                 value={value.university_en ?? ""}
                 onChange={(e) => {
-                  const val = e.target.value;
-                  onChange({ ...value, university_en: val });
-                  scheduleBilingualCoverTranslation("university", val, "en");
+                  onChange({ ...value, university_en: e.target.value });
                 }}
                 className={compactInputCls}
               />
@@ -551,9 +485,7 @@ export function CoverPageForm({
                 placeholder="Ex : FACULTÉ DE MÉDECINE ET DES SCIENCES BIOMÉDICALES"
                 value={value.faculty_fr ?? ""}
                 onChange={(e) => {
-                  const val = e.target.value;
-                  onChange({ ...value, faculty_fr: val });
-                  scheduleBilingualCoverTranslation("faculty", val, "fr");
+                  onChange({ ...value, faculty_fr: e.target.value });
                 }}
                 className={compactInputCls}
               />
@@ -568,9 +500,7 @@ export function CoverPageForm({
                 placeholder="Ex : FACULTY OF MEDICINE AND BIOMEDICAL SCIENCES"
                 value={value.faculty_en ?? ""}
                 onChange={(e) => {
-                  const val = e.target.value;
-                  onChange({ ...value, faculty_en: val });
-                  scheduleBilingualCoverTranslation("faculty", val, "en");
+                  onChange({ ...value, faculty_en: e.target.value });
                 }}
                 className={compactInputCls}
               />
@@ -591,9 +521,7 @@ export function CoverPageForm({
                 disabled={readOnly}
                 value={value.department_fr}
                 onChange={(e) => {
-                  const val = e.target.value;
-                  onChange({ ...value, department_fr: val });
-                  scheduleBilingualCoverTranslation("department", val, "fr");
+                  onChange({ ...value, department_fr: e.target.value });
                 }}
                 className={compactInputCls}
               />
@@ -607,9 +535,7 @@ export function CoverPageForm({
                 disabled={readOnly}
                 value={value.department_en}
                 onChange={(e) => {
-                  const val = e.target.value;
-                  onChange({ ...value, department_en: val });
-                  scheduleBilingualCoverTranslation("department", val, "en");
+                  onChange({ ...value, department_en: e.target.value });
                 }}
                 className={compactInputCls}
               />

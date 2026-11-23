@@ -357,12 +357,13 @@ class ProjectStorage:
         finally:
             store.close()
 
-    def save(self, project: ProtocolProject) -> ProtocolProject:
+    def save(self, project: ProtocolProject, skip_special_sync: bool = False) -> ProtocolProject:
         from app.db.database import get_store
         from app.db.datastore import ProjectMetaRecord
 
         self._ensure_ready()
-        sync_special_sections(project)
+        if not skip_special_sync:
+            sync_special_sections(project)
         project.updated_at = datetime.now(timezone.utc)
         validated_count = sum(
             1
@@ -374,7 +375,11 @@ class ProjectStorage:
 
         store = get_store()
         try:
-            existing_meta = store.get_project_meta(project.project_id)
+            existing_meta = (
+                None
+                if (project.owner_user_id and project.created_at)
+                else store.get_project_meta(project.project_id)
+            )
             owner_id = project.owner_user_id or (existing_meta.owner_user_id if existing_meta else "")
             if not owner_id:
                 admin = store.get_first_admin()

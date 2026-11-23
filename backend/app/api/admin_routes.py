@@ -3,7 +3,7 @@ import math
 import secrets
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.api.deps import require_admin
 from app.core.security import ensure_utc, hash_password
@@ -1057,3 +1057,118 @@ def list_admin_audit_logs(
         )
         for l in logs
     ]
+
+
+@router.get("/error-alerts")
+def list_admin_error_alerts(
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Any = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Return recent real-time runtime error alerts reported across student and admin sessions."""
+    store = as_store(db)
+    logs = store.list_audit_logs(limit=max(limit * 6, 160))
+    now = datetime.now(timezone.utc)
+
+    resolved_by_alert_id: Dict[str, Dict[str, Any]] = {}
+    for l in logs:
+        if l.action == "runtime_error_resolved":
+            rd = l.details_json or {}
+            aid = str(rd.get("alert_id") or "").strip()
+            if aid and aid not in resolved_by_alert_id:
+                resolved_by_alert_id[aid] = {
+                    "resolved_at": (ensure_utc(l.created_at) or now).isoformat(),
+                    "resolved_by": str(rd.get("admin_name") or "Administrateur"),
+                    "resolution_note": str(rd.get("note") or ""),
+                }
+
+    alerts = [l for l in logs if l.action == "runtime_error_alert"][:limit]
+    out: List[Dict[str, Any]] = []
+    for l in alerts:
+        d = l.details_json or {}
+        res_info = resolved_by_alert_id.get(l.id)
+        out.append(
+            {
+                "id": l.id,
+                "created_at": (ensure_utc(l.created_at) or now).isoformat(),
+                "user_id": l.target_user_id or "",
+                "user_name": str(d.get("user_name") or ""),
+                "user_email": str(d.get("user_email") or ""),
+                "user_role": str(d.get("user_role") or ""),
+                "module": str(d.get("module") or ""),
+                "context": str(d.get("context") or ""),
+                "status_code": d.get("status_code"),
+                "error_message": str(d.get("error_message") or ""),
+                "resolved": res_info is not None,
+                "resolved_at": res_info["resolved_at"] if res_info else None,
+                "resolved_by": res_info["resolved_by"] if res_info else "",
+                "resolution_note": res_info["resolution_note"] if res_info else "",
+            }
+        )
+    return out
+
+
+@router.post("/error-alerts/{alert_id}/resolve")
+def resolve_admin_error_alert(
+    alert_id: str,
+    payload: Optional[Dict[str, Any]] = Body(default=None),
+    current_admin: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Mark a runtime error alert as fixed and notify the affected user account so they can retry."""
+    store = as_store(db)
+    logs = store.list_audit_logs(limit=400)
+    target_alert = next(
+        (l for l in logs if l.action == "runtime_error_alert" and l.id == alert_id),
+        None,
+    )
+    if target_alert is None:
+        raise HTTPException(status_code=404, detail="Alerte d'erreur introuvable.")
+
+    now = utcnow()
+    note = str((payload or {}).get("note") or "").strip()[:300]
+
+    # Idempotency: if already resolved, return existing state
+    existing = next(
+        (
+            l
+            for l in logs
+            if l.action == "runtime_error_resolved"
+            and str((l.details_json or {}).get("alert_id") or "") == alert_id
+        ),
+        None,
+    )
+    if existing is not None:
+        ed = existing.details_json or {}
+        return {
+            "resolved": True,
+            "alert_id": alert_id,
+            "target_user_id": target_alert.target_user_id or "",
+            "resolved_at": (ensure_utc(existing.created_at) or now).isoformat(),
+            "resolved_by": str(ed.get("admin_name") or current_admin.full_name),
+            "resolution_note": str(ed.get("note") or ""),
+        }
+
+    ad = target_alert.details_json or {}
+    store.create_audit_log(
+        admin_id=current_admin.id,
+        target_user_id=target_alert.target_user_id,
+        action="runtime_error_resolved",
+        details_json={
+            "alert_id": alert_id,
+            "module": str(ad.get("module") or ""),
+            "context": str(ad.get("context") or ""),
+            "user_name": str(ad.get("user_name") or ""),
+            "user_email": str(ad.get("user_email") or ""),
+            "admin_name": current_admin.full_name,
+            "note": note,
+        },
+        created_at=now,
+    )
+    return {
+        "resolved": True,
+        "alert_id": alert_id,
+        "target_user_id": target_alert.target_user_id or "",
+        "resolved_at": now.isoformat(),
+        "resolved_by": current_admin.full_name,
+        "resolution_note": note,
+    }

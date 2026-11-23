@@ -329,53 +329,15 @@ class PresentationOrchestrator:
         return obj_general, formatted_specs
 
     def _extract_budget_pills(self, project: ProtocolProject) -> Tuple[str, List[str]]:
-        """Compute real total FCFA and <= 10 concise pill labels from project.budget / chap3_budget."""
+        """Compute real total FCFA and <= 10 concise pill labels via the unified budget_engine."""
+        from app.services.budget_engine import resolve_authoritative_budget
+
         lang = normalize_lang(getattr(project, "language", "fr"))
-        items = list(project.budget or [])
+        items, total_amount = resolve_authoritative_budget(project)
 
-        # Fallback: parse Markdown table in chap3_budget if structured list empty
-        if not items:
-            sec = project.sections.get("chap3_budget")
-            raw = (sec.content_markdown if sec else "") or ""
-            for ln in raw.splitlines():
-                if not ln.strip().startswith("|") or "---" in ln:
-                    continue
-                cols = [c.strip() for c in ln.strip().strip("|").split("|")]
-                if len(cols) >= 2:
-                    label = _clean_text_for_display(cols[0])
-                    if label.lower() in (
-                        "rubrique",
-                        "désignation",
-                        "libellé",
-                        "total",
-                        "total général",
-                        "item",
-                        "designation",
-                        "grand total",
-                    ):
-                        continue
-                    # Find numeric value in trailing columns
-                    amt = 0.0
-                    for c in reversed(cols[1:]):
-                        nums = re.findall(r"\d+", c.replace(" ", "").replace("\u202f", ""))
-                        if nums:
-                            try:
-                                amt = float("".join(nums))
-                                break
-                            except ValueError:
-                                pass
-                    if label and amt > 0:
-                        from app.schemas.protocol import BudgetItem
-
-                        items.append(BudgetItem(designation=label, quantity=1, unit_cost_fcfa=amt, total_fcfa=amt))
-
-        if not items:
+        if not items or total_amount <= 0:
             return ("To be budgeted" if lang == "en" else "À budgétiser"), []
 
-        total_amount = sum(
-            (b.total_fcfa if (b.total_fcfa and b.total_fcfa > 0) else (b.quantity * b.unit_cost_fcfa))
-            for b in items
-        )
         total_str = _format_fcfa(total_amount)
         funding_pill = (
             "Funding:\nCandidate's own funds"
@@ -383,7 +345,7 @@ class PresentationOrchestrator:
             else "Financement :\nFonds propres du candidat"
         )
 
-        # Sort / preserve order; consolidate extras if > 9 items so financing fits cleanly as 10th pill
+        # Preserve order; consolidate extras if > 9 items so financing fits cleanly as 10th pill
         ordered = list(items)
         if len(ordered) > 9:
             kept = ordered[:8]
@@ -1115,7 +1077,50 @@ class PresentationOrchestrator:
                     s.presenter_notes = self._extract_chronogram_notes(project)
                 migrated_chrono = True
 
+        # Always keep the budget slide synchronized with the authoritative budget (Modules 1 & 2)
+        synced_budget = False
+        budget_slide = next((s for s in deck.slides if s.slide_type == "budget"), None)
+        if budget_slide is not None:
+            expected_total, expected_pills = self._extract_budget_pills(project)
+            current_pills = [e.content for e in (budget_slide.elements or [])]
+            if (
+                expected_pills
+                and (
+                    (budget_slide.subtitle or "").strip() != expected_total
+                    or current_pills != expected_pills
+                )
+            ):
+                lang = normalize_lang(getattr(project, "language", "fr"))
+                budget_slide.subtitle = expected_total
+                budget_slide.elements = [
+                    SlideElement(
+                        id=f"el-budget-{idx+1}",
+                        element_type="stat_callout" if idx == 0 else "bullet_main",
+                        content=pill_txt,
+                        order=idx + 1,
+                    )
+                    for idx, pill_txt in enumerate(expected_pills)
+                ]
+                budget_slide.presenter_notes = (
+                    (
+                        f"The overall estimated budget for this study amounts to {expected_total}. "
+                        "It covers consumables, ethical/administrative fees, field logistics, and biostatistical analysis."
+                    )
+                    if lang == "en"
+                    else (
+                        f"Le budget prévisionnel global de l'étude s'élève à {expected_total}. "
+                        "Il couvre l'ensemble des consommables, autorisations, logistique de collecte et analyses biostatistiques."
+                    )
+                )
+                synced_budget = True
+
         order_changed = self.enforce_opening_order(deck)
+        if synced_budget:
+            try:
+                compute_deck_layout(deck, project=project)
+            except Exception:
+                pass
+            migrated_chrono = True
         compute_deck_layout(deck, project=project)
         return deck, (order_changed or migrated_chrono)
 
@@ -1964,3 +1969,64 @@ class PresentationOrchestrator:
         )
         deck.last_audit = report
         return report
+
+
+def refresh_budget_slide_if_present(
+    project: ProtocolProject,
+    deck: Optional[PresentationDeck] = None,
+) -> bool:
+    """Keep an existing PowerPoint deck's 'budget' slide strictly synchronized with project.budget / chap3_budget."""
+    loaded_from_storage = False
+    if deck is None:
+        try:
+            from app.services.storage import project_storage
+
+            deck = project_storage.get_presentation(project.project_id)
+            loaded_from_storage = True
+        except Exception:
+            deck = None
+
+    if not deck or not getattr(deck, "slides", None):
+        return False
+
+    budget_slide = next((s for s in deck.slides if getattr(s, "slide_type", "") == "budget"), None)
+    if budget_slide is None:
+        return False
+
+    orch = PresentationOrchestrator()
+    total_str, pills = orch._extract_budget_pills(project)
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    budget_slide.subtitle = total_str
+    budget_slide.elements = [
+        SlideElement(
+            id=f"el-budget-{idx+1}",
+            element_type="stat_callout" if idx == 0 else "bullet_main",
+            content=pill_txt,
+            order=idx + 1,
+        )
+        for idx, pill_txt in enumerate(pills)
+    ]
+    budget_slide.presenter_notes = (
+        (
+            f"The overall estimated budget for this study amounts to {total_str}. "
+            "It covers consumables, ethical/administrative fees, field logistics, and biostatistical analysis."
+        )
+        if lang == "en"
+        else (
+            f"Le budget prévisionnel global de l'étude s'élève à {total_str}. "
+            "Il couvre l'ensemble des consommables, autorisations, logistique de collecte et analyses biostatistiques."
+        )
+    )
+    try:
+        compute_deck_layout(deck, project=project)
+    except Exception:
+        pass
+
+    if loaded_from_storage:
+        try:
+            from app.services.storage import project_storage
+
+            project_storage.save_presentation(deck)
+        except Exception:
+            pass
+    return True

@@ -2083,10 +2083,27 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 align_override=WD_ALIGN_PARAGRAPH.LEFT,
             )
             _set_paragraph_outline(cursor, 1)
+            _sec_html = sec_state.content_html if sec_state else ""
+            _sec_md = sec_state.content_markdown if sec_state else ""
+            _auth_budget_items: List = []
+            _auth_budget_total = 0.0
+            if spec.id == "chap3_budget":
+                from app.services.budget_engine import (
+                    resolve_authoritative_budget,
+                    strip_markdown_budget_tables,
+                )
+
+                _auth_budget_items, _auth_budget_total = resolve_authoritative_budget(project)
+                if _auth_budget_items:
+                    _stripped_md = strip_markdown_budget_tables(_sec_md)
+                    if _stripped_md != _sec_md:
+                        _sec_md = _stripped_md
+                        _sec_html = ""
+
             cursor, section_paras = insert_rich_content(
                 cursor,
-                sec_state.content_html if sec_state else "",
-                sec_state.content_markdown if sec_state else "",
+                _sec_html,
+                _sec_md,
                 skip_duplicate_headings=[spec.title, spec.chapter_title, ch_toc_label],
             )
 
@@ -2211,7 +2228,7 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     gantt_rows.append(vals)
                 cursor = _insert_table_after(doc, cursor, headers, gantt_rows, fmt, colored_cells=colored)
 
-            if spec.id == "chap3_budget" and project.budget and not _has_custom_tbl and not _suppressed_structured:
+            if spec.id == "chap3_budget" and _auth_budget_items and not _suppressed_structured:
                 cursor = _insert_caption_with_seq(
                     doc,
                     cursor,
@@ -2226,19 +2243,17 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 )
                 table_counter += 1
                 budget_rows: List[List[str]] = []
-                grand_total = 0.0
-                for b in project.budget:
+                for b in _auth_budget_items:
                     line_total = b.total_fcfa if b.total_fcfa > 0 else b.quantity * b.unit_cost_fcfa
-                    grand_total += line_total
                     budget_rows.append(
                         [
                             b.designation,
-                            f"{int(b.unit_cost_fcfa):,}".replace(",", " "),
+                            f"{int(round(b.unit_cost_fcfa)):,}".replace(",", " "),
                             f"{b.quantity:g}",
-                            f"{int(line_total):,}".replace(",", " "),
+                            f"{int(round(line_total)):,}".replace(",", " "),
                         ]
                     )
-                budget_rows.append([labels["budget_total_label"], "", "", f"{int(grand_total):,} FCFA".replace(",", " ")])
+                budget_rows.append([labels["budget_total_label"], "", "", f"{int(round(_auth_budget_total)):,} FCFA".replace(",", " ")])
                 budget_headers = (
                     ["Item", "Unit price (FCFA)", "Quantity", "Total price (FCFA)"]
                     if lang == "en"

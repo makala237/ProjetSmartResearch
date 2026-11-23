@@ -31,7 +31,9 @@ class TestTokenLimitAndModels(unittest.TestCase):
         default_cfg = Settings(_env_file=None)
         self.assertEqual(default_cfg.gemini_primary_reasoning_model, "gemini-3.5-flash-lite")
         self.assertEqual(default_cfg.gemini_fallback_reasoning_model, "gemini-3.1-flash-lite")
-        self.assertEqual(default_cfg.ai_user_max_tokens_per_day, 100_000)
+        self.assertEqual(default_cfg.ai_user_max_tpm, 100_000)
+        self.assertEqual(default_cfg.ai_user_max_rpd, 250)
+        self.assertEqual(default_cfg.ai_user_max_tokens_per_day, 0)
 
         chains = default_cfg.model_chains()
         self.assertEqual(chains["drafting"][0], "gemini-3.5-flash-lite")
@@ -46,7 +48,9 @@ class TestTokenLimitAndModels(unittest.TestCase):
 
         get_settings.cache_clear()
         loaded_cfg = get_settings()
-        self.assertEqual(loaded_cfg.ai_user_max_tokens_per_day, 100_000)
+        self.assertEqual(loaded_cfg.ai_user_max_tpm, 100_000)
+        self.assertEqual(loaded_cfg.ai_user_max_rpd, 250)
+        self.assertEqual(loaded_cfg.ai_user_max_tokens_per_day, 0)
         self.assertEqual(loaded_cfg.gemini_primary_reasoning_model, "gemini-3.5-flash-lite")
         self.assertEqual(loaded_cfg.gemini_fallback_reasoning_model, "gemini-3.1-flash-lite")
         loaded_chains = loaded_cfg.model_chains()
@@ -93,6 +97,7 @@ class TestTokenLimitAndModels(unittest.TestCase):
             settings.db_backend = backend_mode
             settings.ai_user_max_rpm = 100
             settings.ai_user_max_rpd = 500
+            settings.ai_user_max_tpm = 0
             settings.ai_user_max_tokens_per_day = 100_000
 
             reset_db_state()
@@ -213,6 +218,90 @@ class TestTokenLimitAndModels(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             fake_fs = FakeFirestoreClient()
             self._run_daily_token_cap_flow("firestore", fake_client=fake_fs, tmp_dir=tmp_dir)
+
+    def test_bidirectional_flash_lite_relay(self):
+        from pydantic import BaseModel
+        from app.services.gemini_client import reset_ai_routing_policy, set_ai_routing_policy
+
+        class _SampleOut(BaseModel):
+            answer: str
+
+        # 1) 3.5-flash-lite times out -> 3.1-flash-lite takes the relay immediately
+        router = GeminiRouter()
+        called_models = []
+
+        def fake_gen_35_fails(model, contents, config=None):
+            called_models.append(model)
+            if model == "gemini-3.5-flash-lite":
+                raise TimeoutError("Read timed out")
+            return SimpleNamespace(
+                text='{"answer": "ok from 3.1"}',
+                parsed=None,
+                usage_metadata=SimpleNamespace(total_token_count=120),
+            )
+
+        fake_client = MagicMock()
+        fake_client.models.generate_content.side_effect = fake_gen_35_fails
+
+        with patch.object(router, "_get_client", return_value=fake_client):
+            res = router.generate_structured("drafting", "Test prompt", _SampleOut)
+            self.assertEqual(res["model_used"], "gemini-3.1-flash-lite")
+            self.assertEqual(res["data"].answer, "ok from 3.1")
+            self.assertEqual(called_models, ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"])
+
+            # Next call while 3.5-flash-lite is in cooldown routes directly to 3.1-flash-lite first
+            called_models.clear()
+            res2 = router.generate_structured("drafting", "Follow-up prompt", _SampleOut)
+            self.assertEqual(res2["model_used"], "gemini-3.1-flash-lite")
+            self.assertEqual(called_models, ["gemini-3.1-flash-lite"])
+
+        # 2) Vice versa: 3.1-flash-lite returns empty/broken output -> 3.5-flash-lite takes the relay
+        router2 = GeminiRouter()
+        called_models2 = []
+
+        def fake_gen_31_fails(model, contents, config=None):
+            called_models2.append(model)
+            if model == "gemini-3.1-flash-lite":
+                return SimpleNamespace(text="", parsed=None, usage_metadata=None)
+            return SimpleNamespace(
+                text='{"answer": "ok from 3.5"}',
+                parsed=None,
+                usage_metadata=SimpleNamespace(total_token_count=140),
+            )
+
+        fake_client2 = MagicMock()
+        fake_client2.models.generate_content.side_effect = fake_gen_31_fails
+
+        try:
+            with patch.object(router2, "_get_client", return_value=fake_client2):
+                res3 = router2.generate_structured("research", "Research prompt", _SampleOut)
+                self.assertEqual(res3["model_used"], "gemini-3.5-flash-lite")
+                self.assertEqual(res3["data"].answer, "ok from 3.5")
+                self.assertEqual(called_models2, ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"])
+
+                # Even when prefer_fallback_35 is active, 3.5-flash-lite still relays if 3.1 fails
+                router3 = GeminiRouter()
+                called_models3 = []
+                fake_client3 = MagicMock()
+
+                def fake_gen_31_down(model, contents, config=None):
+                    called_models3.append(model)
+                    if model == "gemini-3.1-flash-lite":
+                        raise TimeoutError("3.1 unresponsive")
+                    return SimpleNamespace(
+                        text="Relay text from 3.5",
+                        parsed=None,
+                        usage_metadata=SimpleNamespace(total_token_count=80),
+                    )
+
+                fake_client3.models.generate_content.side_effect = fake_gen_31_down
+                set_ai_routing_policy(prefer_fallback_35=True, reason="test")
+                with patch.object(router3, "_get_client", return_value=fake_client3):
+                    res4 = router3.generate_with_fallback("drafting", "Draft prompt")
+                    self.assertEqual(res4["model_used"], "gemini-3.5-flash-lite")
+                    self.assertEqual(called_models3, ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite"])
+        finally:
+            reset_ai_routing_policy()
 
 
 if __name__ == "__main__":

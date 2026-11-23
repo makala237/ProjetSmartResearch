@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import uuid
 from pydantic import BaseModel, Field
 
@@ -248,6 +248,324 @@ def deterministic_section_checks(project: ProtocolProject, section_id: str, text
     return notes
 
 
+def _ordered_unique_citations(text: str) -> List[str]:
+    """Return unique numeric citation IDs in order of first appearance."""
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for num in re.findall(r"\[(\d+)\]", text or ""):
+        if num not in seen:
+            seen.add(num)
+            ordered.append(num)
+    return ordered
+
+
+def _strip_disallowed_citations(text: str, allowed: set[str]) -> str:
+    """Remove numeric [n] citations not in `allowed` while keeping prose spacing/punctuation clean."""
+    if not text:
+        return text
+
+    def _repl(match: re.Match[str]) -> str:
+        num = match.group(1)
+        return match.group(0) if num in allowed else ""
+
+    cleaned = re.sub(r"\s*\[(\d+)\]", _repl, text)
+    # Collapse leftover empty brackets/commas or double spaces before punctuation
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s+([.,;:])", r"\1", cleaned)
+    return cleaned.strip()
+
+
+def _build_intro_shared_budget_block(
+    project: ProtocolProject,
+    section_id: str,
+    lang: str,
+) -> str:
+    """Provide cross-part Introduction citation & word consensus rules for intro_contexte & intro_interet."""
+    if section_id not in ("intro_contexte", "intro_interet"):
+        return ""
+    sibling_id = "intro_interet" if section_id == "intro_contexte" else "intro_contexte"
+    sibling = project.sections.get(sibling_id)
+    sibling_text = sibling.content_markdown if sibling else ""
+    sibling_words = len(sibling_text.split())
+    sibling_refs = _ordered_unique_citations(sibling_text)
+    remaining_new = max(0, 5 - len(sibling_refs))
+    remaining_words = max(250, 880 - sibling_words)
+    refs_str = ", ".join(f"[{r}]" for r in sibling_refs) if sibling_refs else ("none" if lang == "en" else "aucune")
+
+    if lang == "en":
+        return (
+            "SHARED INTRODUCTION CONSENSUS (FMSB/CAMES HARD RULE):\n"
+            f"- `intro_contexte` + `intro_interet` COMBINED must stay <= 5 unique references total and <= 900 words total.\n"
+            f"- The sibling part (`{sibling_id}`) currently has {sibling_words} words and {len(sibling_refs)} cited reference(s): {refs_str}.\n"
+            f"- Target length for THIS part: stay within your minimum word count and <= {remaining_words} words.\n"
+            f"- Citation budget for THIS part: you may reuse citations from {refs_str} and introduce AT MOST {remaining_new} new reference(s) "
+            f"(if sibling already has >= 5 refs, ONLY reuse citations from {refs_str[:40]} or cite 0 new refs)."
+        )
+    return (
+        "CONSENSUS PARTAGÉ INTRODUCTION (RÈGLE STRICTE FMSB/CAMES) :\n"
+        f"- L'ensemble `intro_contexte` + `intro_interet` réunis NE DOIT PAS dépasser 5 références uniques au total ni 900 mots au total.\n"
+        f"- L'autre sous-partie (`{sibling_id}`) contient actuellement {sibling_words} mots et {len(sibling_refs)} référence(s) citée(s) : {refs_str}.\n"
+        f"- Volume cible pour CETTE sous-partie : respecter le minimum recommandé tout en restant ≤ {remaining_words} mots.\n"
+        f"- Budget citations pour CETTE sous-partie : réutilise prioritairement les citations de {refs_str} et n'introduis AU MAXIMUM que {remaining_new} nouvelle(s) référence(s) "
+        f"(si l'autre sous-partie a déjà ≥ 5 références, réutilise uniquement celles-là sans en ajouter de nouvelles)."
+    )
+
+
+def _reconcile_intro_citation_cap(
+    project: ProtocolProject,
+    section_id: str,
+    current_md: str,
+    max_refs: int = 5,
+) -> str:
+    """Enforce the <= 5 unique references consensus across BOTH intro_contexte and intro_interet."""
+    if section_id not in ("intro_contexte", "intro_interet"):
+        return current_md
+
+    sibling_id = "intro_interet" if section_id == "intro_contexte" else "intro_contexte"
+    sibling = project.sections.get(sibling_id)
+    sibling_md = sibling.content_markdown if sibling else ""
+
+    cur_refs = _ordered_unique_citations(current_md)
+    sib_refs = _ordered_unique_citations(sibling_md)
+    union_ordered = _ordered_unique_citations(f"{current_md} {sibling_md}")
+    if len(union_ordered) <= max_refs:
+        # Refresh sibling audit notes too in case the fix resolved the shared alert
+        if sibling is not None and sibling_md.strip():
+            # Temporarily evaluate with updated current_md via project copy-free check
+            orig_cur = project.sections[section_id].content_markdown if section_id in project.sections else ""
+            if section_id in project.sections:
+                project.sections[section_id].content_markdown = current_md
+            try:
+                sibling.audit_notes = deterministic_section_checks(project, sibling_id, sibling_md)
+            finally:
+                if section_id in project.sections:
+                    project.sections[section_id].content_markdown = orig_cur
+        return current_md
+
+    # Build a deterministic 5-ref consensus: prefer shared refs, then balance between contexte & interet
+    shared = [r for r in cur_refs if r in set(sib_refs)]
+    selected: List[str] = list(shared[:max_refs])
+    for pool in (cur_refs, sib_refs):
+        for r in pool:
+            if len(selected) >= max_refs:
+                break
+            if r not in selected:
+                selected.append(r)
+    allowed = set(selected[:max_refs])
+
+    reconciled_cur = _strip_disallowed_citations(current_md, allowed)
+    if sibling is not None and sibling_md.strip():
+        reconciled_sib = _strip_disallowed_citations(sibling_md, allowed)
+        if reconciled_sib != sibling_md:
+            sibling.content_markdown = reconciled_sib
+            sibling.content_html = markdown_to_clean_html(reconciled_sib)
+        orig_cur = project.sections[section_id].content_markdown if section_id in project.sections else ""
+        if section_id in project.sections:
+            project.sections[section_id].content_markdown = reconciled_cur
+        try:
+            sib_notes = deterministic_section_checks(project, sibling_id, sibling.content_markdown)
+            sibling.audit_notes = sib_notes
+        finally:
+            if section_id in project.sections:
+                project.sections[section_id].content_markdown = orig_cur
+
+    return reconciled_cur
+
+
+def _count_words(text: str) -> int:
+    """Exact word counter aligned with deterministic_section_checks."""
+    return len((text or "").split()) if (text or "").strip() else 0
+
+
+def _extract_continuation_anchor(text: str) -> Dict[str, Any]:
+    """Extract the last 2-3 sentences, existing Markdown headings, and cited [n] markers."""
+    clean = (text or "").strip()
+    headings = [
+        ln.strip()
+        for ln in clean.splitlines()
+        if re.match(r"^#{1,4}\s+\S", ln.strip())
+    ]
+    # Remove trailing incomplete markdown artifacts and split into sentences
+    prose_lines = [ln.strip() for ln in clean.splitlines() if ln.strip() and not ln.strip().startswith("#")]
+    prose_blob = " ".join(prose_lines)
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", prose_blob) if s.strip()]
+    last_sentences = " ".join(sentences[-3:]) if sentences else prose_blob[-360:]
+    last_sentence = sentences[-1] if sentences else prose_blob[-180:]
+    used_citations = _ordered_unique_citations(clean)
+    return {
+        "last_sentences": last_sentences[-600:],
+        "last_sentence": last_sentence[-260:],
+        "headings": headings[:20],
+        "used_citations": used_citations,
+    }
+
+
+def _stitch_continuation(existing_md: str, addition_md: str) -> str:
+    """Seamlessly join a continuation chunk while stripping accidental overlap of the anchor sentence."""
+    base = (existing_md or "").rstrip()
+    add = (addition_md or "").strip()
+    if not add:
+        return base
+    if not base:
+        return add
+
+    # Strip accidental markdown code fences if the LLM wrapped the continuation
+    add = re.sub(r"^```(?:markdown|md)?\s*\n?", "", add, flags=re.IGNORECASE)
+    add = re.sub(r"\n?```\s*$", "", add).strip()
+
+    anchor = _extract_continuation_anchor(base)
+    last_sent = anchor["last_sentence"].strip()
+    if last_sent and len(last_sent) >= 24:
+        # If the continuation starts by repeating the last sentence, remove the duplicate prefix
+        norm_add = add.lstrip()
+        if norm_add.lower().startswith(last_sent.lower()):
+            add = norm_add[len(last_sent):].lstrip(" \n\r-–—")
+        else:
+            # Also check trailing 60-char snippet overlap
+            tail_snip = last_sent[-60:].strip()
+            pos = norm_add.lower().find(tail_snip.lower())
+            if 0 <= pos <= 140:
+                add = norm_add[pos + len(tail_snip):].lstrip(" \n\r-–—")
+
+    if not add:
+        return base
+    return f"{base}\n\n{add}"
+
+
+def _ensure_target_word_count(
+    project: ProtocolProject,
+    section_id: str,
+    spec: Any,
+    content_md: str,
+    refs_ctx: str,
+    cross_memory: str,
+    lang: str,
+    max_passes: int = 3,
+) -> Tuple[str, Dict[str, Any]]:
+    """Internal word-count monitor & bounded continuation loop for long FMSB sections (e.g. 700/1000/1400 words).
+
+    Counts words generated by the LLM, compares against spec.constraints.min_words, and if short,
+    prompts the LLM to seamlessly continue from the last sentences without repeating already-covered points.
+    Only returns the final stitched text to the caller.
+    """
+    c = getattr(spec, "constraints", None)
+    min_words = int(getattr(c, "min_words", 0) or 0) if c else 0
+    max_words = int(getattr(c, "max_words", 0) or 0) if c else 0
+
+    initial_words = _count_words(content_md)
+    trace: Dict[str, Any] = {
+        "triggered": False,
+        "min_words_required": min_words,
+        "initial_words": initial_words,
+        "final_words": initial_words,
+        "continuation_passes": 0,
+    }
+
+    # Skip sections without a meaningful minimum word threshold or structured budget section
+    if min_words < 300 or section_id == "chap3_budget" or initial_words == 0 or initial_words >= min_words:
+        return content_md, trace
+
+    # For 2-part Introduction, cap target to avoid exceeding sibling/combined max_words
+    target_min = min_words
+    if max_words and target_min > max_words:
+        target_min = max_words
+
+    current_md = content_md
+    current_words = initial_words
+    lang_directive = get_language_prompt_directive(lang)
+    style_instructions = get_human_style_instructions(lang)
+    intro_budget_block = _build_intro_shared_budget_block(project, section_id, lang=lang)
+
+    for pass_idx in range(1, max_passes + 1):
+        if current_words >= target_min:
+            break
+        deficit = target_min - current_words
+        ask_words = deficit + 80
+        if max_words:
+            remaining_cap = max(80, max_words - current_words)
+            ask_words = min(ask_words, remaining_cap)
+            if remaining_cap < 40:
+                break
+
+        anchor = _extract_continuation_anchor(current_md)
+        headings_block = (
+            "\n".join(f"  - {h}" for h in anchor["headings"])
+            if anchor["headings"]
+            else "  (Aucun sous-titre encore écrit)"
+        )
+        used_cits = ", ".join(f"[{n}]" for n in anchor["used_citations"]) or "Aucune"
+
+        emit_pipeline_step(
+            "llm_continue",
+            f"Poursuite rédactionnelle ({current_words}/{target_min} mots · passe {pass_idx}/{max_passes})...",
+            f"Expanding section to target length ({current_words}/{target_min} words · pass {pass_idx}/{max_passes})...",
+            progress_pct=min(88, 74 + pass_idx * 4),
+        )
+
+        continuation_prompt = f"""You are seamlessly continuing an academic FMSB/CAMES medical thesis protocol section that is currently too short.
+{lang_directive}
+
+SECTION: {spec.chapter_title} — {spec.title}
+REQUIRED MINIMUM LENGTH: {target_min} words.
+CURRENT LENGTH SO FAR: {current_words} words (MISSING AT LEAST {deficit} words).
+TARGET FOR THIS CONTINUATION: write approximately {ask_words} additional words of dense, substantive academic prose.
+
+ALREADY-COVERED SUB-HEADINGS (DO NOT REPEAT THESE):
+{headings_block}
+
+CITATIONS ALREADY USED SO FAR: {used_cits}
+{intro_budget_block}
+
+LAST SENTENCES ALREADY WRITTEN (pick up the exact train of thought right after this — DO NOT repeat these sentences):
+\"\"\"{anchor["last_sentences"]}\"\"\"
+
+AVAILABLE VERIFIED REFERENCES (cite ONLY from this list with [n], never invent references):
+{refs_ctx or "None"}
+
+CROSS-SECTION MEMORY (do not duplicate):
+{(cross_memory or "")[:1200]}
+
+STRICT CONTINUATION RULES:
+1. Return ONLY the continuation text in clean Markdown prose (NO introductory meta-commentary like "Voici la suite", NO repeating the previous sentences).
+2. Deepen the scientific, epidemiological, pathophysiological, or methodological analysis expected for « {spec.title} » without filler or redundancy.
+3. Keep exact Vancouver [n] citation consistency and never invent statistics or references.
+4. Close the continuation cleanly with complete sentences.
+{style_instructions}
+"""
+        try:
+            cont_res = gemini_router.generate_with_fallback(
+                role="drafting",
+                contents=continuation_prompt,
+            )
+            addition_raw = (cont_res.get("text") or "").strip()
+        except Exception:
+            break
+
+        if not addition_raw:
+            break
+
+        addition_clean = strip_ascii_diagrams(addition_raw)
+        addition_clean, _ = sanitize_llm_typography(addition_clean, lang=lang)
+        stitched = _stitch_continuation(current_md, addition_clean)
+        new_words = _count_words(stitched)
+        gained = new_words - current_words
+        trace["triggered"] = True
+        trace["continuation_passes"] = pass_idx
+
+        if gained < 35:
+            # Stop early if the model cannot add substantial new content
+            if gained > 0:
+                current_md = stitched
+                current_words = new_words
+            break
+
+        current_md = stitched
+        current_words = new_words
+
+    trace["final_words"] = current_words
+    return current_md, trace
+
+
 def draft_section_with_ai(
     project: ProtocolProject,
     section_id: str,
@@ -257,6 +575,44 @@ def draft_section_with_ai(
     """Draft or refine a section grounded strictly in approved ArticleSegments and FMSB rules."""
     lang = normalize_lang(getattr(project, "language", "fr"))
     spec = _get_section_spec(section_id, lang)
+    if section_id == "chap3_budget":
+        from app.services.budget_engine import generate_structured_budget_with_ai
+        from app.services.presentation_orchestrator import refresh_budget_slide_if_present
+
+        emit_pipeline_step(
+            "llm_draft",
+            "Génération du budget prévisionnel structuré (FCFA) & synchronisation Modules 1-2-4...",
+            "Generating structured provisional budget (FCFA) & syncing Modules 1-2-4...",
+            progress_pct=65,
+        )
+        bud_res = generate_structured_budget_with_ai(
+            project,
+            user_instruction=user_instruction or "",
+        )
+        clean_md = bud_res["content_markdown"]
+        clean_html = markdown_to_clean_html(clean_md)
+        det_notes = deterministic_section_checks(project, section_id, clean_md)
+        current_sec = project.sections.get(section_id)
+        if current_sec is not None:
+            current_sec.content_markdown = clean_md
+            current_sec.content_html = clean_html
+            current_sec.status = StepStatus.IN_PROGRESS
+            current_sec.audit_notes = det_notes
+            current_sec.custom_tables = []
+        refresh_budget_slide_if_present(project)
+        update_section_working_memory(project, section_id)
+        return {
+            "model_used": bud_res["model_used"],
+            "content_markdown": clean_md,
+            "content_html": clean_html,
+            "cited_ref_ids": [],
+            "assistant_commentary": bud_res["assistant_commentary"],
+            "deterministic_notes": det_notes,
+            "orchestration_trace": {
+                "budget_items_count": len(bud_res["items"]),
+                "budget_grand_total_fcfa": bud_res["grand_total_fcfa"],
+            },
+        }
     if section_id == "annexe_fiche_collecte":
         from app.services.crf_builder import generate_or_improve_crf_with_ai
 
@@ -373,6 +729,7 @@ def draft_section_with_ai(
         )
 
     cames_block = _format_cames_granularity_block(spec, lang=lang)
+    intro_budget_block = _build_intro_shared_budget_block(project, section_id, lang=lang)
     lang_directive = get_language_prompt_directive(lang)
     style_instructions = get_human_style_instructions(lang)
 
@@ -388,6 +745,8 @@ EXPECTED POINTS:
 {chr(10).join('- ' + g for g in spec.guidance_points)}
 
 {cames_block}
+
+{intro_budget_block}
 
 {mode_priority_rule}
 
@@ -450,6 +809,25 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
     ]
     clean_md = strip_ascii_diagrams(dto.content_markdown)
     clean_md, _ = sanitize_llm_typography(clean_md, lang=lang)
+    clean_md, wc_trace = _ensure_target_word_count(
+        project=project,
+        section_id=section_id,
+        spec=spec,
+        content_md=clean_md,
+        refs_ctx=segments_context,
+        cross_memory=cross_memory,
+        lang=lang,
+    )
+    orch_trace["word_count_continuation"] = wc_trace
+    clean_md = _reconcile_intro_citation_cap(project, section_id, clean_md, max_refs=5)
+    # Recompute cited_ref_ids including any citations introduced during continuation passes
+    all_cited_nums = _ordered_unique_citations(clean_md)
+    cited_ref_ids = list(
+        dict.fromkeys(
+            cited_ref_ids
+            + [order_to_ref_id[int(n)] for n in all_cited_nums if n.isdigit() and int(n) in order_to_ref_id]
+        )
+    )
     clean_html = markdown_to_clean_html(clean_md)
     det_notes = deterministic_section_checks(project, section_id, clean_md)
 
@@ -657,6 +1035,7 @@ def fix_section_issues_with_ai(
     )
 
     cames_block = _format_cames_granularity_block(spec, lang=lang)
+    intro_budget_block = _build_intro_shared_budget_block(project, section_id, lang=lang)
     lang_directive = get_language_prompt_directive(lang)
     style_instructions = get_human_style_instructions(lang)
 
@@ -668,6 +1047,8 @@ SECTION: {spec.chapter_title} — {spec.title}
 EXPECTATIONS: {spec.guidance_points}
 
 {cames_block}
+
+{intro_budget_block}
 
 FLAGGED ISSUES TO FIX:
 {chr(10).join('- ' + i for i in issues) if issues else '- Improve overall FMSB compliance'}
@@ -713,6 +1094,17 @@ Instructions:
     )
     clean_md = strip_ascii_diagrams(dto.content_markdown)
     clean_md, _ = sanitize_llm_typography(clean_md, lang=lang)
+    clean_md, wc_trace = _ensure_target_word_count(
+        project=project,
+        section_id=section_id,
+        spec=spec,
+        content_md=clean_md,
+        refs_ctx=refs_ctx,
+        cross_memory=cross_memory,
+        lang=lang,
+    )
+    orch_trace["word_count_continuation"] = wc_trace
+    clean_md = _reconcile_intro_citation_cap(project, section_id, clean_md, max_refs=5)
     clean_html = markdown_to_clean_html(clean_md)
     det_notes = deterministic_section_checks(project, section_id, clean_md)
 
@@ -726,6 +1118,13 @@ Instructions:
             sec.status = StepStatus.IN_PROGRESS
             sec.audit_notes = det_notes
         _append_structured_elements(sec, dto)
+        if section_id == "chap3_budget":
+            from app.services.budget_engine import sync_budget_from_section
+            from app.services.presentation_orchestrator import refresh_budget_slide_if_present
+
+            sync_budget_from_section(project, overwrite=True)
+            sec.custom_tables = []
+            refresh_budget_slide_if_present(project)
 
     wm_update = update_section_working_memory(project, section_id)
     orch_trace["working_memory_update"] = wm_update

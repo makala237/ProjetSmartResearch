@@ -56,6 +56,43 @@ import type {
 
 const ACCESS_TOKEN_KEY = "sr_fmsb_access_token";
 const REFRESH_TOKEN_KEY = "sr_fmsb_refresh_token";
+const PRODUCTION_CLOUD_RUN_API = "https://smart-research-api-28110972780.europe-west1.run.app";
+
+/**
+ * Resolve API base URL. When served from Firebase Hosting, call Cloud Run directly
+ * to bypass Firebase Hosting's hard 60-second rewrite proxy timeout (Cloud Run allows 300s).
+ */
+export function getApiBaseUrl(): string {
+  const envBase = (
+    import.meta as unknown as { env?: Record<string, string | undefined> }
+  ).env?.VITE_API_BASE_URL?.trim();
+  if (envBase) return envBase.replace(/\/+$/, "");
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname.toLowerCase();
+    if (
+      host === "smart-research-fmsb.web.app" ||
+      host === "smart-research-fmsb.firebaseapp.com"
+    ) {
+      return PRODUCTION_CLOUD_RUN_API;
+    }
+  }
+  return "";
+}
+
+export function apiUrl(path: string): string {
+  if (
+    !path ||
+    path.startsWith("http://") ||
+    path.startsWith("https://") ||
+    path.startsWith("data:") ||
+    path.startsWith("blob:")
+  ) {
+    return path;
+  }
+  const base = getApiBaseUrl();
+  if (!base) return path;
+  return `${base}${path.startsWith("/") ? path : `/${path}`}`;
+}
 
 export function getAccessToken(): string | null {
   try {
@@ -110,12 +147,13 @@ export function withAuthToken(url: string): string {
   ) {
     return url;
   }
+  const resolved = apiUrl(url);
   const tok = getAccessToken();
-  if (!tok || url.includes("access_token=")) {
-    return url;
+  if (!tok || resolved.includes("access_token=")) {
+    return resolved;
   }
-  const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}access_token=${encodeURIComponent(tok)}`;
+  const sep = resolved.includes("?") ? "&" : "?";
+  return `${resolved}${sep}access_token=${encodeURIComponent(tok)}`;
 }
 
 let _unauthorizedHandler: ((reason?: string) => void) | null = null;
@@ -154,7 +192,7 @@ async function trySilentRefresh(): Promise<boolean> {
 
   _refreshInFlight = (async () => {
     try {
-      const res = await fetch("/api/auth/refresh", {
+      const res = await fetch(apiUrl("/api/auth/refresh"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ refresh_token: rt }),
@@ -182,7 +220,7 @@ async function request<T>(url: string, options?: RequestOptions): Promise<T> {
   const { skipAuth = false, _retried = false, headers, ...fetchOptions } = options || {};
   let res: Response;
   try {
-    res = await fetch(url, {
+    res = await fetch(apiUrl(url), {
       ...fetchOptions,
       headers: {
         "Content-Type": "application/json",
@@ -229,6 +267,9 @@ export const api = {
 
   listProjects: () => request<ProtocolProject[]>("/api/projects"),
 
+  getProject: (projectId: string) =>
+    request<ProtocolProject>(`/api/projects/${projectId}`),
+
   createProject: (payload: {
     name: string;
     entry_mode: EntryMode;
@@ -265,7 +306,7 @@ export const api = {
   ): Promise<ProtocolProject> => {
     const form = new FormData();
     form.append("file", file);
-    const res = await fetch(`/api/projects/${projectId}/cover/logo/${slot}`, {
+    const res = await fetch(apiUrl(`/api/projects/${projectId}/cover/logo/${slot}`), {
       method: "POST",
       headers: authHeaders(),
       body: form,
@@ -395,7 +436,7 @@ export const api = {
     form.append("title", params.title);
     form.append("caption", params.caption);
     form.append("anchor_hint", params.anchor_hint);
-    const res = await fetch(`/api/projects/${projectId}/images/upload`, {
+    const res = await fetch(apiUrl(`/api/projects/${projectId}/images/upload`), {
       method: "POST",
       headers: authHeaders(),
       body: form,
@@ -688,7 +729,7 @@ export const api = {
     const form = new FormData();
     form.append("file", file);
     form.append("import_mode", importMode);
-    const res = await fetch(`/api/projects/${projectId}/import`, {
+    const res = await fetch(apiUrl(`/api/projects/${projectId}/import`), {
       method: "POST",
       headers: {
         ...authHeaders(),
@@ -878,7 +919,11 @@ export const api = {
     }),
 
   getCrfPreviewHtml: (projectId: string) =>
-    request<{ annexe1_html: string; crf_fields: CRFFieldSpec[] }>(
+    request<{
+      annexe1_html: string;
+      crf_fields: CRFFieldSpec[];
+      hospital_sites?: string[];
+    }>(
       `/api/projects/${projectId}/crf/preview-html`
     ),
 
@@ -1142,4 +1187,67 @@ export const api = {
 
   adminListAuditLogs: (limit = 100) =>
     request<AdminAuditLogOut[]>(`/api/admin/audit-logs?limit=${limit}`),
+
+  reportClientError: (payload: {
+    message: string;
+    context?: string;
+    module?: string;
+    status_code?: number;
+  }) =>
+    request<{ recorded: boolean }>("/api/client-errors", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  adminListErrorAlerts: (limit = 20) =>
+    request<
+      Array<{
+        id: string;
+        created_at: string;
+        user_id: string;
+        user_name: string;
+        user_email: string;
+        user_role: string;
+        module: string;
+        context: string;
+        status_code?: number | null;
+        error_message: string;
+        resolved?: boolean;
+        resolved_at?: string | null;
+        resolved_by?: string;
+        resolution_note?: string;
+      }>
+    >(`/api/admin/error-alerts?limit=${limit}`),
+
+  adminResolveErrorAlert: (alertId: string, note = "") =>
+    request<{
+      resolved: boolean;
+      alert_id: string;
+      target_user_id: string;
+      resolved_at: string;
+      resolved_by: string;
+      resolution_note: string;
+    }>(`/api/admin/error-alerts/${encodeURIComponent(alertId)}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    }),
+
+  listResolvedErrorNotifications: () =>
+    request<
+      Array<{
+        id: string;
+        alert_id: string;
+        module: string;
+        resolved_at: string;
+        message_fr: string;
+        message_en: string;
+        note: string;
+      }>
+    >("/api/notifications/resolved-errors"),
+
+  dismissResolvedErrorNotification: (notificationId: string) =>
+    request<{ dismissed: boolean; notification_id: string }>(
+      `/api/notifications/resolved-errors/${encodeURIComponent(notificationId)}/dismiss`,
+      { method: "POST" }
+    ),
 };

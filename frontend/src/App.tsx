@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Airplay,
+  AlertCircle,
+  AlertTriangle,
+  Bell,
+  CheckCircle2,
   ClipboardCheck,
   FileUp,
   FolderPlus,
@@ -40,6 +44,34 @@ import type {
   ProtocolProject,
   StepStatus,
 } from "./types/protocol";
+import { formatErrorForRole, sanitizeTechnicalMessage } from "./utils/errorFormatter";
+
+interface AdminErrorAlert {
+  id: string;
+  created_at: string;
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  user_role: string;
+  module: string;
+  context: string;
+  status_code?: number | null;
+  error_message: string;
+  resolved?: boolean;
+  resolved_at?: string | null;
+  resolved_by?: string;
+  resolution_note?: string;
+}
+
+interface ResolvedErrorNotification {
+  id: string;
+  alert_id: string;
+  module: string;
+  resolved_at: string;
+  message_fr: string;
+  message_en: string;
+  note: string;
+}
 
 export default function App() {
   const { lang, setLang, t } = useLanguage();
@@ -73,6 +105,145 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const lastSyncedProjectIdRef = useRef<string | null>(null);
+  const lastReportedErrorRef = useRef<{ msg: string; ts: number }>({ msg: "", ts: 0 });
+
+  // Live Admin Error Alert feed & real-time toast
+  const [adminAlerts, setAdminAlerts] = useState<AdminErrorAlert[]>([]);
+  const [liveAdminToast, setLiveAdminToast] = useState<AdminErrorAlert | null>(null);
+  const [showAdminAlertsMenu, setShowAdminAlertsMenu] = useState(false);
+  const [unreadAdminAlerts, setUnreadAdminAlerts] = useState(0);
+  const [resolvingAlertId, setResolvingAlertId] = useState<string | null>(null);
+  const [resolvedNotifications, setResolvedNotifications] = useState<ResolvedErrorNotification[]>([]);
+  const seenAdminAlertIdsRef = useRef<Set<string>>(new Set());
+  const adminAlertsInitializedRef = useRef(false);
+
+  // Automatically report any runtime error to backend so admins receive the real error in real time
+  useEffect(() => {
+    if (!error || !currentUser) return;
+    const now = Date.now();
+    if (
+      lastReportedErrorRef.current.msg === error &&
+      now - lastReportedErrorRef.current.ts < 5000
+    ) {
+      return;
+    }
+    lastReportedErrorRef.current = { msg: error, ts: now };
+    api
+      .reportClientError({
+        message: sanitizeTechnicalMessage(error),
+        module: activeModule,
+        context: activeView === "admin" ? "admin_portal" : selectedSectionId,
+      })
+      .catch(() => {
+        /* never loop on telemetry failure */
+      });
+  }, [error, currentUser, activeModule, activeView, selectedSectionId]);
+
+  // Poll live error alerts for Admin users so they see student & system incidents as they happen
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== "admin") {
+      adminAlertsInitializedRef.current = false;
+      seenAdminAlertIdsRef.current.clear();
+      setAdminAlerts([]);
+      setLiveAdminToast(null);
+      setUnreadAdminAlerts(0);
+      return;
+    }
+
+    let cancelled = false;
+    const pollAlerts = async () => {
+      try {
+        const items = await api.adminListErrorAlerts(20);
+        if (cancelled) return;
+        setAdminAlerts(items);
+        if (!adminAlertsInitializedRef.current) {
+          items.forEach((a) => seenAdminAlertIdsRef.current.add(a.id));
+          adminAlertsInitializedRef.current = true;
+          return;
+        }
+        const newlyArrived = items.filter((a) => !seenAdminAlertIdsRef.current.has(a.id));
+        if (newlyArrived.length > 0) {
+          newlyArrived.forEach((a) => seenAdminAlertIdsRef.current.add(a.id));
+          setUnreadAdminAlerts((c) => c + newlyArrived.length);
+          setLiveAdminToast(newlyArrived[0]);
+        }
+      } catch {
+        /* silent background poll */
+      }
+    };
+
+    pollAlerts();
+    const interval = window.setInterval(pollAlerts, 15000);
+    const onFocus = () => pollAlerts();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [currentUser]);
+
+  // Poll "issue fixed" notifications targeted to the current user's account
+  useEffect(() => {
+    if (!currentUser) {
+      setResolvedNotifications([]);
+      return;
+    }
+    let cancelled = false;
+    const pollResolved = async () => {
+      try {
+        const items = await api.listResolvedErrorNotifications();
+        if (!cancelled) {
+          setResolvedNotifications(items);
+        }
+      } catch {
+        /* silent background poll */
+      }
+    };
+    pollResolved();
+    const interval = window.setInterval(pollResolved, 20000);
+    const onFocus = () => pollResolved();
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [currentUser]);
+
+  const handleResolveAdminAlert = useCallback(async (alertId: string) => {
+    setResolvingAlertId(alertId);
+    try {
+      const res = await api.adminResolveErrorAlert(alertId);
+      setAdminAlerts((prev) =>
+        prev.map((a) =>
+          a.id === alertId
+            ? {
+                ...a,
+                resolved: true,
+                resolved_at: res.resolved_at,
+                resolved_by: res.resolved_by,
+                resolution_note: res.resolution_note,
+              }
+            : a
+        )
+      );
+      setLiveAdminToast((prev) => (prev && prev.id === alertId ? null : prev));
+    } catch {
+      /* ignore transient resolve failure */
+    } finally {
+      setResolvingAlertId(null);
+    }
+  }, []);
+
+  const handleDismissResolvedNotification = useCallback(async (notificationId: string) => {
+    setResolvedNotifications((prev) => prev.filter((n) => n.id !== notificationId));
+    try {
+      await api.dismissResolvedErrorNotification(notificationId);
+    } catch {
+      /* already removed locally */
+    }
+  }, []);
 
   const loadWorkspaceData = useCallback(async (targetLang?: AppLang) => {
     setLoading(true);
@@ -235,6 +406,29 @@ export default function App() {
       }
     }
   }
+
+  const handleOpenUserWorkspace = useCallback(
+    async (projectId: string, _studentName: string) => {
+      setShowCreateModal(false);
+      setLoading(true);
+      setError(null);
+      setActiveModule("module1");
+      setSelectedSectionId("cover_page");
+      setActiveView("studio");
+      if (window.location.pathname.startsWith("/admin")) {
+        window.history.pushState({}, "", "/");
+      }
+      try {
+        const proj = await api.getProject(projectId);
+        setActiveProject(proj);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
 
   function openAdminPortal() {
     if (currentUser?.role !== "admin") return;
@@ -521,7 +715,7 @@ export default function App() {
             </div>
 
             {/* Project Selector (Studio mode) */}
-            {activeView === "studio" && projects.length > 0 && (
+            {activeView === "studio" && (projects.length > 0 || activeProject) && (
               <select
                 value={activeProject?.project_id ?? ""}
                 onChange={(e) => {
@@ -530,6 +724,12 @@ export default function App() {
                 }}
                 className="max-w-[180px] rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-700"
               >
+                {activeProject &&
+                  !projects.some((p) => p.project_id === activeProject.project_id) && (
+                    <option value={activeProject.project_id}>
+                      [Assistance] {activeProject.name}
+                    </option>
+                  )}
                 {projects.map((p) => (
                   <option key={p.project_id} value={p.project_id}>
                     {p.name}
@@ -553,20 +753,140 @@ export default function App() {
               </button>
             )}
 
-            {/* Admin Portal Switch */}
+            {/* Admin Portal Switch & Live Error Alerts Bell */}
             {isAdmin && (
-              <button
-                type="button"
-                onClick={activeView === "admin" ? exitAdminPortal : openAdminPortal}
-                className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
-                  activeView === "admin"
-                    ? "bg-slate-900 text-white shadow-xs"
-                    : "border border-[#004A8F]/25 bg-sky-50 text-[#004A8F] hover:bg-sky-100"
-                }`}
-              >
-                <Shield className="h-3.5 w-3.5" />
-                {activeView === "admin" ? t("nav.studio") : t("nav.admin")}
-              </button>
+              <>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAdminAlertsMenu((v) => !v);
+                      setUnreadAdminAlerts(0);
+                    }}
+                    className={`relative inline-flex items-center justify-center rounded-lg border p-1.5 transition ${
+                      unreadAdminAlerts > 0
+                        ? "border-rose-300 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                        : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                    }`}
+                    title={
+                      lang === "en"
+                        ? "Live system & student error alerts"
+                        : "Alertes erreurs temps réel (étudiants & système)"
+                    }
+                  >
+                    <Bell className="h-3.5 w-3.5" />
+                    {unreadAdminAlerts > 0 && (
+                      <span className="absolute -right-1.5 -top-1.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-rose-600 px-1 text-[10px] font-bold text-white">
+                        {unreadAdminAlerts > 9 ? "9+" : unreadAdminAlerts}
+                      </span>
+                    )}
+                  </button>
+
+                  {showAdminAlertsMenu && (
+                    <div className="absolute right-0 top-full z-50 mt-2 w-96 max-w-[90vw] rounded-xl border border-slate-200 bg-white p-3 text-xs shadow-xl">
+                      <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                        <span className="font-bold text-slate-900">
+                          {lang === "en"
+                            ? "Real-Time Error Feed (Admin)"
+                            : "Journal d'erreurs en direct (Admin)"}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setShowAdminAlertsMenu(false)}
+                          className="text-slate-400 hover:text-slate-700"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      {adminAlerts.length === 0 ? (
+                        <p className="py-4 text-center text-slate-500">
+                          {lang === "en"
+                            ? "No recent errors recorded."
+                            : "Aucune erreur récente enregistrée."}
+                        </p>
+                      ) : (
+                        <div className="mt-2 max-h-80 space-y-2 overflow-y-auto pr-1">
+                          {adminAlerts.map((a) => (
+                            <div
+                              key={a.id}
+                              className={`rounded-lg border p-2.5 ${
+                                a.resolved
+                                  ? "border-emerald-200 bg-emerald-50/70"
+                                  : "border-rose-200 bg-rose-50/70"
+                              }`}
+                            >
+                              <div
+                                className={`flex items-center justify-between gap-2 text-[11px] font-semibold ${
+                                  a.resolved ? "text-emerald-900" : "text-rose-900"
+                                }`}
+                              >
+                                <span className="truncate">
+                                  {a.user_name || a.user_email || "Utilisateur"}
+                                  {a.module ? ` · ${a.module}` : ""}
+                                </span>
+                                <span
+                                  className={`shrink-0 font-normal ${
+                                    a.resolved ? "text-emerald-700" : "text-rose-700"
+                                  }`}
+                                >
+                                  {new Date(a.created_at).toLocaleTimeString([], {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}
+                                </span>
+                              </div>
+                              <p
+                                className={`mt-1 break-words font-mono text-[11px] ${
+                                  a.resolved ? "text-emerald-950/80" : "text-rose-950"
+                                }`}
+                              >
+                                {sanitizeTechnicalMessage(a.error_message)}
+                              </p>
+                              <div className="mt-2 flex items-center justify-between gap-2">
+                                {a.resolved ? (
+                                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                                    <CheckCircle2 className="h-3 w-3" />
+                                    {lang === "en" ? "Fixed · User notified" : "Résolu · Utilisateur notifié"}
+                                  </span>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={resolvingAlertId === a.id}
+                                    onClick={() => handleResolveAdminAlert(a.id)}
+                                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white shadow-xs transition hover:bg-emerald-700 disabled:opacity-60"
+                                  >
+                                    <CheckCircle2 className="h-3 w-3" />
+                                    {resolvingAlertId === a.id
+                                      ? lang === "en"
+                                        ? "Notifying..."
+                                        : "Notification..."
+                                      : lang === "en"
+                                      ? "Mark Fixed & Notify User"
+                                      : "Marquer résolu & notifier"}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={activeView === "admin" ? exitAdminPortal : openAdminPortal}
+                  className={`inline-flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-semibold transition ${
+                    activeView === "admin"
+                      ? "bg-slate-900 text-white shadow-xs"
+                      : "border border-[#004A8F]/25 bg-sky-50 text-[#004A8F] hover:bg-sky-100"
+                  }`}
+                >
+                  <Shield className="h-3.5 w-3.5" />
+                  {activeView === "admin" ? t("nav.studio") : t("nav.admin")}
+                </button>
+              </>
             )}
 
             {/* User Badge & Account Actions */}
@@ -808,25 +1128,210 @@ export default function App() {
         )}
       </header>
 
-      {/* Main Content */}
-      <main className="mx-auto max-w-7xl px-3.5 py-4 pb-24 sm:px-6 sm:py-6 md:pb-8">
-        {error && (
-          <div className="mb-4 flex items-center justify-between rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
-            <span>{error}</span>
+      {/* Always-Visible Floating Viewport Error / Warning Banner (no scrolling needed) */}
+      {error && (() => {
+        const formatted = formatErrorForRole(error, isAdmin, lang);
+        const isWarn = formatted.severity === "warning";
+        return (
+          <div
+            role="alert"
+            aria-live="assertive"
+            className={`fixed left-1/2 top-4 z-50 flex w-[min(94vw,720px)] -translate-x-1/2 items-start justify-between gap-3 rounded-xl border px-4 py-3.5 text-sm shadow-xl backdrop-blur ${
+              isWarn
+                ? "border-amber-300 bg-amber-50/95 text-amber-950"
+                : "border-rose-300 bg-rose-50/95 text-rose-950"
+            }`}
+          >
+            <div className="flex min-w-0 items-start gap-2.5">
+              {isWarn ? (
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+              ) : (
+                <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-rose-600" />
+              )}
+              <div className="min-w-0">
+                {isAdmin && (
+                  <div className="mb-0.5 text-[11px] font-bold uppercase tracking-wide text-rose-700">
+                    {lang === "en" ? "Admin · Real Error Details" : "Admin · Erreur technique réelle"}
+                  </div>
+                )}
+                <p className={`break-words leading-snug ${isAdmin ? "font-mono text-xs" : "font-medium"}`}>
+                  {formatted.displayMessage}
+                </p>
+              </div>
+            </div>
             <button
               type="button"
               onClick={() => setError(null)}
-              className="ml-4 text-xs font-semibold underline"
+              className="shrink-0 rounded-md p-1 text-current/70 hover:bg-black/5 hover:text-current"
+              aria-label={t("nav.close")}
+              title={t("nav.close")}
             >
-              {t("nav.close")}
+              <X className="h-4 w-4" />
             </button>
           </div>
-        )}
+        );
+      })()}
+
+      {/* Real-Time Admin Incident Toast (shows student & system errors live as they occur) */}
+      {isAdmin && liveAdminToast && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-5 right-5 z-50 w-[min(92vw,440px)] rounded-xl border border-rose-300 bg-slate-900 p-4 text-xs text-white shadow-2xl"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2 font-bold text-rose-300">
+              <Bell className="h-4 w-4 shrink-0" />
+              <span>
+                {lang === "en" ? "Live User Error Alert" : "Alerte erreur en direct"}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setLiveAdminToast(null)}
+              className="rounded p-0.5 text-slate-400 hover:bg-white/10 hover:text-white"
+              aria-label={t("nav.close")}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div className="mt-1.5 text-[11px] text-slate-300">
+            <strong className="text-white">
+              {liveAdminToast.user_name || liveAdminToast.user_email}
+            </strong>
+            {liveAdminToast.module ? ` · ${liveAdminToast.module}` : ""}
+            {liveAdminToast.context ? ` (${liveAdminToast.context})` : ""}
+          </div>
+          <p className="mt-2 max-h-28 overflow-y-auto break-words rounded-lg bg-black/40 p-2 font-mono text-[11px] text-rose-200">
+            {sanitizeTechnicalMessage(liveAdminToast.error_message)}
+          </p>
+          <div className="mt-2.5 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              disabled={resolvingAlertId === liveAdminToast.id}
+              onClick={() => handleResolveAdminAlert(liveAdminToast.id)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-[11px] font-semibold text-white transition hover:bg-emerald-500 disabled:opacity-60"
+            >
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              {resolvingAlertId === liveAdminToast.id
+                ? lang === "en"
+                  ? "Notifying..."
+                  : "Notification..."
+                : lang === "en"
+                ? "Mark Fixed & Notify User"
+                : "Marquer résolu & notifier"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Affected User "Issue Fixed — You Can Retry" Dismissible Notification */}
+      {resolvedNotifications.length > 0 && !(isAdmin && liveAdminToast) && (
+        <div
+          role="status"
+          aria-live="polite"
+          className="fixed bottom-5 right-5 z-50 flex w-[min(92vw,420px)] flex-col gap-2.5"
+        >
+          {resolvedNotifications.slice(0, 2).map((notif) => (
+            <div
+              key={notif.id}
+              className="rounded-xl border border-emerald-300 bg-emerald-50 p-4 text-xs text-emerald-950 shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex items-center gap-2 font-bold text-emerald-800">
+                  <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                  <span>
+                    {lang === "en"
+                      ? "Issue Fixed — You Can Retry"
+                      : "Incident résolu — Vous pouvez réessayer"}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleDismissResolvedNotification(notif.id)}
+                  className="rounded p-0.5 text-emerald-700/70 hover:bg-emerald-100 hover:text-emerald-900"
+                  aria-label={t("nav.close")}
+                  title={t("nav.close")}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <p className="mt-1.5 leading-relaxed text-emerald-900">
+                {lang === "en" ? notif.message_en : notif.message_fr}
+              </p>
+              {notif.note && (
+                <p className="mt-1.5 rounded-lg bg-white/80 px-2.5 py-1.5 text-[11px] font-medium text-emerald-900 ring-1 ring-emerald-200">
+                  {notif.note}
+                </p>
+              )}
+              <div className="mt-2.5 flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={() => handleDismissResolvedNotification(notif.id)}
+                  className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-semibold text-white transition hover:bg-emerald-700"
+                >
+                  {lang === "en" ? "Got it, dismiss" : "Compris, fermer"}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Main Content */}
+      <main className="mx-auto max-w-7xl px-3.5 py-4 pb-24 sm:px-6 sm:py-6 md:pb-8">
 
         {activeView === "admin" && isAdmin ? (
-          <AdminPortal currentAdminId={currentUser.id} onExitAdmin={exitAdminPortal} />
+          <AdminPortal
+            currentAdminId={currentUser.id}
+            onExitAdmin={exitAdminPortal}
+            onOpenUserWorkspace={handleOpenUserWorkspace}
+          />
         ) : (
           <>
+            {isAdmin &&
+              activeProject &&
+              activeProject.owner_user_id &&
+              activeProject.owner_user_id !== currentUser.id && (
+                <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs text-rose-950">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose-700" />
+                    <div>
+                      <span className="font-bold">
+                        {lang === "en"
+                          ? "Admin Support Mode — Student Workspace:"
+                          : "Mode assistance Admin — Espace de travail de :"}
+                      </span>{" "}
+                      <strong>
+                        {activeProject.cover?.author_name ||
+                          activeProject.locked_author_name ||
+                          activeProject.owner_user_id}
+                      </strong>
+                      {" · "}
+                      {lang === "en"
+                        ? "You can assist on sections/exports; document import remains blocked to protect their work."
+                        : "Vous pouvez assister l'étudiant sur ses sections et exports ; l'importation de document reste bloquée par sécurité."}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setActiveProject(projects[0] ?? null)}
+                      className="rounded-lg border border-rose-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-rose-900 hover:bg-rose-100"
+                    >
+                      {lang === "en" ? "Back to my workspace" : "Retour à mon espace"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={openAdminPortal}
+                      className="rounded-lg bg-rose-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-rose-800"
+                    >
+                      {lang === "en" ? "Admin Portal" : "Portail Admin"}
+                    </button>
+                  </div>
+                </div>
+              )}
+
             {isModuleReadOnly && activeProject && (
               <div className="mb-4 flex items-start gap-2.5 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-xs text-amber-950">
                 <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />

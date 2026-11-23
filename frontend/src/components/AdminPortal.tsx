@@ -8,6 +8,7 @@ import {
   ClipboardCopy,
   CreditCard,
   Edit3,
+  ExternalLink,
   FileText,
   GraduationCap,
   KeyRound,
@@ -45,6 +46,7 @@ import type {
 interface AdminPortalProps {
   currentAdminId: string;
   onExitAdmin: () => void;
+  onOpenUserWorkspace?: (projectId: string, studentName: string) => void | Promise<void>;
 }
 
 type AdminTab = "dashboard" | "users" | "plans" | "stats";
@@ -101,7 +103,11 @@ function statusBadge(status: string): { label: string; cls: string } {
   }
 }
 
-export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
+export function AdminPortal({
+  currentAdminId,
+  onExitAdmin,
+  onOpenUserWorkspace,
+}: AdminPortalProps) {
   const [tab, setTab] = useState<AdminTab>("dashboard");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -1726,10 +1732,32 @@ export function AdminPortal({ currentAdminId, onExitAdmin }: AdminPortalProps) {
                             ? ` · ${userDetail.user.project_id}`
                             : " · Protocole créé à l'enregistrement"}
                         </div>
-                        <div className="text-[11px] font-medium text-slate-600">
-                          {userDetail.user.sections_validated_count}/24 sections validées ·{" "}
-                          {userDetail.user.patients_count} fiches patients ·{" "}
-                          {userDetail.user.exports_count} exports
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-[11px] font-medium text-slate-600">
+                            {userDetail.user.sections_validated_count}/24 sections validées ·{" "}
+                            {userDetail.user.patients_count} fiches patients ·{" "}
+                            {userDetail.user.exports_count} exports
+                          </span>
+                          {userDetail.user.project_id && onOpenUserWorkspace && (
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => {
+                                setBusy(true);
+                                Promise.resolve(
+                                  onOpenUserWorkspace(
+                                    userDetail.user.project_id!,
+                                    userDetail.user.full_name
+                                  )
+                                ).finally(() => setBusy(false));
+                              }}
+                              className="inline-flex items-center gap-1.5 rounded-lg bg-[#004A8F] px-3 py-1.5 text-[11px] font-semibold text-white shadow-xs transition hover:bg-[#003a70] disabled:opacity-60"
+                              title="Ouvrir le protocole de cet étudiant dans le Studio pour l'assister (l'importation de document reste bloquée par sécurité)"
+                            >
+                              <ExternalLink className="h-3.5 w-3.5" />
+                              {busy ? "Ouverture..." : "Ouvrir l'espace de travail"}
+                            </button>
+                          )}
                         </div>
                       </div>
 

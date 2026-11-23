@@ -304,6 +304,132 @@ def health_check() -> Dict[str, object]:
     }
 
 
+class ClientErrorReportRequest(BaseModel):
+    message: str
+    context: str = ""
+    module: str = ""
+    status_code: Optional[int] = None
+
+
+@app.post("/api/client-errors")
+def report_client_error(
+    payload: ClientErrorReportRequest,
+    request: Request,
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Record a runtime error event so administrators receive the real error details in real time."""
+    raw_msg = (payload.message or "").strip()
+    if not raw_msg:
+        return {"recorded": False}
+    try:
+        from app.db.datastore import as_store
+        from app.db.models import utcnow
+
+        store = as_store(db)
+        store.create_audit_log(
+            admin_id=None,
+            target_user_id=current_user.id,
+            action="runtime_error_alert",
+            details_json={
+                "error_message": raw_msg[:1500],
+                "context": (payload.context or "")[:200],
+                "module": (payload.module or "")[:64],
+                "status_code": payload.status_code,
+                "user_name": current_user.full_name,
+                "user_email": current_user.email,
+                "user_role": current_user.role,
+                "ip_address": get_client_ip(request),
+                "source": "client",
+            },
+            created_at=utcnow(),
+        )
+        return {"recorded": True}
+    except Exception:
+        return {"recorded": False}
+
+
+@app.get("/api/notifications/resolved-errors")
+def list_user_resolved_error_notifications(
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Return undismissed 'issue fixed' notifications targeted at the current user's account."""
+    try:
+        from app.core.security import ensure_utc
+        from app.db.datastore import as_store
+        from app.db.models import utcnow
+
+        store = as_store(db)
+        logs = store.list_audit_logs(limit=250)
+        dismissed_ids = {
+            str((l.details_json or {}).get("notification_id") or "").strip()
+            for l in logs
+            if l.action == "runtime_error_resolution_dismissed"
+            and l.target_user_id == current_user.id
+        }
+        now = utcnow()
+        out: List[Dict[str, Any]] = []
+        seen_alert_ids: set[str] = set()
+        for l in logs:
+            if l.action != "runtime_error_resolved" or l.target_user_id != current_user.id:
+                continue
+            if l.id in dismissed_ids:
+                continue
+            d = l.details_json or {}
+            aid = str(d.get("alert_id") or l.id)
+            if aid in seen_alert_ids:
+                continue
+            seen_alert_ids.add(aid)
+            note = str(d.get("note") or "").strip()
+            out.append(
+                {
+                    "id": l.id,
+                    "alert_id": aid,
+                    "module": str(d.get("module") or ""),
+                    "resolved_at": (ensure_utc(l.created_at) or now).isoformat(),
+                    "message_fr": (
+                        "Bonne nouvelle ! L'incident technique que vous avez rencontré a été corrigé "
+                        "par notre équipe. Vous pouvez maintenant réessayer votre action sereinement."
+                    ),
+                    "message_en": (
+                        "Good news! The technical issue you encountered has been fixed by our team. "
+                        "You can now safely retry your action."
+                    ),
+                    "note": note,
+                }
+            )
+            if len(out) >= 5:
+                break
+        return out
+    except Exception:
+        return []
+
+
+@app.post("/api/notifications/resolved-errors/{notification_id}/dismiss")
+def dismiss_user_resolved_error_notification(
+    notification_id: str,
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Dismiss a resolved-error notification for the current user's account."""
+    try:
+        from app.db.datastore import as_store
+        from app.db.models import utcnow
+
+        store = as_store(db)
+        store.create_audit_log(
+            admin_id=None,
+            target_user_id=current_user.id,
+            action="runtime_error_resolution_dismissed",
+            details_json={"notification_id": notification_id},
+            created_at=utcnow(),
+        )
+        return {"dismissed": True, "notification_id": notification_id}
+    except Exception:
+        return {"dismissed": False, "notification_id": notification_id}
+
+
 @app.post("/api/auth/login", response_model=TokenResponse)
 def auth_login(
     payload: LoginRequest,
@@ -480,8 +606,13 @@ def translate_department(
 
 
 @app.get("/api/projects", response_model=List[ProtocolProject])
-def list_projects(current_user: UserRecord = Depends(get_active_user)) -> List[ProtocolProject]:
-    return project_storage.list_for_user(current_user.id, current_user.role)
+def list_projects(
+    include_all: bool = False,
+    current_user: UserRecord = Depends(get_active_user),
+) -> List[ProtocolProject]:
+    """Return strictly the caller's own projects by default (admins must opt in with include_all=true)."""
+    effective_role = "admin" if (include_all and current_user.role == "admin") else "student"
+    return project_storage.list_for_user(current_user.id, effective_role)
 
 
 @app.post("/api/projects", response_model=ProtocolProject)
@@ -712,6 +843,13 @@ def update_section(
     if payload.user_notes is not None:
         sec.user_notes = payload.user_notes
 
+    if section_id == "chap3_budget" and (payload.content_markdown is not None or payload.content_html is not None):
+        from app.services.budget_engine import sync_budget_from_section
+        from app.services.presentation_orchestrator import refresh_budget_slide_if_present
+
+        sync_budget_from_section(project, overwrite=True)
+        refresh_budget_slide_if_present(project)
+
     _sync_module2_queue(project)
     evaluate_project_coherence(project, changed_section_id=section_id)
     saved = project_storage.save(project)
@@ -753,9 +891,14 @@ def update_structured_data(
         if payload.timeline_grid.rows and "chap3_chronogramme" in project.sections:
             project.sections["chap3_chronogramme"].suppress_structured_table = False
     if payload.budget is not None:
-        project.budget = payload.budget
-        if payload.budget and "chap3_budget" in project.sections:
+        from app.services.budget_engine import normalize_budget_items, sync_section_from_budget
+        from app.services.presentation_orchestrator import refresh_budget_slide_if_present
+
+        project.budget = normalize_budget_items(payload.budget)
+        if project.budget and "chap3_budget" in project.sections:
             project.sections["chap3_budget"].suppress_structured_table = False
+            sync_section_from_budget(project)
+        refresh_budget_slide_if_present(project)
     if payload.annexes_config is not None:
         project.annexes_config = payload.annexes_config
     _sync_module2_queue(project)
@@ -1710,6 +1853,17 @@ async def import_existing_protocol(
     db: Any = Depends(get_db),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
+    if project.owner_user_id and project.owner_user_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "CROSS_USER_IMPORT_BLOCKED",
+                "message": (
+                    "Par sécurité, l'importation sur le protocole d'un autre utilisateur est bloquée "
+                    "afin d'éviter d'écraser son travail. Créez votre propre protocole dans le Studio."
+                ),
+            },
+        )
     normalized_mode = "internal_source" if (import_mode or "").strip().lower() == "internal_source" else "skeleton"
     cost = assert_ai_quota_available(db, current_user, module_key="module1", action="import_protocol")
     cover_snapshot = project.cover.model_copy(deep=True)
@@ -1838,6 +1992,9 @@ def sync_structured_data(
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     report = sync_structured_from_sections(project)
+    from app.services.presentation_orchestrator import refresh_budget_slide_if_present
+
+    refresh_budget_slide_if_present(project)
     saved = project_storage.save(project)
     return {"project": saved.model_dump(mode="json"), "report": report}
 

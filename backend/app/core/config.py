@@ -26,10 +26,13 @@ class Settings(BaseSettings):
 
     gemini_primary_reasoning_model: str = "gemini-3.5-flash-lite"
     gemini_fallback_reasoning_model: str = "gemini-3.1-flash-lite"
+    gemini_request_timeout_ms: int = 60_000
+    gemini_relay_cooldown_seconds: int = 45
     student_daily_gemini38_limit: int = 15
     ai_user_max_rpm: int = 10
-    ai_user_max_rpd: int = 40
-    ai_user_max_tokens_per_day: int = 100_000
+    ai_user_max_rpd: int = 250
+    ai_user_max_tpm: int = 100_000
+    ai_user_max_tokens_per_day: int = 0
 
     gemini_models_research: str = "gemini-3.1-flash-lite,gemini-3.5-flash-lite,gemini-3.5-flash"
     gemini_models_segmentation: str = "gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-3.5-flash"

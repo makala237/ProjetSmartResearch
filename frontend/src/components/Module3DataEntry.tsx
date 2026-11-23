@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDown,
@@ -10,7 +10,6 @@ import {
   Download,
   FileSpreadsheet,
   FileText,
-  Pencil,
   Plus,
   RefreshCw,
   Save,
@@ -20,6 +19,7 @@ import {
   Trash2,
   UserPlus,
   Wand2,
+  X,
 } from "lucide-react";
 import { api } from "../api/client";
 import { useLanguage } from "../i18n/LanguageContext";
@@ -101,6 +101,8 @@ export function Module3DataEntry({
     cames_compliance_checklist: string[];
   } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [lastSavedRecord, setLastSavedRecord] = useState<PatientRecord | null>(null);
+  const formTopRef = useRef<HTMLFormElement | null>(null);
 
   // Paper preview HTML from backend crf_builder
   const [annexe1Html, setAnnexe1Html] = useState<string>("");
@@ -109,7 +111,9 @@ export function Module3DataEntry({
   const [draftFields, setDraftFields] = useState<CRFFieldSpec[]>(
     project.crf_fields ?? []
   );
+  const [designerDirty, setDesignerDirty] = useState(false);
   const [syncAnnexe1OnSave, setSyncAnnexe1OnSave] = useState(true);
+  const [backendHospitalSites, setBackendHospitalSites] = useState<string[]>([]);
 
   // Patient Data Entry form state
   const records = project.patient_records ?? [];
@@ -123,7 +127,7 @@ export function Module3DataEntry({
     new Date().toISOString().slice(0, 10)
   );
   const [hospitalSite, setHospitalSite] = useState<string>(
-    project.cover?.host_institutions?.[0] || "HGOPY"
+    project.cover?.host_institutions?.find((s) => s.trim()) || "HGOPY"
   );
   const [investigatorName, setInvestigatorName] = useState<string>(
     project.cover?.author_name || ""
@@ -134,36 +138,120 @@ export function Module3DataEntry({
   const [notes, setNotes] = useState<string>("");
 
   const hospitalChoices = useMemo(() => {
-    const base =
-      project.cover?.host_institutions?.filter((s) => s.trim()) ?? [];
-    const merged = Array.from(new Set([...base, "HGOPY", "HCBY", "HGY"]));
-    return merged.slice(0, 6);
-  }, [project.cover?.host_institutions]);
+    const coverSites =
+      project.cover?.host_institutions?.map((s) => s.trim()).filter(Boolean) ?? [];
+    if (coverSites.length > 0) {
+      return Array.from(new Set(coverSites)).slice(0, 8);
+    }
+    const syncedSites = backendHospitalSites.map((s) => s.trim()).filter(Boolean);
+    if (syncedSites.length > 0) {
+      return Array.from(new Set(syncedSites)).slice(0, 8);
+    }
+    return ["HGOPY", "HCBY", "HGY"];
+  }, [project.cover?.host_institutions, backendHospitalSites]);
 
-  // Synchronize draft schema & load Annexe 1 HTML when project changes
+  // Content fingerprint across CRF upstream sources (omits updated_at so patient saves do not re-fetch preview HTML)
+  const crfSyncSignature = useMemo(
+    () =>
+      JSON.stringify({
+        id: project.project_id,
+        crfFields: project.crf_fields ?? [],
+        variables: project.variables ?? [],
+        chap1Md: project.sections?.chap1_variables?.content_markdown ?? "",
+        chap1Html: project.sections?.chap1_variables?.content_html ?? "",
+        chap1Tables: project.sections?.chap1_variables?.custom_tables ?? [],
+        annexesMd: project.sections?.annexes?.content_markdown ?? "",
+        coverTitle: project.cover?.title ?? "",
+        coverAuthor: project.cover?.author_name ?? "",
+        coverMatricule: project.cover?.matricule ?? "",
+        coverSites: project.cover?.host_institutions ?? [],
+      }),
+    [
+      project.project_id,
+      project.crf_fields,
+      project.variables,
+      project.sections?.chap1_variables?.content_markdown,
+      project.sections?.chap1_variables?.content_html,
+      project.sections?.chap1_variables?.custom_tables,
+      project.sections?.annexes?.content_markdown,
+      project.cover?.title,
+      project.cover?.author_name,
+      project.cover?.matricule,
+      project.cover?.host_institutions,
+    ]
+  );
+
+  // Reset dirty designer flag & transient notice when switching projects
   useEffect(() => {
-    setDraftFields(project.crf_fields ?? []);
+    setDesignerDirty(false);
+    setLastSavedRecord(null);
+  }, [project.project_id]);
+
+  // Real-time synchronize draft schema, hospital sites & Annexe 1 HTML when any source changes
+  useEffect(() => {
+    let cancelled = false;
+    if (!designerDirty) {
+      setDraftFields(project.crf_fields ?? []);
+    }
     api
       .getCrfPreviewHtml(project.project_id)
       .then((res) => {
+        if (cancelled) return;
         setAnnexe1Html(res.annexe1_html);
-        if (
-          (!project.crf_fields || project.crf_fields.length === 0) &&
-          res.crf_fields?.length > 0
-        ) {
+        if (res.hospital_sites?.length) {
+          setBackendHospitalSites(res.hospital_sites);
+        }
+        const incomingJson = JSON.stringify(res.crf_fields ?? []);
+        const currentJson = JSON.stringify(project.crf_fields ?? []);
+        if (res.crf_fields && incomingJson !== currentJson) {
           onProjectUpdated({ ...project, crf_fields: res.crf_fields });
-          setDraftFields(res.crf_fields);
+          if (!designerDirty) {
+            setDraftFields(res.crf_fields);
+          }
         }
       })
       .catch(() => {
         /* fallback silently if offline */
       });
-    // Reset new patient default investigator when switching projects
+
     if (!editingRecordId) {
       setPatientCode(computeNextPatientCode(project.patient_records ?? []));
       setInvestigatorName(project.cover?.author_name || "");
+      const preferredSite =
+        project.cover?.host_institutions?.find((s) => s.trim()) ||
+        hospitalChoices[0] ||
+        "HGOPY";
+      if (!hospitalSite || !hospitalChoices.includes(hospitalSite)) {
+        setHospitalSite(preferredSite);
+      }
     }
-  }, [project.project_id, project.crf_fields?.length]);
+    return () => {
+      cancelled = true;
+    };
+  }, [crfSyncSignature]);
+
+  // Refresh project silently on window focus so multi-tab edits sync in real time
+  useEffect(() => {
+    function handleWindowFocus() {
+      if (busy || designerDirty) return;
+      api
+        .getProject(project.project_id)
+        .then((fresh) => {
+          if (
+            fresh.updated_at !== project.updated_at ||
+            JSON.stringify(fresh.crf_fields ?? []) !==
+              JSON.stringify(project.crf_fields ?? [])
+          ) {
+            onProjectUpdated(fresh);
+          }
+        })
+        .catch(() => {
+          /* ignore background refresh errors */
+        });
+    }
+    window.addEventListener("focus", handleWindowFocus);
+    return () => window.removeEventListener("focus", handleWindowFocus);
+  }, [project.project_id, project.updated_at, project.crf_fields, busy, designerDirty]);
 
   const sectionsGrouped = useMemo(() => {
     const groups: Array<{ title: string; items: CRFFieldSpec[] }> = [];
@@ -201,15 +289,44 @@ export function Module3DataEntry({
     );
   }, [records, searchQuery]);
 
-  function startNewPatientForm() {
+  const currentAnsweredCount = useMemo(() => {
+    let filled = 0;
+    for (const f of fields) {
+      const val = values[f.field_id];
+      if (
+        Array.isArray(val)
+          ? val.length > 0
+          : val !== undefined && val !== null && String(val).trim() !== ""
+      ) {
+        filled += 1;
+      }
+    }
+    return filled;
+  }, [fields, values]);
+
+  function resetForNextPatient(
+    nextRecords: PatientRecord[],
+    keepSiteAndInvestigator = true
+  ) {
     setEditingRecordId(null);
-    setPatientCode(computeNextPatientCode(records));
-    setInclusionDate(new Date().toISOString().slice(0, 10));
-    setHospitalSite(hospitalChoices[0] || "HGOPY");
-    setInvestigatorName(project.cover?.author_name || "");
+    setPatientCode(computeNextPatientCode(nextRecords));
     setValues({});
     setNotes("");
-    setNotice(null);
+    if (!keepSiteAndInvestigator) {
+      setInclusionDate(new Date().toISOString().slice(0, 10));
+      setHospitalSite(hospitalChoices[0] || "HGOPY");
+      setInvestigatorName(project.cover?.author_name || "");
+    }
+  }
+
+  function startNewPatientForm(clearNotice = true) {
+    resetForNextPatient(records, false);
+    setSubTab("entry");
+    if (clearNotice) {
+      setNotice(null);
+      setLastSavedRecord(null);
+    }
+    formTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function loadPatientIntoForm(rec: PatientRecord) {
@@ -220,12 +337,19 @@ export function Module3DataEntry({
     setInvestigatorName(rec.investigator_name || "");
     setValues({ ...(rec.values || {}) });
     setNotes(rec.notes || "");
-    setNotice(`Édition de la fiche ${rec.patient_code}`);
+    setLastSavedRecord(null);
+    setNotice(
+      lang === "en"
+        ? `Editing record ${rec.patient_code}`
+        : `Modification de la fiche ${rec.patient_code}`
+    );
     setSubTab("entry");
+    formTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   async function handleSavePatient(e: React.FormEvent) {
     e.preventDefault();
+    const wasEditing = Boolean(editingRecordId);
     setBusy(true);
     setNotice(null);
     onError("");
@@ -240,11 +364,20 @@ export function Module3DataEntry({
         notes,
       });
       onProjectUpdated(res.project);
-      setEditingRecordId(res.record.record_id);
-      setPatientCode(res.record.patient_code);
+      const updatedRecords = res.project.patient_records ?? [];
+      const nextCode = computeNextPatientCode(updatedRecords);
+      setLastSavedRecord(res.record);
+      resetForNextPatient(updatedRecords, true);
       setNotice(
-        `Patient ${res.record.patient_code} enregistré avec succès (${res.project.patient_records?.length ?? 0} fiches au total).`
+        lang === "en"
+          ? wasEditing
+            ? `Record ${res.record.patient_code} updated! Form reset and ready for ${nextCode}.`
+            : `Patient ${res.record.patient_code} saved (${updatedRecords.length} total)! Form reset and ready for ${nextCode}.`
+          : wasEditing
+            ? `Fiche ${res.record.patient_code} mise à jour ! Formulaire réinitialisé et prêt pour ${nextCode}.`
+            : `Patient ${res.record.patient_code} enregistré (${updatedRecords.length} au total) ! Formulaire prêt pour ${nextCode}.`
       );
+      formTopRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -268,8 +401,11 @@ export function Module3DataEntry({
         rec.record_id
       );
       onProjectUpdated(updated);
+      if (lastSavedRecord?.record_id === rec.record_id) {
+        setLastSavedRecord(null);
+      }
       if (editingRecordId === rec.record_id) {
-        startNewPatientForm();
+        resetForNextPatient(updated.patient_records ?? [], false);
       }
       setNotice(`Fiche ${rec.patient_code} supprimée.`);
     } catch (err) {
@@ -350,6 +486,7 @@ export function Module3DataEntry({
       const res = await api.syncProjectCrf(project.project_id, forceExtract);
       onProjectUpdated(res.project);
       setDraftFields(res.crf_fields);
+      setDesignerDirty(false);
       setAnnexe1Html(res.annexe1_html);
       if (res.detection && res.sync_report) {
         setExtractReport({
@@ -381,6 +518,7 @@ export function Module3DataEntry({
       );
       onProjectUpdated(res.project);
       setDraftFields(res.crf_fields);
+      setDesignerDirty(false);
       setAnnexe1Html(res.annexe1_html);
       setNotice(
         syncAnnexe1OnSave
@@ -395,6 +533,7 @@ export function Module3DataEntry({
   }
 
   function updateDraftField(idx: number, patch: Partial<CRFFieldSpec>) {
+    setDesignerDirty(true);
     setDraftFields((prev) =>
       prev.map((item, i) => {
         if (i !== idx) return item;
@@ -410,6 +549,7 @@ export function Module3DataEntry({
   function moveDraftField(idx: number, dir: -1 | 1) {
     const target = idx + dir;
     if (target < 0 || target >= draftFields.length) return;
+    setDesignerDirty(true);
     setDraftFields((prev) => {
       const copy = [...prev];
       const [moved] = copy.splice(idx, 1);
@@ -419,6 +559,7 @@ export function Module3DataEntry({
   }
 
   function removeDraftField(idx: number) {
+    setDesignerDirty(true);
     setDraftFields((prev) => prev.filter((_, i) => i !== idx));
   }
 
@@ -439,6 +580,7 @@ export function Module3DataEntry({
       sub_field_label: "",
       required: false,
     };
+    setDesignerDirty(true);
     setDraftFields((prev) => [...prev, newField]);
   }
 
@@ -456,11 +598,19 @@ export function Module3DataEntry({
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="inline-flex items-center gap-2 rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-[#6C2826]">
-              <ClipboardCheck className="h-3.5 w-3.5" />
-              {lang === "en"
-                ? "Appendix 1 (Case Report Form) & Clinical Data Capture"
-                : "Annexe 1 (Fiche de Collecte) & Masque de Saisie Clinique"}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="inline-flex items-center gap-2 rounded-full bg-rose-50 px-3 py-1 text-xs font-semibold text-[#6C2826]">
+                <ClipboardCheck className="h-3.5 w-3.5" />
+                {lang === "en"
+                  ? "Appendix 1 (Case Report Form) & Clinical Data Capture"
+                  : "Annexe 1 (Fiche de Collecte) & Masque de Saisie Clinique"}
+              </div>
+              <div className="inline-flex items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">
+                <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                {lang === "en"
+                  ? "Real-time sync active (Ch. I.5 • M2 Tables • Appendix 1 • Cover)"
+                  : "Synchronisation temps réel active (Chap. I.5 • Tableaux M2 • Annexe 1 • Page de garde)"}
+              </div>
             </div>
             <h2 className="mt-2 text-lg font-bold text-slate-900">
               {t("m3.title")}
@@ -471,6 +621,20 @@ export function Module3DataEntry({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => startNewPatientForm(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm hover:bg-indigo-700"
+              title={
+                lang === "en"
+                  ? "Open a blank form for the next patient"
+                  : "Ouvrir une fiche vierge pour enregistrer un nouveau patient"
+              }
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {t("m3.new_patient")}
+            </button>
+
             <button
               type="button"
               disabled={busy || aiBusy || extractBusy}
@@ -496,11 +660,31 @@ export function Module3DataEntry({
 
             <button
               type="button"
+              disabled={busy}
+              onClick={() => handleSyncFromAnnexe1(true)}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              title={
+                lang === "en"
+                  ? "Force re-parsing Appendix 1 and Chapter I.5 variables"
+                  : "Forcer la ré-analyse d'Annexe 1 et du Chapitre I.5"
+              }
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${busy ? "animate-spin" : ""}`} />
+              {lang === "en" ? "Resync" : "Resynchroniser"}
+            </button>
+
+            <button
+              type="button"
               onClick={onOpenModule2}
               className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-3 py-2 text-xs font-semibold text-white hover:bg-[#561f1d]"
+              title={
+                lang === "en"
+                  ? "Open Module 2 (Word Studio) to review Appendix 1 inside the full protocol and export Word / PDF"
+                  : "Ouvrir le Module 2 (Studio Word) pour vérifier l'Annexe 1 dans le protocole complet et exporter en Word / PDF"
+              }
             >
               <FileText className="h-3.5 w-3.5" />
-              {lang === "en" ? "Open Word Studio" : "Voir dans Studio Word"}
+              {lang === "en" ? "Word Studio (M2)" : "Studio Word (M2)"}
             </button>
           </div>
         </div>
@@ -542,9 +726,22 @@ export function Module3DataEntry({
         </div>
 
         {notice && (
-          <div className="mt-3 flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
-            <CheckCircle2 className="h-4 w-4 shrink-0" />
-            <span>{notice}</span>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-800">
+            <div className="flex items-center gap-2">
+              <CheckCircle2 className="h-4 w-4 shrink-0" />
+              <span>{notice}</span>
+            </div>
+            {lastSavedRecord && (
+              <button
+                type="button"
+                onClick={() => loadPatientIntoForm(lastSavedRecord)}
+                className="rounded-md border border-emerald-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100"
+              >
+                {lang === "en"
+                  ? `Reopen ${lastSavedRecord.patient_code}`
+                  : `Rouvrir ${lastSavedRecord.patient_code}`}
+              </button>
+            )}
           </div>
         )}
 
@@ -833,14 +1030,9 @@ export function Module3DataEntry({
                 <h3 className="text-sm font-bold text-slate-900">
                   {t("m3.patients_tab")} ({records.length})
                 </h3>
-                <button
-                  type="button"
-                  onClick={startNewPatientForm}
-                  className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  {t("m3.new_patient")}
-                </button>
+                <span className="text-[11px] text-slate-400">
+                  {lang === "en" ? "Click a card to edit" : "Cliquer pour éditer"}
+                </span>
               </div>
 
               <div className="relative mt-3">
@@ -876,6 +1068,11 @@ export function Module3DataEntry({
                           <button
                             type="button"
                             onClick={() => loadPatientIntoForm(rec)}
+                            title={
+                              lang === "en"
+                                ? "Click to open and edit this record"
+                                : "Cliquer pour ouvrir et modifier cette fiche"
+                            }
                             className="flex-1 text-left"
                           >
                             <div className="flex items-center gap-2">
@@ -900,24 +1097,14 @@ export function Module3DataEntry({
                             </div>
                           </button>
 
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => loadPatientIntoForm(rec)}
-                              className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-indigo-600"
-                              title="Modifier cette fiche"
-                            >
-                              <Pencil className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeletePatient(rec)}
-                              className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
-                              title="Supprimer ce patient"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleDeletePatient(rec)}
+                            className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
+                            title="Supprimer ce patient"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
                         </div>
                       </div>
                     );
@@ -929,21 +1116,28 @@ export function Module3DataEntry({
 
           {/* Main Area: Interactive Masque de Saisie (top priority on mobile) */}
           <form
+            ref={formTopRef}
             onSubmit={handleSavePatient}
             className="order-1 space-y-5 lg:order-2 lg:col-span-8"
           >
             {/* Header Identification Block */}
             <div className="rounded-2xl border-2 border-[#6C2826]/30 bg-white p-4 shadow-sm sm:p-5">
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-3">
-                <div>
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#6C2826]">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-wider ${
+                      editingRecordId
+                        ? "bg-amber-100 text-amber-800"
+                        : "bg-emerald-100 text-emerald-800"
+                    }`}
+                  >
                     {editingRecordId
                       ? lang === "en"
-                        ? `Edit Record: ${patientCode}`
-                        : `Modification Fiche : ${patientCode}`
+                        ? `Editing: ${patientCode}`
+                        : `Modification : ${patientCode}`
                       : lang === "en"
-                        ? "New Patient Record (CRF Data Entry)"
-                        : "Nouvelle Fiche Patient (Masque de Saisie)"}
+                        ? `New Record (${patientCode})`
+                        : `Nouvelle fiche (${patientCode})`}
                   </span>
                   <h3 className="text-base font-bold text-slate-900">
                     {lang === "en"
@@ -951,22 +1145,23 @@ export function Module3DataEntry({
                       : "En-tête d'Identification Anonyme"}
                   </h3>
                 </div>
-                <button
-                  type="submit"
-                  disabled={busy}
-                  className="inline-flex min-h-[44px] w-full items-center justify-center gap-1.5 rounded-lg bg-[#6C2826] px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-[#561f1d] disabled:opacity-50 sm:w-auto sm:text-xs"
-                >
-                  <Save className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
-                  {busy
-                    ? lang === "en"
-                      ? "Saving..."
-                      : "Enregistrement..."
-                    : editingRecordId
-                      ? lang === "en"
-                        ? "Update Record"
-                        : "Mettre à jour la fiche"
-                      : t("m3.save_patient")}
-                </button>
+
+                <div className="flex items-center gap-2">
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-700">
+                    {currentAnsweredCount} / {fields.length}{" "}
+                    {lang === "en" ? "answered" : "renseignés"}
+                  </span>
+                  {editingRecordId && (
+                    <button
+                      type="button"
+                      onClick={() => startNewPatientForm(true)}
+                      className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      {lang === "en" ? "Cancel edit" : "Annuler l'édition"}
+                    </button>
+                  )}
+                </div>
               </div>
 
               <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -994,11 +1189,32 @@ export function Module3DataEntry({
                     className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 px-3 py-2 text-base focus:border-[#6C2826] focus:outline-none sm:text-sm"
                   />
                 </div>
-                <div className="sm:col-span-2">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700">
+                    Nom de l'enquêteur
+                  </label>
+                  <input
+                    type="text"
+                    value={investigatorName}
+                    onChange={(e) => setInvestigatorName(e.target.value)}
+                    placeholder="Nom et matricule de l'enquêteur"
+                    className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 px-3 py-2 text-base focus:border-[#6C2826] focus:outline-none sm:text-xs"
+                  />
+                </div>
+                <div>
                   <label className="block text-xs font-semibold text-slate-700">
                     Hôpital / Site d'inclusion
                   </label>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                  <input
+                    type="text"
+                    value={hospitalSite}
+                    onChange={(e) => setHospitalSite(e.target.value)}
+                    placeholder="Ou autre hôpital..."
+                    className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 px-3 py-2 text-base focus:border-[#6C2826] focus:outline-none sm:text-xs"
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     {hospitalChoices.map((site) => {
                       const active = hospitalSite === site;
                       return (
@@ -1006,7 +1222,7 @@ export function Module3DataEntry({
                           key={site}
                           type="button"
                           onClick={() => setHospitalSite(site)}
-                          className={`inline-flex min-h-[44px] items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-medium transition sm:text-xs ${
+                          className={`inline-flex min-h-[38px] items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
                             active
                               ? "border-[#6C2826] bg-[#6C2826]/10 text-[#6C2826]"
                               : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
@@ -1025,38 +1241,30 @@ export function Module3DataEntry({
                         </button>
                       );
                     })}
-                    <input
-                      type="text"
-                      value={hospitalSite}
-                      onChange={(e) => setHospitalSite(e.target.value)}
-                      placeholder="Ou autre hôpital..."
-                      className="min-h-[44px] min-w-[160px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-base focus:border-[#6C2826] focus:outline-none sm:text-xs"
-                    />
                   </div>
-                </div>
-                <div className="sm:col-span-2">
-                  <label className="block text-xs font-semibold text-slate-700">
-                    Nom de l'enquêteur
-                  </label>
-                  <input
-                    type="text"
-                    value={investigatorName}
-                    onChange={(e) => setInvestigatorName(e.target.value)}
-                    placeholder="Nom et matricule de l'enquêteur"
-                    className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 px-3 py-2 text-base focus:border-[#6C2826] focus:outline-none sm:text-xs"
-                  />
                 </div>
               </div>
             </div>
 
             {/* CRF Section Cards */}
-            {sectionsGrouped.map((sec) => (
+            {sectionsGrouped.map((sec) => {
+              const secAnswered = sec.items.reduce((acc, f) => {
+                const v = values[f.field_id];
+                const ok = Array.isArray(v)
+                  ? v.length > 0
+                  : v !== undefined && v !== null && String(v).trim() !== "";
+                return acc + (ok ? 1 : 0);
+              }, 0);
+              return (
               <div
                 key={sec.title}
                 className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm"
               >
-                <div className="bg-[#6C2826] px-4 py-2.5 text-xs font-bold tracking-wide text-white">
-                  {sec.title}
+                <div className="flex items-center justify-between gap-2 bg-[#6C2826] px-4 py-2.5 text-xs font-bold tracking-wide text-white">
+                  <span>{sec.title}</span>
+                  <span className="rounded bg-white/15 px-2 py-0.5 text-[10px] font-semibold">
+                    {secAnswered} / {sec.items.length}
+                  </span>
                 </div>
                 <div className="divide-y divide-slate-100 p-4">
                   {sec.items.map((field) => {
@@ -1263,7 +1471,8 @@ export function Module3DataEntry({
                   })}
                 </div>
               </div>
-            ))}
+              );
+            })}
 
             {/* Clinical Notes & Footer Save */}
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -1277,14 +1486,25 @@ export function Module3DataEntry({
                 placeholder="Observations particulières lors de la collecte de cette fiche..."
                 className="mt-1.5 w-full rounded-lg border border-slate-300 p-3 text-base focus:border-[#6C2826] focus:outline-none sm:p-2.5 sm:text-xs"
               />
-              <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-between">
-                <button
-                  type="button"
-                  onClick={startNewPatientForm}
-                  className="min-h-[44px] w-full rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50 sm:w-auto"
-                >
-                  Réinitialiser pour un nouveau patient
-                </button>
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  {editingRecordId ? (
+                    <button
+                      type="button"
+                      onClick={() => startNewPatientForm(true)}
+                      className="inline-flex min-h-[40px] items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
+                    >
+                      <X className="h-3.5 w-3.5" />
+                      {lang === "en" ? "Cancel edit" : "Annuler l'édition"}
+                    </button>
+                  ) : (
+                    <span className="text-[11px] text-slate-500">
+                      {lang === "en"
+                        ? "Auto-resets after saving so you can enter the next patient right away."
+                        : "Réinitialisation automatique après enregistrement pour enchaîner les fiches."}
+                    </span>
+                  )}
+                </div>
                 <button
                   type="submit"
                   disabled={busy}
@@ -1292,10 +1512,14 @@ export function Module3DataEntry({
                 >
                   <Save className="h-4 w-4 sm:h-3.5 sm:w-3.5" />
                   {busy
-                    ? "Enregistrement..."
+                    ? lang === "en"
+                      ? "Saving..."
+                      : "Enregistrement..."
                     : editingRecordId
-                      ? "Mettre à jour ce patient"
-                      : "Enregistrer ce patient dans la base"}
+                      ? lang === "en"
+                        ? "Update Record"
+                        : "Mettre à jour la fiche"
+                      : t("m3.save_patient")}
                 </button>
               </div>
             </div>
@@ -1553,20 +1777,11 @@ export function Module3DataEntry({
 
           {/* Patient Dataset Table */}
           <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
-                <h3 className="text-base font-bold text-slate-900">
-                  Base de Données des Patients Enregistrés ({records.length})
-                </h3>
-              </div>
-              <a
-                href={api.exportPatientsCsvUrl(project.project_id)}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
-              >
-                <Download className="h-3.5 w-3.5" />
-                Télécharger CSV (Excel / SPSS / R)
-              </a>
+            <div className="mb-3 flex flex-wrap items-center gap-2">
+              <FileSpreadsheet className="h-4 w-4 text-emerald-600" />
+              <h3 className="text-base font-bold text-slate-900">
+                Base de Données des Patients Enregistrés ({records.length})
+              </h3>
             </div>
 
             {records.length === 0 ? (

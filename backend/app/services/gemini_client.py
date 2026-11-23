@@ -3,7 +3,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, Dict, List, Optional, Tuple, Type, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar
 
 from google import genai
 from google.genai import errors, types
@@ -15,6 +15,31 @@ from app.services.pipeline_tracker import update_pipeline_model
 logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 GEMINI_DECISION_1_LABEL = "Gemini Decision 1"
+
+# Bidirectional relay peers: whenever one fails to respond, the other takes over immediately.
+_LITE_RELAY_PEERS: Dict[str, str] = {
+    "gemini-3.5-flash-lite": "gemini-3.1-flash-lite",
+    "gemini-3.1-flash-lite": "gemini-3.5-flash-lite",
+}
+
+
+def _ensure_bidirectional_lite_relay(candidates: List[str]) -> List[str]:
+    """Guarantee gemini-3.5-flash-lite <-> gemini-3.1-flash-lite immediate relay in any chain."""
+    result: List[str] = []
+    seen_lower: set[str] = set()
+    for raw_model in candidates:
+        model = (raw_model or "").strip()
+        if not model:
+            continue
+        key = model.lower()
+        if key not in seen_lower:
+            result.append(model)
+            seen_lower.add(key)
+        peer = _LITE_RELAY_PEERS.get(key)
+        if peer and peer.lower() not in seen_lower:
+            result.append(peer)
+            seen_lower.add(peer.lower())
+    return result
 
 _ai_routing_policy: ContextVar[Dict[str, Any]] = ContextVar("ai_routing_policy", default={})
 _request_tokens_used: ContextVar[int] = ContextVar("request_tokens_used", default=0)
@@ -82,13 +107,40 @@ class GeminiRouter:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._client: Optional[genai.Client] = None
+        self._model_cooldowns: Dict[str, float] = {}
 
     def _get_client(self) -> genai.Client:
         if self._client is None:
             if not self.settings.gemini_api_key:
                 raise RuntimeError("GEMINI_API_KEY non configurée dans backend/.env.")
-            self._client = genai.Client(api_key=self.settings.gemini_api_key)
+            timeout_ms = int(getattr(self.settings, "gemini_request_timeout_ms", 60_000) or 0)
+            if timeout_ms > 0:
+                self._client = genai.Client(
+                    api_key=self.settings.gemini_api_key,
+                    http_options=types.HttpOptions(timeout=timeout_ms),
+                )
+            else:
+                self._client = genai.Client(api_key=self.settings.gemini_api_key)
         return self._client
+
+    def _mark_model_unresponsive(self, model_id: str) -> None:
+        cooldown_s = int(getattr(self.settings, "gemini_relay_cooldown_seconds", 45) or 0)
+        if cooldown_s > 0 and model_id:
+            self._model_cooldowns[model_id.lower()] = time.monotonic() + cooldown_s
+
+    def _clear_model_cooldown(self, model_id: str) -> None:
+        if model_id:
+            self._model_cooldowns.pop(model_id.lower(), None)
+
+    def _is_model_in_cooldown(self, model_id: str) -> bool:
+        key = (model_id or "").lower()
+        until = self._model_cooldowns.get(key)
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            self._model_cooldowns.pop(key, None)
+            return False
+        return True
 
     def list_available_models(self) -> List[Dict[str, Any]]:
         """List Gemini models accessible with the configured API key (including v1beta Decisions)."""
@@ -118,41 +170,43 @@ class GeminiRouter:
         return models
 
     def _resolve_candidates(self, role: str) -> Tuple[List[str], bool]:
-        """Resolve ordered model fallback chain, applying student daily Gemini 3.8 cap -> 3.5 relay."""
+        """Resolve ordered model fallback chain with bidirectional 3.5-flash-lite <-> 3.1-flash-lite relay."""
         chains = self.settings.model_chains()
         candidates = list(chains.get(role, chains["drafting"]))
         policy = get_ai_routing_policy()
         prefer_35 = bool(policy.get("prefer_fallback_35"))
-        if not prefer_35:
-            return candidates, False
 
-        fallback_model = (self.settings.gemini_fallback_reasoning_model or "gemini-3.1-flash-lite").strip()
-        primary_model = (self.settings.gemini_primary_reasoning_model or "gemini-3.5-flash-lite").strip().lower()
-        filtered = [
-            m
-            for m in candidates
-            if "gemini-3.8" not in m.lower()
-            and (not primary_model or primary_model == fallback_model.lower() or m.lower() != primary_model)
-        ]
+        if prefer_35:
+            fallback_model = (self.settings.gemini_fallback_reasoning_model or "gemini-3.1-flash-lite").strip()
+            filtered = [m for m in candidates if "gemini-3.8" not in m.lower()]
 
-        if role == "layout_decision":
-            head = [m for m in filtered if "decision-1" in m.lower()]
-            tail = [m for m in filtered if "decision-1" not in m.lower() and m != fallback_model]
-            ordered = head + [fallback_model] + tail
+            if role == "layout_decision":
+                head = [m for m in filtered if "decision-1" in m.lower()]
+                tail = [m for m in filtered if "decision-1" not in m.lower() and m != fallback_model]
+                ordered = head + [fallback_model] + tail
+            else:
+                tail = [m for m in filtered if m != fallback_model]
+                ordered = [fallback_model] + tail
+            resolved = _ensure_bidirectional_lite_relay(ordered)
+            cap_active = True
         else:
-            tail = [m for m in filtered if m != fallback_model]
-            ordered = [fallback_model] + tail
+            resolved = _ensure_bidirectional_lite_relay(candidates)
+            cap_active = False
 
-        deduped = list(dict.fromkeys(m for m in ordered if m))
-        return deduped, True
+        # Deprioritize models currently in unresponsive cooldown so the healthy relay peer responds immediately.
+        healthy = [m for m in resolved if not self._is_model_in_cooldown(m)]
+        cooled = [m for m in resolved if self._is_model_in_cooldown(m)]
+        final_chain = healthy + cooled
+        return final_chain, cap_active
 
     def generate_with_fallback(
         self,
         role: str,
         contents: Any,
         config: Optional[types.GenerateContentConfig] = None,
+        validator: Optional[Callable[[Any, str], Any]] = None,
     ) -> Dict[str, Any]:
-        """Run generate_content trying each model in the role's fallback chain."""
+        """Run generate_content trying each model in the role's fallback chain (3.5-flash-lite <-> 3.1-flash-lite relay)."""
         candidates, cap_fallback_active = self._resolve_candidates(role)
         client = self._get_client()
 
@@ -166,18 +220,33 @@ class GeminiRouter:
         errors_log: List[str] = []
         for idx, model_id in enumerate(candidates):
             is_fallback_step = cap_fallback_active or idx > 0
+            has_next_candidate = idx < len(candidates) - 1
             update_pipeline_model(
                 model_id,
                 fallback_triggered=is_fallback_step,
                 note="",
             )
-            for attempt in range(2):
+            max_attempts = 1 if has_next_candidate else 2
+            for attempt in range(max_attempts):
                 try:
                     response = client.models.generate_content(
                         model=model_id,
                         contents=contents,
                         config=config,
                     )
+                    try:
+                        text = response.text or ""
+                    except Exception:
+                        text = ""
+                    parsed_obj = getattr(response, "parsed", None)
+
+                    validated_data: Any = None
+                    if validator is not None:
+                        validated_data = validator(response, text)
+                    elif not text.strip() and parsed_obj is None:
+                        raise ValueError("Réponse vide du modèle (aucun contenu retourné)")
+
+                    self._clear_model_cooldown(model_id)
                     update_pipeline_model(model_id, fallback_triggered=is_fallback_step)
                     usage = getattr(response, "usage_metadata", None)
                     tokens_used = int(getattr(usage, "total_token_count", 0) or 0)
@@ -186,26 +255,32 @@ class GeminiRouter:
                         cand_toks = int(getattr(usage, "candidates_token_count", 0) or 0)
                         tokens_used = max(0, prompt_toks + cand_toks)
                     add_request_tokens_used(tokens_used)
-                    return {
+                    result: Dict[str, Any] = {
                         "model_used": model_id,
-                        "text": response.text or "",
+                        "text": text,
                         "raw": response,
                         "tokens_used": tokens_used,
                         "fallback_errors": errors_log,
                         "cap_fallback_active": cap_fallback_active,
                     }
+                    if validator is not None:
+                        result["validated"] = validated_data
+                    return result
                 except errors.APIError as exc:
-                    if exc.code == 503 and attempt == 0:
+                    if exc.code == 503 and not has_next_candidate and attempt == 0:
                         logger.info("Modèle %s sous forte demande temporaire (503). Nouvel essai dans 1.5s...", model_id)
                         time.sleep(1.5)
                         continue
+                    if exc.code in (408, 429, 500, 502, 503, 504):
+                        self._mark_model_unresponsive(model_id)
                     msg = f"{model_id}: HTTP {exc.code} - {exc.message}"
-                    logger.warning("Gemini fallback triggered (%s)", msg)
+                    logger.warning("Gemini relay fallback triggered (%s)", msg)
                     errors_log.append(msg)
                     break
                 except Exception as exc:  # pragma: no cover - defensive fallback
+                    self._mark_model_unresponsive(model_id)
                     msg = f"{model_id}: {exc}"
-                    logger.warning("Gemini unexpected error (%s)", msg)
+                    logger.warning("Gemini unresponsive/error relay (%s)", msg)
                     errors_log.append(msg)
                     break
 
@@ -221,22 +296,32 @@ class GeminiRouter:
         system_instruction: Optional[str] = None,
         temperature: float = 0.2,
     ) -> Dict[str, Any]:
-        """Generate structured JSON validated against a Pydantic schema."""
+        """Generate structured JSON validated against a Pydantic schema with full model relay."""
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=temperature,
             response_mime_type="application/json",
             response_schema=schema,
         )
-        res = self.generate_with_fallback(role=role, contents=contents, config=config)
-        raw_obj = getattr(res["raw"], "parsed", None)
-        if isinstance(raw_obj, schema):
-            parsed = raw_obj
-        else:
-            parsed = schema.model_validate(json.loads(res["text"]))
+
+        def _validate_structured(raw_resp: Any, text: str) -> T:
+            raw_obj = getattr(raw_resp, "parsed", None)
+            if isinstance(raw_obj, schema):
+                return raw_obj
+            clean = (text or "").strip()
+            if not clean:
+                raise ValueError("Réponse JSON structurée vide")
+            return schema.model_validate(json.loads(clean))
+
+        res = self.generate_with_fallback(
+            role=role,
+            contents=contents,
+            config=config,
+            validator=_validate_structured,
+        )
         return {
             "model_used": res["model_used"],
-            "data": parsed,
+            "data": res["validated"],
             "fallback_errors": res["fallback_errors"],
         }
 

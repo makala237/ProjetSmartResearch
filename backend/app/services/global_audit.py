@@ -269,33 +269,10 @@ def sync_structured_from_sections(project: ProtocolProject) -> Dict[str, int]:
             existing_lit_keys.add(author_lbl.lower())
             added_lit += 1
 
-    # 4. Budget items from chap3_budget custom tables
-    existing_budget_keys = {b.designation.strip().lower() for b in project.budget if b.designation.strip()}
-    bud_sec = project.sections.get("chap3_budget")
-    if bud_sec:
-        for ct in getattr(bud_sec, "custom_tables", []) or []:
-            for row in ct.rows:
-                if not row or not row[0].strip():
-                    continue
-                des = row[0].strip()
-                if des.lower() in existing_budget_keys or "total" in des.lower():
-                    continue
-                qty = _parse_float(row[1], 1.0) if len(row) > 1 else 1.0
-                pu = _parse_float(row[2], 0.0) if len(row) > 2 else 0.0
-                tot = _parse_float(row[3], qty * pu) if len(row) > 3 else qty * pu
-                if tot == 0.0 and qty > 0 and pu > 0:
-                    tot = qty * pu
-                project.budget.append(
-                    BudgetItem(
-                        category="Synchronisé depuis Chapitre III",
-                        designation=des,
-                        quantity=qty if qty > 0 else 1.0,
-                        unit_cost_fcfa=pu,
-                        total_fcfa=tot,
-                    )
-                )
-                existing_budget_keys.add(des.lower())
-                added_budget += 1
+    # 4. Budget items from chap3_budget (Markdown tables, custom_tables, or bulleted FCFA lines)
+    from app.services.budget_engine import sync_budget_from_section
+
+    added_budget = sync_budget_from_section(project, overwrite=False)
 
     force_abbr = (
         "abbreviations"
