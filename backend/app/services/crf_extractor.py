@@ -96,7 +96,7 @@ _OPEN_CRF_HEADER_RE = re.compile(
 )
 
 _CLOSING_ANNEX_HEADER_RE = re.compile(
-    r"^\s*(?:#{1,4}\s*)?(?:\*\*)?(?:(?:ANNEXE|APPENDIX)\s*(?:[2-9]\d*|II|III|IV|V|VI|VII|VIII|IX|X)\s*[:\-–.]?\s*)?"
+    r"^\s*(?:#{1,4}\s*)?(?:\*\*)?(?:(?:ANNEXE|APPENDIX)\s*(?:[1-9]\d*|[IVX]+)\s*[:\-–.]?\s*)?"
     r"(?:NOTICE\s+D['’]INFORMATION|"
     r"FICHE\s+D['’]INFORMATION(?:\s+DU\s+PARTICIPANT)?|"
     r"INFORMATION\s+SHEET|"
@@ -138,7 +138,7 @@ _FORM_SUBSECTION_RE = re.compile(
 )
 
 _CODED_QUESTION_LINE_RE = re.compile(
-    r"^\s*(?:[-*•]\s+)?(?:\*\*)?(?:[A-Za-z]\d{1,2}(?:\.\d+)?|Q\d{1,3}|\d{1,2})[.)]?\s+[^:\n]{2,110}\s*[:：?]"
+    r"^\s*(?:[-*•]\s+)?(?:\*\*)?(?:[A-Za-z]\d{1,2}(?:\.\d+)?|Q\d{1,3}|\d{1,2})[.)]\s+[^:\n]{2,150}"
 )
 
 _CHECKBOX_MARKER_RE = re.compile(r"(?:\[\s*[xX ]?\s*\]|☐|□|▢|◯|○\s+[A-ZÀ-ÿa-z0-9])")
@@ -198,18 +198,44 @@ def _score_block_as_crf(heading: str, text: str) -> Dict[str, Any]:
     lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
     words = len(re.findall(r"\w+", body))
 
-    open_cue = bool(_OPEN_CRF_HEADER_RE.search(head) or any(_OPEN_CRF_HEADER_RE.match(ln) for ln in lines[:4]))
+    open_cue = bool(_OPEN_CRF_HEADER_RE.search(head) or any(_OPEN_CRF_HEADER_RE.match(ln) for ln in lines[:6]))
     form_section_cue = bool(
-        _FORM_SUBSECTION_RE.search(head) or any(_FORM_SUBSECTION_RE.match(ln) for ln in lines[:5])
+        _FORM_SUBSECTION_RE.search(head) or any(_FORM_SUBSECTION_RE.match(ln) for ln in lines[:6])
     )
-    closing_cue = _is_standalone_closing_header(head) or (
-        bool(lines) and _is_standalone_closing_header(lines[0])
+    closing_cue = _is_standalone_closing_header(head) or any(
+        _is_standalone_closing_header(ln) for ln in lines[:5] if not ln.isdigit()
     )
+    if not open_cue and not form_section_cue:
+        low_body = body.lower()
+        notice_faq_markers = (
+            "pourquoi cette étude",
+            "why this study",
+            "why you",
+            "pourquoi vous",
+            "voluntary participation",
+            "participation volontaire",
+            "advantages and disadvantages",
+            "avantages et inconvénients",
+            "i agree to participate",
+            "i do not agree to participate",
+            "j'accepte de participer",
+            "je n'accepte pas de participer",
+            "english version",
+            "version française",
+            "by checking the box below",
+            "en cochant la case ci-dessous",
+        )
+        notice_cue_hits = sum(1 for m in notice_faq_markers if m in low_body)
+        if notice_cue_hits >= 2 or re.search(
+            r"(?im)^(?:english\s+version|version\s+fran[çc]aise)\b", body
+        ):
+            closing_cue = True
     narrative_cue = bool(_NARRATIVE_SECTION_RE.match(head)) and not open_cue and not form_section_cue
 
     checkbox_hits = len(_CHECKBOX_MARKER_RE.findall(body))
     blank_hits = len(_BLANK_MARKER_RE.findall(body))
     coded_lines = sum(1 for ln in lines if _CODED_QUESTION_LINE_RE.match(ln))
+    bullet_opts = sum(1 for ln in lines if ln.startswith(("•", "◦")) and len(ln) <= 95)
     slash_choice_lines = sum(
         1
         for ln in lines
@@ -222,7 +248,14 @@ def _score_block_as_crf(heading: str, text: str) -> Dict[str, Any]:
     )
     pipe_table_lines = sum(1 for ln in lines if ln.startswith("|") or " | " in ln)
 
-    control_hits = checkbox_hits + blank_hits + coded_lines + slash_choice_lines + max(0, pipe_table_lines - 1)
+    control_hits = (
+        checkbox_hits
+        + blank_hits
+        + coded_lines
+        + (bullet_opts if coded_lines >= 1 else 0)
+        + slash_choice_lines
+        + max(0, pipe_table_lines - 1)
+    )
 
     score = 0.0
     if open_cue:
@@ -236,8 +269,9 @@ def _score_block_as_crf(heading: str, text: str) -> Dict[str, Any]:
         score -= 4.5
     if narrative_cue and control_hits <= 2:
         score -= 5.0
-    if closing_cue and not open_cue and control_hits <= 1:
-        score -= 10.0
+    # Blocks explicitly opening Notice/Consent/Ethics/Auth annexes NEVER count as CRF even if they contain consent checkboxes
+    if closing_cue and not open_cue:
+        score = -10.0
 
     # Inline split marker: what if closing header appears midway through the same block?
     internal_close_line = None
@@ -327,6 +361,13 @@ def _find_heuristic_crf_span(blocks: Sequence[Any], block_infos: List[Dict[str, 
         return None
 
     s_idx, e_idx = best_span
+    for k in range(s_idx + 1, e_idx + 1):
+        if block_infos[k]["open_cue"] and all(
+            not block_infos[m]["open_cue"] and not block_infos[m]["form_section_cue"]
+            for m in range(s_idx, k)
+        ):
+            s_idx = k
+            break
     span_blocks = blocks[s_idx : e_idx + 1]
     span_infos = block_infos[s_idx : e_idx + 1]
     total_controls = sum(x["control_hits"] for x in span_infos)
@@ -698,6 +739,62 @@ def _expand_pipe_table_lines(lines: List[str]) -> List[str]:
     return out
 
 
+def _fold_multiline_bullet_questions(lines: List[str]) -> List[str]:
+    """
+    Convert FOKOU-style questionnaires where each question (`Q6. Quel est votre sexe ?`)
+    is followed by uncheckboxed `• Option` bullets across lines into standard `- **Q6. ... :** [ ] Option` lines.
+    """
+    q_re = re.compile(r"^\s*([A-Za-z]\d{1,3}|Q\d{1,3})[.)]\s+(.+)$")
+    opt_re = re.compile(r"^\s*[•◦]\s+(.+)$")
+    out: List[str] = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        ln = lines[i]
+        s = ln.strip()
+        m_q = q_re.match(s)
+        if m_q and "[ ]" not in s and "____" not in s and not s.startswith("- **"):
+            code = m_q.group(1).strip()
+            q_parts = [m_q.group(2).strip()]
+            j = i + 1
+            # Gather at most 2 wrapped question continuation lines before options
+            while j < n and len(q_parts) < 3:
+                nxt = lines[j].strip()
+                if not nxt or nxt.isdigit() or nxt.startswith("#") or q_re.match(nxt) or opt_re.match(nxt):
+                    break
+                if _FORM_SUBSECTION_RE.match(nxt) or ":" in nxt or nxt.startswith("Section"):
+                    break
+                q_parts.append(nxt)
+                j += 1
+                if nxt.endswith(("?", ")")):
+                    break
+            # Gather following bullet options (skipping blank/page-number lines between pages)
+            opts: List[str] = []
+            k = j
+            while k < n:
+                nxt = lines[k].strip()
+                if not nxt or nxt.isdigit():
+                    k += 1
+                    continue
+                m_opt = opt_re.match(nxt)
+                if m_opt:
+                    opt_txt = re.sub(r"\s*→.*$", "", m_opt.group(1)).strip(" .;")
+                    if opt_txt:
+                        opts.append(opt_txt)
+                    k += 1
+                    continue
+                break
+            if opts:
+                q_text = " ".join(q_parts).rstrip(" :：")
+                # Keep "(choix multiples)" semantic cue in label so _infer_field_from_spec sets multi_choice
+                out.append(f"- **{code}. {q_text} :** " + "  ".join(f"[ ] {o}" for o in opts))
+                i = k
+                continue
+        out.append(ln)
+        i += 1
+    return out
+
+
 def _preprocess_raw_crf_text(raw_crf: str) -> str:
     """
     Normalize Word/PDF questionnaire formatting into clean CRF Markdown:
@@ -705,12 +802,14 @@ def _preprocess_raw_crf_text(raw_crf: str) -> str:
     - Dotted blanks ('.....', '……') -> '____'
     - Unicode square/circle checkboxes -> '[ ]'
     - Slash choices ('Oui / Non', 'Masculin / Féminin') -> '[ ] Oui  [ ] Non'
+    - Multi-line Q1. / • Option bullet questions -> standard '[ ] Option' lines
     - Section headers without '#' -> '### SECTION ...'
     """
     raw = (raw_crf or "").strip()
     if not raw:
         return ""
     lines = _expand_pipe_table_lines(raw.splitlines())
+    lines = _fold_multiline_bullet_questions(lines)
     norm_lines: List[str] = []
     for ln in lines:
         s = ln.rstrip()

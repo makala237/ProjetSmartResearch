@@ -333,6 +333,8 @@ def _infer_field_from_spec(
         elif any(
             kw in lower_lbl
             for kw in (
+                "choix multiple",
+                "multiple choice",
                 "complication",
                 "malformation",
                 "antécédent",

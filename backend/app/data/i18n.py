@@ -13,20 +13,18 @@ def normalize_lang(lang: Optional[str]) -> str:
 
 CHAPTER_TITLES_BY_LANG: Dict[str, Dict[str, str]] = {
     "fr": {
-        "introduction": "INTRODUCTION",
-        "chapitre_1": "CHAPITRE I : PROBLÉMATIQUE",
+        "chapitre_1": "CHAPITRE I : INTRODUCTION",
         "chapitre_2": "CHAPITRE II : REVUE DE LA LITTÉRATURE",
         "chapitre_3": "CHAPITRE III : MÉTHODOLOGIE",
-        "references": "RÉFÉRENCES",
-        "annexes": "ANNEXES",
+        "references": "CHAPITRE IV : RÉFÉRENCES",
+        "annexes": "CHAPITRE V : ANNEXES",
     },
     "en": {
-        "introduction": "INTRODUCTION",
-        "chapitre_1": "CHAPTER I: PROBLEM STATEMENT",
+        "chapitre_1": "CHAPTER I: INTRODUCTION",
         "chapitre_2": "CHAPTER II: LITERATURE REVIEW",
         "chapitre_3": "CHAPTER III: METHODOLOGY",
-        "references": "REFERENCES",
-        "annexes": "APPENDICES",
+        "references": "CHAPTER IV: REFERENCES",
+        "annexes": "CHAPTER V: APPENDICES",
     },
 }
 
@@ -178,17 +176,17 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "concepts_to_avoid": ["Embedding figures directly inside the index list"],
     },
     "intro_contexte": {
-        "chapter_title": "INTRODUCTION",
-        "title": "Background & Epidemiology (Global, Africa, Cameroon)",
-        "description": "Strict CAMES/FMSB epidemiological funnel (Global → Africa → Cameroon) establishing disease burden and public health relevance.",
+        "chapter_title": "CHAPTER I: INTRODUCTION",
+        "title": "I.1. Background & Problem Situation (Global, Africa, Local)",
+        "description": "Strict CAMES epidemiological funnel (Global → Africa → National/Local) establishing disease burden and clinical relevance.",
         "guidance_points": [
-            "Follow a strict funnel: global burden → African context → local/national reality.",
+            "Follow a strict funnel: short definition → global burden → African context → local/national reality.",
             "Cite recent, referenced epidemiological figures (prevalence, incidence, morbidity, mortality).",
-            "Clearly state the observed clinical and public health problem.",
+            "Clearly state the local evidence gap.",
         ],
         "cames_concepts_required": [
             "Concise clinical definition of the condition or issue (2–3 sentences max)",
-            "Graduated epidemiological data: Global → Sub-Saharan Africa → Local/Cameroon",
+            "Graduated epidemiological data: Global → Sub-Saharan Africa → Local/National",
             "Public health burden and hospital/community impact",
         ],
         "concepts_to_avoid": [
@@ -196,30 +194,29 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
             "Exhaustive comparison of prior studies (reserved for Chapter II.2)",
             "Study methods, sample size, or specific objectives",
         ],
-        "table_guidance": "No tables permitted in the Introduction under CAMES/FMSB guidelines.",
-        "notes": "Shares with 1.2 the strict global limit for the entire Introduction: <= 2 pages and <= 5 references total.",
+        "table_guidance": "No tables permitted in I.1 under CAMES/FMSB guidelines.",
+        "notes": "Shares with I.2 a concise introductory budget (<= 2 pages and <= 5 references total).",
     },
     "intro_interet": {
-        "chapter_title": "INTRODUCTION",
-        "title": "Significance of Research & Transition to Objectives",
-        "description": "Brief synthesis of study relevance and concluding transition statement introducing the general purpose.",
+        "chapter_title": "CHAPTER I: INTRODUCTION",
+        "title": "I.2. Research Problem & Significance",
+        "description": "Explicit formulation of the field problem statement and synthesis of scientific, clinical, and public health significance.",
         "guidance_points": [
-            "Highlight clinical (patient care), scientific (knowledge), and public health significance.",
-            "Conclude with a transition sentence opening onto the problem statement and general aim.",
+            "Highlight clinical (patient care), scientific (knowledge), and public health relevance.",
+            "Conclude with a transition sentence opening onto rationale and research questions.",
         ],
         "cames_concepts_required": [
+            "Core problem clearly stated in local context",
             "Threefold relevance: scientific, clinical/practical, and public health",
-            "Closing transition statement introducing the research aim",
         ],
         "concepts_to_avoid": [
-            "Repeating epidemiological statistics already stated in Background",
+            "Repeating epidemiological statistics already stated in I.1",
             "Listing specific objectives, timeline, or budget details",
         ],
-        "notes": "Shares the overall Introduction limit (<= 2 pages and <= 5 references total).",
     },
     "chap1_justification": {
-        "chapter_title": "Chapter I: Problem Statement",
-        "title": "1. Rationale / Justification of the Study",
+        "chapter_title": "CHAPTER I: INTRODUCTION",
+        "title": "I.3. Study Rationale / Justification",
         "description": "CAMES/FINER argument demonstrating the local knowledge gap, limitations of prior studies, and clinical urgency.",
         "guidance_points": [
             "Pinpoint the exact knowledge gap (absent, scarce, or outdated local data).",
@@ -229,16 +226,16 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "cames_concepts_required": [
             "Explicit identification of the local knowledge gap",
             "Critical appraisal of existing data limitations and limited generalizability",
-            "Clinical and logistical feasibility in target study hospitals",
+            "Clinical and logistical feasibility in target study sites",
         ],
         "concepts_to_avoid": [
-            "Verbatim repetition of global background from Introduction",
+            "Verbatim repetition of global background from I.1",
             "Detailed statistical testing procedures",
         ],
     },
     "chap1_questions": {
-        "chapter_title": "Chapter I: Problem Statement",
-        "title": "2. Research Question(s)",
+        "chapter_title": "CHAPTER I: INTRODUCTION",
+        "title": "I.4. Research Question(s)",
         "description": "Single primary research question structured using PICO/PECO and optional focused secondary questions.",
         "guidance_points": [
             "Formulate one clear, measurable primary research question (Population, Exposure/Intervention, Comparator, Outcome, Setting).",
@@ -251,9 +248,9 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "concepts_to_avoid": ["Long literature review paragraphs", "Tables or figures"],
     },
     "chap1_hypotheses": {
-        "chapter_title": "Chapter I: Problem Statement",
-        "title": "3. Research Hypothesis(es)",
-        "description": "Primary hypothesis stated affirmatively as a testable anticipated answer, plus secondary hypotheses.",
+        "chapter_title": "CHAPTER I: INTRODUCTION",
+        "title": "I.5. Research Hypothesis(es)",
+        "description": "Primary hypothesis stated affirmatively as a testable anticipated answer (H1..Hn), plus secondary hypotheses.",
         "guidance_points": [
             "The primary hypothesis MUST be phrased in the affirmative (never as a question).",
             "If purely descriptive, justify the absence of an analytical hypothesis or state an operational hypothesis.",
@@ -266,66 +263,64 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "notes": "Affirmative phrasing strictly required by CAMES/FMSB standards.",
     },
     "chap1_objectifs": {
-        "chapter_title": "Chapter I: Problem Statement",
-        "title": "4. Objectives (General and Specific)",
-        "description": "One general objective and 3 to 5 operational specific objectives written with measurable action verbs.",
+        "chapter_title": "CHAPTER I: INTRODUCTION",
+        "title": "I.6. Objectives (General and Specific)",
+        "description": "I.6.1. One general objective and I.6.2. 3 to 5 operational specific objectives written with measurable action verbs.",
         "guidance_points": [
+            "Structure clearly under 'I.6.1. General Objective' and 'I.6.2. Specific Objectives'.",
             "One single general objective stating population, setting, and study period.",
-            "3 to 5 specific objectives using measurable action verbs (Describe, Determine, Identify, Compare, Evaluate) — avoid vague verbs like 'Understand' or 'Know'.",
+            "3 to 5 specific objectives using measurable action verbs (Describe, Determine, Estimate, Identify, Compare, Evaluate) — avoid vague verbs like 'Understand' or 'Know'.",
         ],
         "cames_concepts_required": [
-            "Single general objective mirroring the title and primary research question",
-            "Sequential specific objectives (descriptive to analytical) aligned with statistical analysis",
+            "Explicit split between I.6.1 General Objective and I.6.2 Specific Objectives",
+            "Sequential specific objectives aligned 1-to-1 with variables, CRF, and statistical plan",
         ],
         "concepts_to_avoid": ["Non-measurable verbs (understand, know, raise awareness)", "Unnecessary tables"],
     },
-    "chap1_variables": {
-        "chapter_title": "Chapter I: Problem Statement",
-        "title": "5. Study Variables",
-        "description": "Complete operationalization of dependent, independent, and confounding variables per CAMES norms.",
+    "chap1_definitions_operationnelles": {
+        "chapter_title": "CHAPTER I: INTRODUCTION",
+        "title": "I.7. Operational Definitions of Key Terms",
+        "description": "Clear operational definitions of key clinical terms, diagnostic thresholds, validated scales, and study concepts.",
         "guidance_points": [
-            "Explicitly classify dependent outcome variable(s), independent variables (sociodemographic, clinical, paraclinical, therapeutic), and confounders.",
-            "Provide operational definition, measurement scale (continuous/discrete quantitative, nominal/ordinal/dichotomous qualitative), units, and collection tool.",
+            "Unambiguously define every key term from the title and eligibility criteria (diagnostic thresholds, validated scores, staging).",
+            "Cite normative criteria when applicable (WHO, ICD-11, DSM-5, KDIGO, etc.).",
         ],
         "cames_concepts_required": [
-            "Clear separation of Dependent vs Independent vs Confounding variables",
-            "Operational definitions and clinical categorization thresholds",
-            "Exact measurement scales and modalities (consistent with Appendix 1 CRF)",
+            "Precise operational definitions matching study criteria",
+            "Explicit numeric thresholds aligned with data capture",
         ],
-        "concepts_to_avoid": ["Detailed statistical test formulas (reserved for Chapter III.7)"],
-        "table_guidance": "Operational variables table (Variable | Role | Operational Definition | Scale | Tool) synced from project.variables.",
+        "concepts_to_avoid": ["Generic dictionary definitions", "Duplicating the full variables table (III.3)"],
     },
     "chap1_cadre_theorique": {
-        "chapter_title": "Chapter I: Problem Statement",
-        "title": "6. Significance & Conceptual Framework",
-        "description": "Explanatory conceptual framework linking determinants, intermediate factors, and clinical outcome, plus expected impact.",
+        "chapter_title": "CHAPTER I: INTRODUCTION",
+        "title": "I.8. Theoretical / Conceptual Framework (optional)",
+        "description": "Explanatory conceptual framework linking determinants, intermediate factors, and clinical outcome.",
         "guidance_points": [
             "Explain the conceptual or pathophysiological model connecting independent variables to the outcome.",
-            "Specify concrete benefits for patients, clinicians, and health policymakers.",
-            "Provide a clean vector conceptual diagram illustrating causal/associative pathways.",
+            "Provide a clean vector conceptual diagram illustrating causal/associative pathways when helpful.",
         ],
         "cames_concepts_required": [
             "Conceptual framework architecture (distal/proximal determinants → clinical outcome)",
-            "Concrete operational impact (practice improvement, advocacy, training)",
+            "Direct consistency with research hypotheses",
         ],
         "concepts_to_avoid": ["Repeating background epidemiology or full literature review"],
         "figure_guidance": "Structured vector conceptual framework diagram (nodes, annotated arrows, and caption).",
     },
     "chap2_rappel_connaissances": {
-        "chapter_title": "Chapter II: Literature Review",
-        "title": "1. Fundamental Knowledge Review (1/3)",
-        "description": "CAMES fundamental foundation (1/3 of Chapter II): definitions, anatomy/pathophysiology, clinical presentation, diagnosis, and management.",
+        "chapter_title": "CHAPTER II: LITERATURE REVIEW",
+        "title": "II.1. Fundamental Knowledge Review (1/3)",
+        "description": "CAMES fundamental foundation (1/3 of Chapter II): definitions, classification, pathophysiology, clinical presentation, diagnostic tools, and management.",
         "guidance_points": [
             "Respect CAMES proportion: roughly 1/3 of the Literature Review chapter.",
-            "Organize logically: Definitions & classifications → Etiopathogenesis / Pathophysiology → Positive & differential diagnosis → Treatment & prognosis.",
+            "Organize logically: II.1.1 Definitions → II.1.2 Classifications → II.1.3 General Epidemiology & Risk Factors → II.1.4 Pathophysiology → II.1.5 Diagnosis & Validated Instruments → II.1.6 Management.",
         ],
         "cames_concepts_required": [
             "Up-to-date international nosological definitions and classifications",
-            "Recognized pathophysiological mechanisms and etiological factors",
-            "Diagnostic workup (clinical, imaging, labs) and standard therapeutic options",
+            "Recognized pathophysiological mechanisms and validated clinical scales",
+            "Diagnostic workup and standard therapeutic options",
         ],
         "concepts_to_avoid": [
-            "Comparative analysis of other authors' clinical series (reserved for II.2 State of Knowledge)",
+            "Comparative analysis of other authors' clinical series (reserved for II.2 State of Published Studies)",
             "Candidate's own study methodology",
         ],
         "table_guidance": "Only if an official clinical staging or classification requires a summary table.",
@@ -333,17 +328,17 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "notes": "CAMES target: ~1/3 of Chapter II volume.",
     },
     "chap2_etat_connaissances": {
-        "chapter_title": "Chapter II: Literature Review",
-        "title": "2. State of Knowledge / Empirical Review (2/3)",
-        "description": "Critical comparative synthesis of published studies (2/3 of Chapter II): designs, findings (Global/Africa/Cameroon), and limitations.",
+        "chapter_title": "CHAPTER II: LITERATURE REVIEW",
+        "title": "II.2. State of Published Research (2/3)",
+        "description": "Critical comparative synthesis of published studies (2/3 of Chapter II): II.2.1 Global, II.2.2 Africa, II.2.3 Local/National, II.2.4 Synthesis.",
         "guidance_points": [
             "Respect CAMES proportion: roughly 2/3 of the Literature Review chapter.",
-            "Critically analyze comparable studies (Global → Africa → Cameroon): design, sample size, endpoints, numeric findings, and biases.",
+            "Follow geographic flow: II.2.1 Global → II.2.2 Africa → II.2.3 National/Local → II.2.4 Critical Synthesis.",
             "Include the comparative synthesis table and conclude with a transition justifying your methodology.",
         ],
         "cames_concepts_required": [
-            "Critical appraisal of validated literature methods and instruments",
-            "Thematic comparison of results (frequencies, associated factors, outcomes) across high-income settings, Africa, and locally",
+            "Global → Africa → National progression with referenced figures",
+            "Thematic comparison of results (frequencies, associated factors OR/95%CI, outcomes)",
             "Concluding synthesis highlighting unresolved discrepancies addressed by the protocol",
         ],
         "concepts_to_avoid": ["Basic anatomical reviews or introductory definitions already covered in II.1"],
@@ -352,63 +347,77 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "notes": "CAMES target: ~2/3 of Chapter II volume.",
     },
     "chap3_type_site_duree": {
-        "chapter_title": "Chapter III: Methodology",
-        "title": "1–3. Study Design, Setting & Duration / Period",
-        "description": "STROBE/SPIRIT/CAMES study design specification, detailed clinical setting description, and exact study timeline.",
+        "chapter_title": "CHAPTER III: METHODOLOGY",
+        "title": "III.1. Study Design, Period, Duration & Setting",
+        "description": "STROBE/SPIRIT/CAMES study design specification, exact study timeline, and detailed clinical/institutional setting description.",
         "guidance_points": [
-            "Explicitly state study design (e.g., analytical cross-sectional, prospective/retrospective cohort, case-control, clinical trial).",
-            "Describe hospital study sites (tier, location, bed capacity, technical facilities, justification of selection).",
+            "Explicitly state study design (analytical cross-sectional, prospective/retrospective cohort, case-control, clinical trial).",
             "Distinguish overall thesis duration from active participant recruitment/data collection period.",
+            "Describe hospital/faculty study sites (tier, location, technical facilities, selection rationale).",
         ],
         "cames_concepts_required": [
             "Exact study design classification (aim, temporality, single vs multicenter)",
-            "Factual description of clinical wards and diagnostic capabilities",
+            "Factual description of clinical wards/settings and diagnostic capabilities",
             "Distinction between total study duration and active enrollment period",
         ],
-        "concepts_to_avoid": ["Eligibility criteria (III.4)", "Budget details or statistical test formulas"],
+        "concepts_to_avoid": ["Eligibility criteria (III.2)", "Budget details or statistical test formulas"],
     },
     "chap3_population_echantillon": {
-        "chapter_title": "Chapter III: Methodology",
-        "title": "4. Study Population & Sample Size Calculation",
-        "description": "Target vs source population, STROBE eligibility criteria, sampling technique, and mathematical sample size calculation.",
+        "chapter_title": "CHAPTER III: METHODOLOGY",
+        "title": "III.2. Study Population & Sampling",
+        "description": "Target vs accessible population, STROBE/CAMES eligibility criteria (inclusion, non-inclusion, exclusion), sampling technique, and sample size calculation.",
         "guidance_points": [
-            "Clearly distinguish target population from source population.",
-            "Separate inclusion criteria, non-inclusion criteria (pre-enrollment ineligibility), and exclusion criteria (unusable records, withdrawal).",
+            "Clearly distinguish target population from accessible population.",
+            "Separate inclusion criteria, non-inclusion criteria (pre-enrollment ineligibility), and exclusion criteria (unusable records, post-inclusion withdrawal).",
             "Detail sampling method and present the sample size formula in LaTeX ($...$) with referenced parameter values.",
         ],
         "cames_concepts_required": [
-            "Target population vs Source population",
+            "Target population vs Accessible population",
             "Inclusion, non-inclusion, and exclusion criteria (strict CAMES methodological distinction)",
-            "Sampling technique (probabilistic or non-probabilistic / consecutive / exhaustive)",
-            "Sample size formula in LaTeX ($...$) justifying p, Zα, precision d, or statistical power",
+            "Sampling technique and sample size formula in LaTeX ($...$)",
         ],
-        "concepts_to_avoid": ["Full variables list (already in Chapter I.5)"],
+        "concepts_to_avoid": ["Full variables list (III.3)"],
         "table_guidance": "Optional summary table of eligibility criteria or sample size parameters if extensive.",
     },
-    "chap3_outils_procedure": {
-        "chapter_title": "Chapter III: Methodology",
-        "title": "5–6. Data Collection Tools & Procedures",
-        "description": "Description of collection instruments and step-by-step chronological field workflow from screening to follow-up (referencing Appendices).",
+    "chap1_variables": {
+        "chapter_title": "CHAPTER III: METHODOLOGY",
+        "title": "III.3. Study Variables",
+        "description": "Complete operationalization of dependent, independent, and confounding variables per CAMES norms.",
         "guidance_points": [
-            "Describe data collection instruments: structured Case Report Form (Appendix 1), validated clinical scales, devices, and pre-testing.",
-            "Detail chronological field steps: participant screening, information (Appendix 2), consent (Appendix 3), data capture, follow-up, and quality control.",
+            "Explicitly classify dependent outcome variable(s), independent variables (sociodemographic, clinical, paraclinical, therapeutic), and confounders.",
+            "Provide operational definition, measurement scale (continuous/discrete quantitative, nominal/ordinal/dichotomous qualitative), units, and collection tool.",
         ],
         "cames_concepts_required": [
-            "Structure of the Case Report Form (Appendix 1) and pre-testing/validation",
-            "Step-by-step participant pathway (screening → consent → measurement → follow-up)",
-            "Quality assurance and double verification procedures",
+            "Clear separation of Dependent vs Independent vs Confounding variables",
+            "Operational definitions and clinical categorization thresholds",
+            "Exact measurement scales and modalities (consistent with the Data Collection Form)",
         ],
-        "concepts_to_avoid": ["Reproducing the entire CRF inline (reserved for Appendix 1)"],
+        "concepts_to_avoid": ["Detailed statistical test formulas (reserved for Chapter III.5)"],
+        "table_guidance": "Operational variables table (Variable | Role | Operational Definition | Scale | Tool) synced from project.variables.",
+    },
+    "chap3_outils_procedure": {
+        "chapter_title": "CHAPTER III: METHODOLOGY",
+        "title": "III.4. Data Collection Materials & Procedures",
+        "description": "Description of collection instruments and step-by-step chronological field workflow from screening to quality control.",
+        "guidance_points": [
+            "Describe data collection instruments: structured Case Report Form / questionnaire, validated clinical scales, devices, and pre-testing.",
+            "Detail chronological field steps: screening, participant information (Appendix 1), consent (Appendix 2), capture, and quality assurance.",
+        ],
+        "cames_concepts_required": [
+            "Structure of the Case Report Form and pre-testing/validation",
+            "Step-by-step participant pathway (screening → consent → measurement → quality control)",
+        ],
+        "concepts_to_avoid": ["Reproducing the entire CRF inline (reserved for Chapter V)"],
         "figure_guidance": "Operational procedure flowchart diagram (from screening through data validation).",
     },
     "chap3_analyse_donnees": {
-        "chapter_title": "Chapter III: Methodology",
-        "title": "7. Statistical Data Analysis",
+        "chapter_title": "CHAPTER III: METHODOLOGY",
+        "title": "III.5. Statistical Data Analysis Plan",
         "description": "Comprehensive statistical analysis plan (descriptive, bivariate, multivariate) mapped to each specific objective.",
         "guidance_points": [
             "Specify data entry/management software and statistical packages (R, SPSS, Stata, EpiInfo).",
             "Detail descriptive statistics (mean ± SD or median [IQR] per normality; counts and percentages).",
-            "Specify comparative tests (Chi-square/Fisher exact, Student t/Mann-Whitney, logistic regression) and significance threshold (95% CI, p < 0.05).",
+            "Specify comparative tests (Chi-square/Fisher exact, Student t/Mann-Whitney, multivariable logistic regression) and significance threshold (95% CI, p < 0.05).",
         ],
         "cames_concepts_required": [
             "Database entry, cleaning, and handling of missing data",
@@ -419,41 +428,67 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "concepts_to_avoid": ["Fabricated results", "Empty placeholder future result tables unless requested"],
     },
     "chap3_ethique": {
-        "chapter_title": "Chapter III: Methodology",
-        "title": "8. Ethical & Administrative Considerations",
-        "description": "Compliance with Helsinki/CIOMS/CAMES ethics: IRB clearance, hospital administrative authorizations, informed consent, and data privacy.",
+        "chapter_title": "CHAPTER III: METHODOLOGY",
+        "title": "III.6. Ethical Considerations",
+        "description": "Compliance with Helsinki/CIOMS/CAMES ethics: IRB clearance, informed consent, coded anonymization, risk/benefit balance, and secure data retention.",
         "guidance_points": [
-            "State submission to the Institutional Ethics Review Board (CIER-FMSB / IRB) and national ethics committee if applicable.",
-            "Specify administrative authorizations from hospital directors (Appendices 4–5).",
+            "State submission to your institution's Institutional Ethics Review Board (IRB) and national committee if applicable.",
             "Guarantee free informed consent (and assent for minors), non-maleficence, coded anonymization, and secure storage.",
         ],
         "cames_concepts_required": [
             "Explicit reference to the Declaration of Helsinki and bioethical principles (autonomy, beneficence, non-maleficence, justice)",
-            "Ethical clearance (IRB / CIER) and hospital administrative approvals",
-            "Practical anonymization, encrypted storage, and right to withdraw without penalty",
+            "Institutional ethical clearance request (cross-referenced to Chapter V)",
+            "Practical anonymization, encrypted storage, retention duration, and right to withdraw without penalty",
         ],
-        "concepts_to_avoid": ["Full verbatim text of consent or information forms (reserved for Appendices 2 and 3)"],
+        "concepts_to_avoid": ["Full verbatim text of consent or information forms (reserved for Chapter V)"],
+    },
+    "chap3_limites_biais": {
+        "chapter_title": "CHAPTER III: METHODOLOGY",
+        "title": "III.7. Study Limitations & Potential Biases",
+        "description": "Anticipated methodological limitations and bias mitigation strategies (selection, information/recall, confounding).",
+        "guidance_points": [
+            "Discuss design constraints transparently (e.g., cross-sectional temporality, single-center scope).",
+            "Explain concrete safeguards against selection bias, measurement/recall bias, and confounding (pre-testing, validated scales, multivariable adjustment).",
+        ],
+        "cames_concepts_required": [
+            "Selection and generalizability limitations",
+            "Information/measurement bias mitigation and confounder control",
+        ],
+        "concepts_to_avoid": ["Repeating the full statistical analysis section"],
+    },
+    "chap3_formalites_admin": {
+        "chapter_title": "CHAPTER III: METHODOLOGY",
+        "title": "III.8. Administrative Formalities",
+        "description": "Prior administrative clearance workflow with faculty/school leadership and clinical site directors.",
+        "guidance_points": [
+            "Specify academic research authorization from your Faculty/School Dean or Director.",
+            "Specify site permissions from hospital directors/ward heads and commitment to share study results.",
+        ],
+        "cames_concepts_required": [
+            "Faculty authorization and host hospital approvals (cross-referenced to Chapter V letters)",
+        ],
+        "concepts_to_avoid": ["Reproducing full administrative letters inline"],
     },
     "chap3_chronogramme": {
-        "chapter_title": "Chapter III: Methodology",
-        "title": "9. Work Schedule / Timeline",
+        "chapter_title": "CHAPTER III: METHODOLOGY",
+        "title": "III.9. Work Schedule / Timeline",
         "description": "Complete provisional Gantt timeline from protocol approval through thesis defense.",
         "guidance_points": [
             "Present a structured Gantt chart covering all phases (protocol writing, ethics, pre-test, collection, analysis, thesis drafting, defense).",
         ],
         "cames_concepts_required": [
             "Logical monthly/quarterly sequencing of research activities",
-            "Consistency with the study period stated in Section III.1–3",
+            "Consistency with the study period stated in Section III.1",
         ],
         "concepts_to_avoid": ["Redundant long narrative paragraphs"],
         "table_guidance": "Gantt timeline table generated automatically from project.timeline_grid.",
     },
     "chap3_budget": {
-        "chapter_title": "Chapter III: Methodology",
-        "title": "10. Provisional Budget",
+        "chapter_title": "CHAPTER III: METHODOLOGY",
+        "title": "III.10. Provisional Budget",
         "description": "Detailed, realistic financial cost estimate in FCFA specifying funding source.",
         "guidance_points": [
-            "Itemize categories: stationery/printing, logistics/transport, lab/clinical supplies, statistical support, 5–10% contingency, and funding source.",
+            "Itemize categories: stationery/printing, internet, logistics/transport, lab/clinical supplies, statistical support, 5–10% contingency, and funding source.",
         ],
         "cames_concepts_required": [
             "Itemized financial table (Designation | Unit Cost | Quantity | Total in FCFA)",
@@ -463,8 +498,8 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "table_guidance": "Structured FCFA budget table generated from project.budget.",
     },
     "references": {
-        "chapter_title": "REFERENCES",
-        "title": "Bibliography (Vancouver Style)",
+        "chapter_title": "CHAPTER IV: REFERENCES",
+        "title": "IV. Bibliography (Vancouver Style)",
         "description": "Numbered reference list ordered by appearance in the text following strict ICMJE / CAMES Vancouver norms.",
         "guidance_points": [
             "Strict Vancouver formatting (numbered list, no table).",
@@ -476,24 +511,46 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ],
         "concepts_to_avoid": ["Reference tables", "Uncited orphan bibliography entries"],
     },
+    "annexe_notice_information": {
+        "chapter_title": "CHAPTER V: APPENDICES",
+        "title": "Appendix 1: Participant Information Sheet",
+        "description": "9-point plain-language participant information sheet (purpose, why you, procedures, voluntary participation, risks/benefits, confidentiality, results, clinical support, contacts), optionally bilingual EN+FR.",
+        "guidance_points": [
+            "Cover all 9 ethics points clearly and accessibly, tailored to the researcher's faculty, study sites, and supervision team.",
+        ],
+        "cames_concepts_required": [
+            "Declaration of Helsinki & IRB compliance (anonymity, free withdrawal, investigator contact)",
+        ],
+        "concepts_to_avoid": ["Technical statistical jargon", "Personally identifiable questionnaire fields"],
+    },
+    "annexe_consentement": {
+        "chapter_title": "CHAPTER V: APPENDICES",
+        "title": "Appendix 2: Informed Consent Form",
+        "description": "Structured informed consent form recording free and voluntary agreement to participate, optionally bilingual EN+FR.",
+        "guidance_points": [
+            "Include explicit confirmation of notice comprehension, free consent, right to withdraw, and checkboxes or signature blocks.",
+        ],
+        "cames_concepts_required": [
+            "Free, informed, revocable consent statement aligned with study title",
+        ],
+        "concepts_to_avoid": ["Coercive wording"],
+    },
     "annexe_fiche_collecte": {
-        "chapter_title": "APPENDICES",
-        "title": "Appendix 1: Data Collection Form (CRF)",
+        "chapter_title": "CHAPTER V: APPENDICES",
+        "title": "Appendix 3: Data Collection Form / Questionnaire (CRF)",
         "description": (
-            "Dedicated sub-section exclusively for the blank Case Report Form (CRF / Data Collection Sheet), "
+            "Dedicated sub-section exclusively for the blank Case Report Form / questionnaire (CRF), "
             "serving as the direct source for the Module 3 Electronic Data Entry Mask."
         ),
         "guidance_points": [
             "Strict anonymization: unique participant ID (e.g., PAT-001), collection date, study site, and investigator ID — no personally identifiable data.",
-            "1-to-1 alignment with study objectives, literature review (validated clinical scores/classifications), and operational variables.",
+            "1-to-1 alignment with study objectives, literature review (validated clinical scores/classifications), and operational variables (III.3).",
             "Prefer closed-ended checkboxes (Yes/No, single-choice, multi-choice) with mutually exclusive options and an optional 'Other, specify' field.",
             "Specify explicit measurement units (years, kg, cm, mmHg, g/dL, etc.) and segmented date formats (DD/MM/YYYY).",
-            "Logical clinical flow across Sections A–E: Identification/Sociodemographics (A), Medical History/Risk Factors (B), Clinical Exam (C), Paraclinical/Scores (D), Management & Outcome/Primary Endpoint (E).",
         ],
         "cames_concepts_required": [
             "Strict GCP / CAMES anonymization and data minimization matching the statistical analysis plan",
-            "100% alignment between CRF items, Objectives, Chapter I.5 Variables, and Module 3 Electronic Mask",
-            "Hierarchical coding (A1..E5), standardized closed checkboxes, explicit units, and conditional follow-ups ('If yes, specify...')",
+            "100% alignment between CRF items, Objectives, Chapter III.3 Variables, and Module 3 Electronic Mask",
         ],
         "concepts_to_avoid": [
             "Direct patient identifiers (full name, phone number, address)",
@@ -501,22 +558,66 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ],
         "table_guidance": "Structured Case Report Form across Sections A–E rendered with drawn checkboxes, units, and fill-in boxes.",
     },
-    "annexes": {
-        "chapter_title": "APPENDICES",
-        "title": "Other Appendices (Information Sheet, Consent Form, Ethics & Admin Requests)",
-        "description": "Numbered ethical and administrative attachments (each appendix beginning on a new page).",
+    "annexe_autorisation_recherche": {
+        "chapter_title": "CHAPTER V: APPENDICES",
+        "title": "Appendix 4: Research Authorization Request",
+        "description": "Official administrative request letter(s) tailored dynamically to your Faculty/School Dean or Director and host hospital sites.",
         "guidance_points": [
-            "Participant Information Sheet",
-            "Informed Consent Form (and assent form for minors if applicable)",
-            "Ethical clearance and hospital administrative authorization requests",
-            "Researcher confidentiality declaration, commitment letter, and supplementary clinical scales",
+            "Include student identity, registration no., real Faculty/University header, formal recipient, study title, supervisors, and attachment.",
         ],
         "cames_concepts_required": [
-            "Complete ethical compliance across participant information and consent forms (Declaration of Helsinki)",
+            "Dynamic adaptation to the researcher's actual Faculty/Institute and clinical sites",
+        ],
+        "concepts_to_avoid": ["Hardcoded wrong institution or Dean title"],
+    },
+    "annexe_clairance_ethique": {
+        "chapter_title": "CHAPTER V: APPENDICES",
+        "title": "Appendix 5: Ethical Clearance Request",
+        "description": "Formal application letter addressed to the Chairperson of your Institutional or National Ethics Committee.",
+        "guidance_points": [
+            "Address accurately to the committee listed in cover metadata with protocol title, supervision team, and required attachments.",
+        ],
+        "cames_concepts_required": [
+            "Complete formal letter to the Ethics Committee Chairperson",
+        ],
+        "concepts_to_avoid": ["Mismatch with Section III.6 Ethical Considerations"],
+    },
+    "annexe_confidentialite": {
+        "chapter_title": "CHAPTER V: APPENDICES",
+        "title": "Appendix 6: Researcher Confidentiality Declaration",
+        "description": "Formal declaration committing to data anonymization, restricted access, and confidentiality protection.",
+        "guidance_points": [
+            "Tailored to the investigator's faculty, university, and clinical supervision team.",
+        ],
+        "cames_concepts_required": [
+            "Explicit anonymized storage and non-disclosure pledges",
+        ],
+        "concepts_to_avoid": ["Clauses conflicting with data protection norms"],
+    },
+    "annexe_engagement": {
+        "chapter_title": "CHAPTER V: APPENDICES",
+        "title": "Appendix 7: Investigator Commitment Letter",
+        "description": "Scientific commitment letter regarding data integrity, institutional acknowledgements, and feedback of results.",
+        "guidance_points": [
+            "Acknowledge host sites and commit to sharing findings with partner institutions.",
+        ],
+        "cames_concepts_required": [
+            "Result feedback commitment to clinical host sites",
+        ],
+        "concepts_to_avoid": ["Conflicting institutional commitments"],
+    },
+    "annexes": {
+        "chapter_title": "CHAPTER V: APPENDICES",
+        "title": "Other Appendices (Validated Scales & Additional Documents)",
+        "description": "Additional custom attachments or validated clinical scales not covered in Appendices 1–7.",
+        "guidance_points": [
+            "Place any complementary instruments or extra letters here without duplicating Appendices 1–7.",
+        ],
+        "cames_concepts_required": [
             "Preservation of custom appendix order when importing an existing protocol",
         ],
-        "concepts_to_avoid": ["Repeating body protocol paragraphs"],
-        "table_guidance": "Ethical and administrative documents paginated cleanly.",
+        "concepts_to_avoid": ["Repeating body protocol paragraphs or duplicating Appendices 1–7"],
+        "table_guidance": "Complementary documents paginated cleanly.",
     },
 }
 

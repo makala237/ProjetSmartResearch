@@ -35,12 +35,11 @@ TNR_SINGLE_LINE_FACTOR = 1.08
 MIN_WIDOW_ORPHAN_PT = 44.0
 
 FMSB_CHAPTER_TITLES: Dict[str, str] = {
-    "introduction": "INTRODUCTION",
-    "chapitre_1": "CHAPITRE I : PROBLÉMATIQUE",
+    "chapitre_1": "CHAPITRE I : INTRODUCTION",
     "chapitre_2": "CHAPITRE II : REVUE DE LA LITTÉRATURE",
     "chapitre_3": "CHAPITRE III : MÉTHODOLOGIE",
-    "references": "RÉFÉRENCES",
-    "annexes": "ANNEXES",
+    "references": "CHAPITRE IV : RÉFÉRENCES",
+    "annexes": "CHAPITRE V : ANNEXES",
 }
 
 

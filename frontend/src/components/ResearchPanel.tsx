@@ -613,6 +613,18 @@ export function ResearchPanel({
                   )}
                 </div>
               )}
+              {importReport.detected_sub_annexes && importReport.detected_sub_annexes.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-emerald-900">
+                  <span className="rounded bg-indigo-100 px-1.5 py-0.5 font-semibold text-indigo-900">
+                    {lang === "en"
+                      ? `${importReport.detected_sub_annexes.length} sub-appendix(es) isolated automatically`
+                      : `${importReport.detected_sub_annexes.length} sous-annexe(s) isolée(s) automatiquement`}
+                  </span>
+                  <span className="text-slate-600">
+                    ({importReport.detected_sub_annexes.join(", ")})
+                  </span>
+                </div>
+              )}
               {importReport.extracted_images && importReport.extracted_images.length > 0 && (
                 <div className="mt-2.5 border-t border-emerald-200/80 pt-2">
                   <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold text-emerald-900">

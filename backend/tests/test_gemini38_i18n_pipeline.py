@@ -332,9 +332,9 @@ def test_i18n_canvas_language_docx_pptx_and_live_pipeline(tmp_path: Path) -> Non
     en_payload = r_en_canvas.json()
     assert en_payload["language"] == "en"
     en_sections = en_payload["sections"]
-    assert len(en_sections) == 25
+    assert len(en_sections) == 34
     chap1_items = [s for s in en_sections if s.get("chapter_id") == "chapitre_1"]
-    assert chap1_items and chap1_items[0]["chapter_title"] == "Chapter I: Problem Statement"
+    assert chap1_items and chap1_items[0]["chapter_title"] == "CHAPTER I: INTRODUCTION"
 
     r_fr_canvas = admin_client.get("/api/canvas?lang=fr")
     assert r_fr_canvas.status_code == 200
@@ -380,8 +380,9 @@ def test_i18n_canvas_language_docx_pptx_and_live_pipeline(tmp_path: Path) -> Non
             "TABLE OF CONTENTS",
             "LIST OF TABLES",
             "LIST OF FIGURES",
-            "CHAPTER I: PROBLEM STATEMENT",
-            "APPENDICES",
+            "CHAPTER I: INTRODUCTION",
+            "CHAPTER III: METHODOLOGY",
+            "CHAPTER V: APPENDICES",
             "Supervisor",
             "Academic Year 2026-2027",
         ):
@@ -440,7 +441,7 @@ def test_draft_section_with_ai_cross_memory_and_no_model_leak() -> None:
 
     captured: dict[str, str] = {}
 
-    def _fake_orchestrate(project, section_id: str, action: str, user_instruction=None):
+    def _fake_orchestrate(project, section_id: str, action: str, user_instruction=None, **kwargs):
         emit_pipeline_step(
             "memory",
             "Lecture de la mémoire transversale du protocole...",

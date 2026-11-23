@@ -18,6 +18,7 @@ from app.schemas.protocol import (
     SectionState,
     StepStatus,
 )
+from app.services.annexe_engine import extract_all_sub_annexes_from_blocks
 from app.services.crf_builder import (
     extract_crf_annexe_block,
     extract_crf_fields_from_project,
@@ -180,9 +181,25 @@ def split_upload_into_blocks(filename: str, content_bytes: bytes) -> List[DocBlo
                     current.page_numbers.append(page_idx)
                 continue
             lines = [ln.strip() for ln in txt.splitlines() if ln.strip()]
-            first_line = lines[0] if lines else f"Page {page_idx}"
-            if len(current.full_text) > 2200 or _is_heading_paragraph(first_line, ""):
-                current = push_block(f"Page {page_idx}: {first_line}", txt, page_num=page_idx)
+            non_page_lines = [ln for ln in lines[:5] if not ln.isdigit()]
+            heading_candidate = non_page_lines[0] if non_page_lines else (lines[0] if lines else f"Page {page_idx}")
+            matched_page_head = next(
+                (
+                    ln
+                    for ln in non_page_lines[:4]
+                    if _is_heading_paragraph(ln, "")
+                    or re.match(
+                        r"^(?:CHAPITRE|CHAPTER|ANNEXE|APPENDIX|NOTICE\s+D['’]INFORMATION|FICHE\s+D['’]INFORMATION|"
+                        r"FORMULAIRE\s+DE\s+CONSENTEMENT|DEMANDE\s+(?:D['’]|DE\s+))",
+                        ln,
+                        re.IGNORECASE,
+                    )
+                ),
+                None,
+            )
+            if len(current.full_text) > 2200 or matched_page_head is not None:
+                lbl = matched_page_head or heading_candidate
+                current = push_block(f"Page {page_idx}: {lbl}"[:120], txt, page_num=page_idx)
             else:
                 current.paragraphs.append(txt)
                 if page_idx not in current.page_numbers:
@@ -247,23 +264,34 @@ def _fallback_map_blocks_to_sections(blocks: List[DocBlock]) -> ImportedProtocol
                 "grille de collecte",
             ),
         ),
+        ("annexe_notice_information", ("notice d'information", "fiche d'information", "information sheet")),
+        ("annexe_consentement", ("consentement éclairé", "formulaire de consentement", "consent form")),
+        ("annexe_clairance_ethique", ("clairance éthique", "ethical clearance")),
+        ("annexe_autorisation_recherche", ("autorisation de recherche", "demande d'autorisation")),
+        ("annexe_confidentialite", ("déclaration de confidentialité", "confidentiality declaration")),
+        ("annexe_engagement", ("lettre d'engagement", "commitment letter")),
         ("abbreviations", ("abréviation", "abreviation", "sigle", "acronyme")),
         ("references", ("référence", "reference", "bibliograph")),
-        ("annexes", ("annexe", "consentement", "clairance", "questionnaire")),
+        ("annexes", ("annexe", "appendix")),
         ("chap3_budget", ("budget", "financement", "coût", "cout")),
         ("chap3_chronogramme", ("chronogramme", "calendrier", "gantt")),
-        ("chap3_ethique", ("éthique", "ethique", "confidentialit", "consentement")),
-        ("chap3_analyse", ("analyse statistique", "plan d'analyse", "données", "logiciel")),
-        ("chap3_outils_procedure", ("outil", "collecte", "procédure", "procedure")),
-        ("chap3_echantillonnage", ("échantillon", "echantillon", "taille", "inclusion", "exclusion")),
-        ("chap3_type_lieu_duree", ("type d'étude", "lieu d'étude", "site d'étude", "cadre de l'étude", "durée")),
-        ("chap2_etat_connaissances", ("état des connaissances", "etat des connaissances", "épidémiolog", "revue de la littérature")),
-        ("chap2_rappel_connaissances", ("rappel", "généralité", "generalite", "définition", "physiopatholog")),
-        ("chap1_variables", ("variable", "définition opérationnelle")),
-        ("chap1_objectifs_hypotheses", ("objectif", "hypothèse", "hypothese", "question de recherche")),
-        ("chap1_justification", ("justification", "rationnel", "intérêt de l'étude")),
-        ("intro_problematique", ("problématique", "problematique")),
-        ("intro_contexte", ("introduction", "contexte")),
+        ("chap3_formalites_admin", ("formalités administratives", "formalites administratives")),
+        ("chap3_limites_biais", ("limites et biais", "biais de", "limites de l'étude")),
+        ("chap3_ethique", ("éthique", "ethique", "confidentialit")),
+        ("chap3_analyse_donnees", ("analyse des données", "analyse statistique", "plan d'analyse", "logiciel")),
+        ("chap3_outils_procedure", ("outil", "matériel de collecte", "procédure de collecte", "procedure")),
+        ("chap3_population_echantillon", ("échantillon", "echantillon", "taille minimale", "inclusion", "exclusion")),
+        ("chap3_type_site_duree", ("type d'étude", "lieu d'étude", "cadre de l'étude", "période et durée")),
+        ("chap2_etat_connaissances", ("état des connaissances", "état des publications", "revue de la littérature")),
+        ("chap2_rappel_connaissances", ("rappel", "généralité", "generalite", "physiopatholog")),
+        ("chap1_variables", ("variables de l'étude", "liste des variables", "variable")),
+        ("chap1_definitions_operationnelles", ("définition des termes", "termes opérationnels")),
+        ("chap1_objectifs", ("objectif général", "objectifs spécifiques", "objectifs")),
+        ("chap1_hypotheses", ("hypothèse", "hypothese")),
+        ("chap1_questions", ("question de recherche", "question de la recherche")),
+        ("chap1_justification", ("justification", "rationnel")),
+        ("intro_interet", ("problématique", "problematique", "intérêt de l'étude")),
+        ("intro_contexte", ("introduction", "situation du problème", "contexte")),
     ]
     buckets: Dict[str, List[int]] = {}
     for blk in blocks:
@@ -595,8 +623,16 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
             tables_md = _extract_markdown_tables(reassembled_text)
             prepared_sections.append((item.section_id, reassembled_text, tables_md, item.diagnostic_note or ""))
 
-        # Dedicated deterministic CRF boundary pass for internal_source documents
+        # Dedicated deterministic CRF + Sub-Annexes boundary pass for internal_source documents
         crf_det = detect_crf_boundaries_in_blocks(blocks, lang=lang, use_ai=False)
+        crf_span_ids_int: set[int] = set()
+        if crf_det.found and crf_det.start_block_id is not None and crf_det.end_block_id is not None:
+            id_to_pos_int = {b.block_id: idx for idx, b in enumerate(blocks)}
+            sp_i = id_to_pos_int.get(crf_det.start_block_id)
+            ep_i = id_to_pos_int.get(crf_det.end_block_id)
+            if sp_i is not None and ep_i is not None and sp_i <= ep_i:
+                crf_span_ids_int = {blocks[k].block_id for k in range(sp_i, ep_i + 1)}
+
         existing_prepared_sids = {sid for sid, _, _, _ in prepared_sections}
         if crf_det.found and "annexe_fiche_collecte" not in existing_prepared_sids:
             _, pure_crf, _, crf_det = slice_crf_from_text_or_blocks(
@@ -616,6 +652,29 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
                         "Fiche de collecte identifiée automatiquement (début → fin) pour la bibliothèque interne.",
                     )
                 )
+                existing_prepared_sids.add("annexe_fiche_collecte")
+
+        sub_ann_int = extract_all_sub_annexes_from_blocks(
+            blocks,
+            excluded_block_ids=crf_span_ids_int,
+            lang=lang,
+        )
+        detected_subs_int: List[str] = []
+        for sub_sid, sub_data in sub_ann_int["extracted"].items():
+            detected_subs_int.append(sub_sid)
+            if sub_sid not in existing_prepared_sids:
+                if sub_sid not in project.sections:
+                    project.sections[sub_sid] = SectionState(section_id=sub_sid)
+                sub_md = sub_data["content_markdown"]
+                prepared_sections.append(
+                    (
+                        sub_sid,
+                        sub_md,
+                        _extract_markdown_tables(sub_md),
+                        f"Sous-annexe « {sub_data['title']} » identifiée pour la bibliothèque interne.",
+                    )
+                )
+                existing_prepared_sids.add(sub_sid)
 
         emit_pipeline_step(
             "extract_images",
@@ -685,6 +744,7 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
             "source_document": source_doc.model_dump(mode="json"),
             "crf_detected": bool(crf_det.found or "annexe_fiche_collecte" in existing_prepared_sids or any(s == "annexe_fiche_collecte" for s, _, _, _ in prepared_sections)),
             "crf_detection": crf_det.model_dump(mode="json") if crf_det.found else None,
+            "detected_sub_annexes": detected_subs_int,
         }
 
     project.entry_mode = EntryMode.EXISTING_PROTOCOL
@@ -693,30 +753,36 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
     if analysis.detected_study_type and not project.study_type:
         project.study_type = analysis.detected_study_type
 
-    # Dedicated Stage 1 CRF boundary detection across ALL blocks before mapping annexes
+    # Dedicated Stage 1 CRF & Sub-Annexes boundary detection across ALL blocks before mapping annexes
     emit_pipeline_step(
         "crf_detect",
-        "Identification chirurgicale de la fiche de collecte (début → fin)...",
-        "Detecting exact Data Collection Form boundaries (start → end)...",
+        "Identification chirurgicale des sous-annexes & de la fiche de collecte...",
+        "Detecting exact Data Collection Form & sub-appendix boundaries...",
         progress_pct=70,
     )
     crf_det = detect_crf_boundaries_in_blocks(blocks, lang=lang, use_ai=True)
     crf_span_ids: set[int] = set()
     pure_crf_text = ""
-    crf_before_tail_annex = ""
     if crf_det.found and crf_det.start_block_id is not None and crf_det.end_block_id is not None:
         id_to_pos = {b.block_id: idx for idx, b in enumerate(blocks)}
         s_pos = id_to_pos.get(crf_det.start_block_id)
         e_pos = id_to_pos.get(crf_det.end_block_id)
         if s_pos is not None and e_pos is not None and s_pos <= e_pos:
             crf_span_ids = {blocks[k].block_id for k in range(s_pos, e_pos + 1)}
-            _, pure_crf_text, after_crf_doc, crf_det = slice_crf_from_text_or_blocks(
+            _, pure_crf_text, _, crf_det = slice_crf_from_text_or_blocks(
                 blocks=blocks,
                 lang=lang,
                 use_ai=False,
                 precomputed_detection=crf_det,
             )
-            crf_before_tail_annex = after_crf_doc
+
+    sub_ann_res = extract_all_sub_annexes_from_blocks(
+        blocks,
+        excluded_block_ids=crf_span_ids,
+        lang=lang,
+    )
+    sub_ann_claimed_ids: set[int] = set(sub_ann_res.get("claimed_block_ids") or set())
+    all_claimed_annex_ids = crf_span_ids | sub_ann_claimed_ids
 
     mapped_count = 0
     mapped_section_ids: set[str] = set()
@@ -729,7 +795,7 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
         effective_bids = [
             bid
             for bid in item.block_ids
-            if not (item.section_id == "annexes" and bid in crf_span_ids)
+            if not (item.section_id == "annexes" and bid in all_claimed_annex_ids)
         ]
         valid_blocks = []
         for bid in effective_bids:
@@ -809,17 +875,6 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
             mapped_count += 1
             mapped_section_ids.add("annexe_fiche_collecte")
 
-        # Ensure trailing non-CRF annexes inside a shared block are not dropped
-        if crf_before_tail_annex and "annexes" in project.sections:
-            ann_sec = project.sections["annexes"]
-            if not (ann_sec.content_markdown or "").strip():
-                ann_sec.content_markdown = crf_before_tail_annex
-                ann_sec.content_html = markdown_to_clean_html(crf_before_tail_annex)
-                ann_sec.status = StepStatus.IN_PROGRESS
-                if "annexes" not in mapped_section_ids:
-                    mapped_count += 1
-                    mapped_section_ids.add("annexes")
-
         compiled = compile_crf_fields_hybrid(project, pure_crf_text, use_ai=True)
         compiled_fields = compiled.get("fields") or []
         if compiled_fields:
@@ -839,6 +894,35 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
                 sync_crf_to_project(project, sync_annexe1_markdown=False)
             elif not project.crf_fields:
                 project.crf_fields = extract_crf_fields_from_project(project)
+
+    # Populate dedicated individualized sub-annex sections extracted cleanly from the document
+    detected_sub_annexes: List[str] = []
+    if crf_detected:
+        detected_sub_annexes.append("annexe_fiche_collecte")
+    for sub_sid, sub_data in sub_ann_res["extracted"].items():
+        sub_md = (sub_data.get("content_markdown") or "").strip()
+        if not sub_md:
+            continue
+        if sub_sid not in project.sections:
+            project.sections[sub_sid] = SectionState(section_id=sub_sid)
+        sub_sec = project.sections[sub_sid]
+        sub_sec.content_markdown = sub_md
+        sub_sec.content_html = markdown_to_clean_html(sub_md)
+        sub_sec.status = StepStatus.IN_PROGRESS
+        sub_sec.audit_notes = [f"Sous-annexe extraite automatiquement ({sub_data.get('title', sub_sid)})."]
+        if sub_sid not in mapped_section_ids:
+            mapped_count += 1
+            mapped_section_ids.add(sub_sid)
+        if sub_sid not in detected_sub_annexes:
+            detected_sub_annexes.append(sub_sid)
+        for sbid in sub_data.get("block_ids") or []:
+            blk = blocks_by_id.get(sbid)
+            if blk is None:
+                continue
+            for pno in blk.page_numbers:
+                page_to_section[pno] = sub_sid
+            for eidx in blk.elem_indices:
+                elem_idx_to_section[eidx] = sub_sid
 
     # Extract ALL valid embedded images/figures from the user-imported document with section context
     emit_pipeline_step(
@@ -881,4 +965,5 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
         "crf_detected": crf_detected,
         "crf_fields_count": len(project.crf_fields),
         "crf_detection": crf_det.model_dump(mode="json") if crf_det.found else None,
+        "detected_sub_annexes": detected_sub_annexes,
     }

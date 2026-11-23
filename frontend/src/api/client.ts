@@ -781,6 +781,37 @@ export const api = {
       }
     ),
 
+  generateSubAnnex: (
+    projectId: string,
+    sectionId: string,
+    payload: { user_instruction?: string; bilingual?: boolean; use_ai?: boolean } = {},
+    taskId?: string
+  ) =>
+    request<{
+      project: ProtocolProject;
+      section_id: string;
+      content_markdown: string;
+      content_html: string;
+      model_used: string;
+      assistant_commentary: string;
+      faculty_context: {
+        faculty_name: string;
+        university_name: string;
+        faculty_head_recipient: string;
+        ethics_committee: string;
+        host_institutions: string[];
+        city: string;
+      };
+    }>(`/api/projects/${projectId}/annexes/${sectionId}/generate`, {
+      method: "POST",
+      headers: pipelineHeaders(taskId),
+      body: JSON.stringify({
+        user_instruction: payload.user_instruction ?? "",
+        bilingual: payload.bilingual ?? false,
+        use_ai: payload.use_ai ?? true,
+      }),
+    }),
+
   aiGenerateCrf: (
     projectId: string,
     payload: { mode?: "auto" | "generate" | "improve"; user_instruction?: string }

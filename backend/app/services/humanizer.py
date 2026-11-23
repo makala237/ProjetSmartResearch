@@ -21,7 +21,13 @@ NON_NARRATIVE_SECTION_IDS = {
     "list_of_tables",
     "list_of_figures",
     "references",
+    "annexe_notice_information",
+    "annexe_consentement",
     "annexe_fiche_collecte",
+    "annexe_autorisation_recherche",
+    "annexe_clairance_ethique",
+    "annexe_confidentialite",
+    "annexe_engagement",
     "annexes",
 }
 

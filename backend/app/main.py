@@ -57,6 +57,7 @@ from app.schemas.protocol import (
     DiagramNode,
     ExtractCRFRequest,
     GenerateCRFRequest,
+    GenerateSubAnnexRequest,
     ImageAsset,
     PatientRecord,
     ProtocolProject,
@@ -70,6 +71,7 @@ from app.schemas.protocol import (
     UpdateStructuredDataRequest,
     UpsertPatientRecordRequest,
 )
+from app.services.annexe_engine import generate_sub_annex_content
 from app.services.annexes_generator import build_annexes_pack
 from app.services.coherence_sentinel import (
     evaluate_project_coherence,
@@ -2047,6 +2049,71 @@ def export_pdf(
 
 
 # --- Phase 5: CRF / Fiche de Collecte (Annexe 1) & Module 3 Patient Data Entry ---
+
+
+@app.post("/api/projects/{project_id}/annexes/{section_id}/generate")
+def generate_project_sub_annex(
+    project_id: str,
+    section_id: str,
+    payload: GenerateSubAnnexRequest,
+    request: Request,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+    db: Any = Depends(get_db),
+) -> Dict[str, object]:
+    """Generate or refine an individualized Chapter V sub-appendix adapted to the user's Faculty and cover info."""
+    project = get_authorized_project(project_id, current_user)
+    cost = 0
+    if payload.use_ai:
+        cost = assert_ai_quota_available(db, current_user, module_key="module1", action="generate_sub_annex")
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="generate_sub_annex",
+        title_fr=f"Rédaction de sous-annexe ({section_id})",
+        title_en=f"Generating Sub-Appendix ({section_id})",
+    )
+    try:
+        res = generate_sub_annex_content(
+            project,
+            section_id=section_id,
+            user_instruction=payload.user_instruction,
+            bilingual=payload.bilingual,
+            use_ai=payload.use_ai,
+        )
+        saved = project_storage.save(project)
+        if payload.use_ai:
+            record_usage_and_debit(
+                db=db,
+                user=current_user,
+                module_key="module1",
+                action="generate_sub_annex",
+                credits_cost=cost,
+                project_id=project_id,
+                model_used=str(res.get("model_used", "")),
+                ip_address=get_client_ip(request),
+            )
+        if tracked:
+            finish_pipeline_task("done")
+        return {
+            "project": saved.model_dump(mode="json"),
+            "section_id": res["section_id"],
+            "content_markdown": res["content_markdown"],
+            "content_html": res["content_html"],
+            "model_used": res["model_used"],
+            "assistant_commentary": res["assistant_commentary"],
+            "faculty_context": res["faculty_context"],
+        }
+    except ValueError as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        reset_ai_routing_policy()
 
 
 @app.post("/api/projects/{project_id}/crf/ai-generate")

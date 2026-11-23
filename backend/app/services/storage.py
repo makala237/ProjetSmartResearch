@@ -133,11 +133,34 @@ def _build_special_section_markdown(project: ProtocolProject, section_id: str) -
 
     if section_id == "annexes":
         pack = build_annexes_pack(project)
-        ann_crf = project.sections.get("annexe_fiche_collecte")
-        if ann_crf and ann_crf.content_markdown.strip():
-            pack = [a for a in pack if a.get("kind") != "data_collection"]
-        heading = "### PROTOCOL APPENDICES" if lang == "en" else "### ANNEXES DU PROTOCOLE FMSB"
+        populated_dedicated = {
+            sid
+            for sid in (
+                "annexe_notice_information",
+                "annexe_consentement",
+                "annexe_fiche_collecte",
+                "annexe_autorisation_recherche",
+                "annexe_clairance_ethique",
+                "annexe_confidentialite",
+                "annexe_engagement",
+            )
+            if project.sections.get(sid) and (project.sections[sid].content_markdown or "").strip()
+        }
+        pack = [
+            a
+            for a in pack
+            if a.get("section_id") not in populated_dedicated
+            and not (a.get("kind") == "data_collection" and "annexe_fiche_collecte" in populated_dedicated)
+        ]
+        heading = "### ADDITIONAL PROTOCOL APPENDICES" if lang == "en" else "### AUTRES ANNEXES DU PROTOCOLE"
         lines = [heading, ""]
+        if not pack:
+            lines.append(
+                "*Appendices 1–7 are managed individually in their dedicated Chapter V sub-sections.*"
+                if lang == "en"
+                else "*Les annexes principales sont gérées individuellement dans les sous-sections dédiées du Chapitre V.*"
+            )
+            return "\n".join(lines)
         for ann in pack:
             lines.append(f"#### {ann['title']}")
             for p_txt in ann.get("paragraphs", []):
@@ -152,7 +175,7 @@ def sync_special_sections(
     project: ProtocolProject,
     force_section_id: Optional[str] = None,
 ) -> None:
-    """Ensure all 24 FMSB sections exist and auto-populate/refresh derived special sections."""
+    """Ensure all FMSB-CAMES 5-chapter sections exist and auto-populate/refresh derived special sections."""
     special_ids = ("toc", "abbreviations", "list_of_tables", "list_of_figures", "references", "annexes")
     for spec in FMSB_SECTIONS:
         if spec.id not in project.sections:

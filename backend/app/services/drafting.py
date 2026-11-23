@@ -174,7 +174,23 @@ def deterministic_section_checks(project: ProtocolProject, section_id: str, text
                 else f"Dépassement de volume CAMES/FMSB : {words} mots (maximum recommandé : {c.max_words} mots)."
             )
 
-    if words > 0 and section_id not in ("intro_contexte", "intro_interet", "references", "toc", "abbreviations", "list_of_tables", "list_of_figures"):
+    if words > 0 and section_id not in (
+        "intro_contexte",
+        "intro_interet",
+        "references",
+        "toc",
+        "abbreviations",
+        "list_of_tables",
+        "list_of_figures",
+        "annexe_notice_information",
+        "annexe_consentement",
+        "annexe_fiche_collecte",
+        "annexe_autorisation_recherche",
+        "annexe_clairance_ethique",
+        "annexe_confidentialite",
+        "annexe_engagement",
+        "annexes",
+    ):
         cited_nums = set(re.findall(r"\[(\d+)\]", text))
         if c.min_references is not None and c.min_references > 0 and len(cited_nums) < c.min_references:
             notes.append(
@@ -257,6 +273,33 @@ def draft_section_with_ai(
             "assistant_commentary": crf_res["assistant_commentary"],
             "deterministic_notes": crf_res.get("cames_compliance_checklist") or [],
             "orchestration_trace": {"crf_mode": crf_res["mode_applied"], "crf_fields_count": len(crf_res["crf_fields"])},
+        }
+    if section_id in (
+        "annexe_notice_information",
+        "annexe_consentement",
+        "annexe_autorisation_recherche",
+        "annexe_clairance_ethique",
+        "annexe_confidentialite",
+        "annexe_engagement",
+    ):
+        from app.services.annexe_engine import generate_sub_annex_content
+
+        bilingual = "bilingue" in (user_instruction or "").lower() or "english" in (user_instruction or "").lower()
+        ann_res = generate_sub_annex_content(
+            project,
+            section_id=section_id,
+            user_instruction=user_instruction or "",
+            bilingual=bilingual,
+            use_ai=True,
+        )
+        return {
+            "model_used": ann_res["model_used"],
+            "content_markdown": ann_res["content_markdown"],
+            "content_html": ann_res["content_html"],
+            "cited_ref_ids": [],
+            "assistant_commentary": ann_res["assistant_commentary"],
+            "deterministic_notes": [],
+            "orchestration_trace": {"sub_annex_faculty_context": ann_res.get("faculty_context", {})},
         }
     if section_id in ("toc", "abbreviations", "list_of_tables", "list_of_figures", "references", "annexes"):
         from app.services.storage import sync_special_sections

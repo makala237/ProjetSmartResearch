@@ -1658,26 +1658,32 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             if t.text and "II" in t.text and "III" not in t.text:
                 t.text = t.text.replace("II", "III")
 
-    if lang == "en":
-        en_banner_texts = {
-            "toc": labels["anchor_toc"],
-            "abbreviations": labels["anchor_abbreviations"],
-            "introduction": chap_titles["introduction"],
-            "chapitre_1": chap_titles["chapitre_1"],
-            "chapitre_2": chap_titles["chapitre_2"],
-            "chapitre_3": chap_titles["chapitre_3"],
-            "references": chap_titles["references"],
-            "annexes": chap_titles["annexes"],
-        }
-        for b_key, b_txt in en_banner_texts.items():
-            if b_key in anchors:
-                _set_anchor_box_text(anchors[b_key], b_txt)
+    # Synchronize all 5 grand chapter box titles in BOTH FR and EN (FMSB-CAMES 5-chapter layout)
+    banner_texts = {
+        "toc": labels["anchor_toc"],
+        "abbreviations": labels["anchor_abbreviations"],
+        "chapitre_1": chap_titles["chapitre_1"],
+        "chapitre_2": chap_titles["chapitre_2"],
+        "chapitre_3": chap_titles["chapitre_3"],
+        "references": chap_titles["references"],
+        "annexes": chap_titles["annexes"],
+    }
+    for b_key, b_txt in banner_texts.items():
+        if b_key in anchors:
+            _set_anchor_box_text(anchors[b_key], b_txt)
+
+    # Remove legacy standalone "INTRODUCTION" anchor when intro sections live inside chapitre_1
+    active_chapter_ids = {spec.chapter_id for spec in localized_canvas}
+    if "introduction" in anchors and "introduction" not in active_chapter_ids:
+        intro_p = anchors.pop("introduction")
+        if intro_p._p.getparent() is not None:
+            intro_p._p.getparent().remove(intro_p._p)
 
     # Force clean page breaks before front-matter and major chapter boxes, and center grand titles on their own page
-    for pb_key in ("toc", "abbreviations", "introduction", "chapitre_1", "chapitre_2", "chapitre_3", "references", "annexes"):
+    for pb_key in ("toc", "abbreviations", "chapitre_1", "chapitre_2", "chapitre_3", "references", "annexes"):
         if pb_key in anchors:
             anchors[pb_key].paragraph_format.page_break_before = True
-    for ch_key in ("introduction", "chapitre_1", "chapitre_2", "chapitre_3", "references", "annexes"):
+    for ch_key in ("chapitre_1", "chapitre_2", "chapitre_3", "references", "annexes"):
         if ch_key in anchors:
             _center_grand_chapter_box(anchors[ch_key], fmt)
 
@@ -2477,7 +2483,12 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         cursor = render_custom_tables(ann_sec, cursor)
         cursor = render_custom_diagrams(ann_sec, cursor)
 
-    _configure_fmsb_pagination(doc, anchors.get("introduction"), fmt, project=project)
+    _configure_fmsb_pagination(
+        doc,
+        anchors.get("chapitre_1") or anchors.get("introduction"),
+        fmt,
+        project=project,
+    )
     apply_human_author_metadata_docx(doc, project)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

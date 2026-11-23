@@ -498,6 +498,12 @@ class GenerateCRFRequest(BaseModel):
     user_instruction: str = ""
 
 
+class GenerateSubAnnexRequest(BaseModel):
+    user_instruction: str = ""
+    bilingual: bool = False
+    use_ai: bool = True
+
+
 class ExtractCRFRequest(BaseModel):
     source_mode: Literal["auto", "section", "internal_source"] = "auto"
     source_id: Optional[str] = None

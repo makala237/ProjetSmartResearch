@@ -15,7 +15,7 @@ from app.services.pipeline_tracker import emit_pipeline_step
 logger = logging.getLogger(__name__)
 
 ALLOWED_TARGET_SECTIONS = {
-    s.id for s in FMSB_SECTIONS if s.id not in ("cover_page", "references", "annexes", "annexe_fiche_collecte")
+    s.id for s in FMSB_SECTIONS if s.chapter_id not in ("annexes",) and s.id not in ("cover_page", "references")
 }
 
 

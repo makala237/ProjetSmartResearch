@@ -195,8 +195,8 @@ Description de l'échelle visuelle analogique...
         en_sections = get_localized_canvas("en")
         en_ids = [s.id for s in en_sections]
 
-        self.assertEqual(len(FMSB_SECTIONS), 25)
-        self.assertEqual(len(en_sections), 25)
+        self.assertEqual(len(FMSB_SECTIONS), 34)
+        self.assertEqual(len(en_sections), 34)
         self.assertIn("annexe_fiche_collecte", fr_ids)
         self.assertIn("annexe_fiche_collecte", en_ids)
 

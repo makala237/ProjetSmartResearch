@@ -85,13 +85,27 @@ const AUTO_SYNC_SECTION_IDS = new Set([
   "list_of_figures",
   "annexes",
 ]);
+const SUB_ANNEX_SECTION_IDS = new Set([
+  "annexe_notice_information",
+  "annexe_consentement",
+  "annexe_autorisation_recherche",
+  "annexe_clairance_ethique",
+  "annexe_confidentialite",
+  "annexe_engagement",
+]);
 const NON_MEDIA_SECTION_IDS = new Set([
   "toc",
   "abbreviations",
   "list_of_tables",
   "list_of_figures",
   "references",
+  "annexe_notice_information",
+  "annexe_consentement",
   "annexe_fiche_collecte",
+  "annexe_autorisation_recherche",
+  "annexe_clairance_ethique",
+  "annexe_confidentialite",
+  "annexe_engagement",
   "annexes",
 ]);
 
@@ -177,6 +191,9 @@ export function Module1Assistant({
   const [busyRefs, setBusyRefs] = useState(false);
   const [busyExtractCrf, setBusyExtractCrf] = useState(false);
   const [crfExtractNote, setCrfExtractNote] = useState<string | null>(null);
+  const [busySubAnnex, setBusySubAnnex] = useState(false);
+  const [subAnnexBilingual, setSubAnnexBilingual] = useState(false);
+  const [subAnnexFacultyNote, setSubAnnexFacultyNote] = useState<string | null>(null);
   const [busyAntigravityBySec, setBusyAntigravityBySec] = useState<Record<string, boolean>>({});
 
   const busyDraft = Boolean(busyDraftBySec[activeSpec.id]);
@@ -642,6 +659,51 @@ export function Module1Assistant({
       onError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyExtractCrf(false);
+    }
+  }
+
+  async function handleGenerateFacultySubAnnex() {
+    const targetSectionId = activeSpec.id;
+    const targetTitle = activeSpec.title;
+    setBusySubAnnex(true);
+    setSubAnnexFacultyNote(null);
+    onError("");
+    try {
+      const res = await tracker.runWithProgress(
+        {
+          operation: "generate_sub_annex",
+          titleFr: `Rédaction adaptée : ${targetTitle}`,
+          titleEn: `Generating Sub-Appendix: ${targetTitle}`,
+          projectId: project.project_id,
+        },
+        (taskId) =>
+          api.generateSubAnnex(
+            project.project_id,
+            targetSectionId,
+            {
+              user_instruction: aiInstruction.trim(),
+              bilingual: subAnnexBilingual,
+              use_ai: true,
+            },
+            taskId
+          )
+      );
+      const merged = mergeSectionProjectUpdate(res.project, targetSectionId);
+      onProjectUpdated(merged);
+      if (selectedSectionIdRef.current === targetSectionId) {
+        setDraft(res.content_markdown);
+        setDraftHtml(res.content_html ?? "");
+        const fc = res.faculty_context;
+        setSubAnnexFacultyNote(
+          lang === "en"
+            ? `Tailored to ${fc.faculty_name} (${fc.university_name}) — Recipient: ${fc.faculty_head_recipient}.`
+            : `Adapté à : ${fc.faculty_name} (${fc.university_name}) — Destinataire : ${fc.faculty_head_recipient}.`
+        );
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusySubAnnex(false);
     }
   }
 
@@ -1487,6 +1549,56 @@ export function Module1Assistant({
                           : lang === "en"
                             ? "Extract & Sync to Mask"
                             : "Extraire & synchroniser vers Masque de saisie"}
+                      </button>
+                    </div>
+                  )}
+                  {SUB_ANNEX_SECTION_IDS.has(activeSpec.id) && (
+                    <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-indigo-200 bg-indigo-50/70 px-3 py-2 text-xs text-indigo-950">
+                      <div className="min-w-0 flex-1 space-y-1 text-[11px]">
+                        <div>
+                          <strong>
+                            {lang === "en"
+                              ? "Faculty-Aware Sub-Appendix Generator:"
+                              : "Générateur d'Annexe adapté à votre Faculté :"}
+                          </strong>{" "}
+                          {subAnnexFacultyNote ||
+                            (lang === "en"
+                              ? `Uses your real cover identity (${project.cover.faculty_en || project.cover.faculty_fr || "Faculty"}), Dean/Director & Ethics Committee.`
+                              : `S'adapte automatiquement à votre établissement (${project.cover.faculty_fr || "Faculté"}), Doyen/Directeur et Comité d'Éthique.`)}
+                        </div>
+                        {(activeSpec.id === "annexe_notice_information" ||
+                          activeSpec.id === "annexe_consentement") && (
+                          <label className="inline-flex cursor-pointer items-center gap-1.5 font-medium text-indigo-900">
+                            <input
+                              type="checkbox"
+                              checked={subAnnexBilingual}
+                              onChange={(e) => setSubAnnexBilingual(e.target.checked)}
+                              className="rounded border-indigo-300 text-indigo-700"
+                            />
+                            {lang === "en"
+                              ? "Generate Bilingual Version (FR + EN)"
+                              : "Générer en version bilingue (FR + EN)"}
+                          </label>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={busySubAnnex || busyDraft}
+                        onClick={handleGenerateFacultySubAnnex}
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[#6C2826] px-3 py-1.5 text-[11px] font-semibold text-white shadow-xs hover:bg-[#561f1d] disabled:opacity-50"
+                      >
+                        {busySubAnnex ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="h-3.5 w-3.5" />
+                        )}
+                        {busySubAnnex
+                          ? lang === "en"
+                            ? "Generating..."
+                            : "Génération..."
+                          : lang === "en"
+                            ? "Generate for My Faculty"
+                            : "Générer / Actualiser selon ma Faculté"}
                       </button>
                     </div>
                   )}

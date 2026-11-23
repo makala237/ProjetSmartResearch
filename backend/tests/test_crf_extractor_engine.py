@@ -232,7 +232,8 @@ class TestCRFExtractorEngine(unittest.TestCase):
         self.assertEqual(report["crf_fields_count"], 4)
         self.assertIn("ANNEXE 1 : FICHE D'ENQUETE", project.sections["annexe_fiche_collecte"].content_markdown)
         self.assertNotIn("NOTICE D'INFORMATION", project.sections["annexe_fiche_collecte"].content_markdown)
-        self.assertIn("NOTICE D'INFORMATION", project.sections["annexes"].content_markdown)
+        self.assertIn("NOTICE D'INFORMATION", project.sections["annexe_notice_information"].content_markdown)
+        self.assertIn("CONSENTEMENT", project.sections["annexe_consentement"].content_markdown)
         self.assertNotIn("Glycémie à jeun", project.sections["annexes"].content_markdown)
 
     def test_hybrid_compilation_word_tables_slash_choices_and_cames_pii_filter(self):

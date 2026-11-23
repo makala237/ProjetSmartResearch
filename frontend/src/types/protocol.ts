@@ -463,6 +463,7 @@ export interface ImportReport {
   crf_detected?: boolean;
   crf_fields_count?: number;
   crf_detection?: CRFBoundaryDetection | null;
+  detected_sub_annexes?: string[];
 }
 
 export interface GlobalAuditCheck {
