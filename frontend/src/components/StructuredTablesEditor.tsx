@@ -16,6 +16,7 @@ import type {
   AbbreviationItem,
   AnnexesConfig,
   BudgetItem,
+  CanvasSectionSpec,
   LiteratureSynthesisItem,
   ProtocolProject,
   TimelineGrid,
@@ -25,12 +26,14 @@ import { TimelineGridEditor } from "./TimelineGridEditor";
 
 interface StructuredTablesEditorProps {
   project: ProtocolProject;
+  canvas?: CanvasSectionSpec[];
   onProjectUpdated: (updated: ProtocolProject) => void;
   onError: (msg: string) => void;
 }
 
 export function StructuredTablesEditor({
   project,
+  canvas,
   onProjectUpdated,
   onError,
 }: StructuredTablesEditorProps) {
@@ -38,7 +41,7 @@ export function StructuredTablesEditor({
     "abbreviations" | "variables" | "synthesis" | "timeline" | "budget" | "annexes" | "figures"
   >("variables");
   const [figUploadFile, setFigUploadFile] = useState<File | null>(null);
-  const [figUploadSection, setFigUploadSection] = useState("chap1_justificatif");
+  const [figUploadSection, setFigUploadSection] = useState("chap1_justification");
   const [figUploadTitle, setFigUploadTitle] = useState("");
   const [figUploadCaption, setFigUploadCaption] = useState("");
 
@@ -236,7 +239,7 @@ export function StructuredTablesEditor({
         <div className="mt-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-600">
-              Tableau inséré dans <strong>Chapitre I (Section 5)</strong> et servant de base à l'<strong>Annexe 1</strong>.
+              Tableau inséré dans <strong>Chapitre III (Section III.3)</strong> et servant de base à l&apos;<strong>Annexe 3 : Fiche de collecte</strong>.
             </span>
             <button
               type="button"
@@ -365,7 +368,7 @@ export function StructuredTablesEditor({
         <div className="mt-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-600">
-              Tableau de synthèse des études antérieures inséré en fin de <strong>Chapitre II</strong> (comme dans <code>PROT K 1</code>).
+              Tableau de synthèse des études antérieures inséré en fin de <strong>Chapitre II (Section II.2)</strong>.
             </span>
             <button
               type="button"
@@ -483,7 +486,7 @@ export function StructuredTablesEditor({
       {activeTab === "timeline" && (
         <div className="mt-4 space-y-3">
           <span className="text-xs text-slate-600">
-            Matrice de Gantt insérée dans <strong>Chapitre III (Section 9)</strong>. Modifiez les dates, les activités et cochez les périodes actives.
+            Matrice de Gantt insérée dans <strong>Chapitre III (Section III.9)</strong>. Modifiez les dates, les activités et cochez les périodes actives.
           </span>
           <TimelineGridEditor
             timelineGrid={timelineGrid}
@@ -498,7 +501,7 @@ export function StructuredTablesEditor({
         <div className="mt-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-600">
-              Budget chiffré inséré dans <strong>Chapitre III (Section 10)</strong> avec calcul automatique du total.
+              Budget chiffré inséré dans <strong>Chapitre III (Section III.10)</strong> avec calcul automatique du total.
             </span>
             <button
               type="button"
@@ -699,22 +702,12 @@ export function StructuredTablesEditor({
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
               <input
                 type="checkbox"
-                checked={annexesConfig.include_data_collection_form}
-                onChange={(e) =>
-                  setAnnexesConfig({ ...annexesConfig, include_data_collection_form: e.target.checked })
-                }
-              />
-              <span>Annexe 1 : Fiche de collecte (générée depuis le tableau des variables)</span>
-            </label>
-            <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
-              <input
-                type="checkbox"
                 checked={annexesConfig.include_info_notice}
                 onChange={(e) =>
                   setAnnexesConfig({ ...annexesConfig, include_info_notice: e.target.checked })
                 }
               />
-              <span>Annexe 2 : Notice d'information du participant</span>
+              <span>Annexe 1 : Notice d&apos;information du participant</span>
             </label>
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
               <input
@@ -724,17 +717,17 @@ export function StructuredTablesEditor({
                   setAnnexesConfig({ ...annexesConfig, include_consent_form: e.target.checked })
                 }
               />
-              <span>Annexe 3 : Formulaire de consentement éclairé</span>
+              <span>Annexe 2 : Formulaire de consentement éclairé</span>
             </label>
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
               <input
                 type="checkbox"
-                checked={annexesConfig.include_ethics_clearance_request}
+                checked={annexesConfig.include_data_collection_form}
                 onChange={(e) =>
-                  setAnnexesConfig({ ...annexesConfig, include_ethics_clearance_request: e.target.checked })
+                  setAnnexesConfig({ ...annexesConfig, include_data_collection_form: e.target.checked })
                 }
               />
-              <span>Annexe 4 : Demande de clairance éthique (CIER-FMSB)</span>
+              <span>Annexe 3 : Fiche de collecte (générée depuis les variables / CRF)</span>
             </label>
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
               <input
@@ -744,7 +737,17 @@ export function StructuredTablesEditor({
                   setAnnexesConfig({ ...annexesConfig, include_research_auth_requests: e.target.checked })
                 }
               />
-              <span>Annexe 5 : Demandes d'autorisation de recherche (par hôpital site)</span>
+              <span>Annexe 4 : Demandes d&apos;autorisation de recherche (Faculté &amp; sites d&apos;accueil)</span>
+            </label>
+            <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
+              <input
+                type="checkbox"
+                checked={annexesConfig.include_ethics_clearance_request}
+                onChange={(e) =>
+                  setAnnexesConfig({ ...annexesConfig, include_ethics_clearance_request: e.target.checked })
+                }
+              />
+              <span>Annexe 5 : Demande de clairance éthique (Comité d&apos;éthique de votre Faculté / Université)</span>
             </label>
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
               <input
@@ -754,7 +757,7 @@ export function StructuredTablesEditor({
                   setAnnexesConfig({ ...annexesConfig, include_confidentiality_declaration: e.target.checked })
                 }
               />
-              <span>Annexe 6 : Déclaration de confidentialité (Déclaration d'Helsinki)</span>
+              <span>Annexe 6 : Déclaration de confidentialité (Déclaration d&apos;Helsinki)</span>
             </label>
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2 md:col-span-2">
               <input
@@ -764,7 +767,7 @@ export function StructuredTablesEditor({
                   setAnnexesConfig({ ...annexesConfig, include_commitment_letter: e.target.checked })
                 }
               />
-              <span>Annexe 7 : Lettre d'engagement de rétro-information</span>
+              <span>Annexe 7 : Lettre d&apos;engagement de rétro-information</span>
             </label>
           </div>
 
@@ -810,11 +813,18 @@ export function StructuredTablesEditor({
                 onChange={(e) => setFigUploadSection(e.target.value)}
                 className="rounded border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
               >
-                {Object.keys(project.sections)
+                {(canvas && canvas.length > 0
+                  ? canvas.map((s) => s.id)
+                  : Object.keys(project.sections)
+                )
                   .filter(
                     (id) =>
                       ![
                         "cover_page",
+                        "toc",
+                        "abbreviations",
+                        "list_of_tables",
+                        "list_of_figures",
                         "references",
                         "annexes",
                         "annexe_notice_information",
@@ -826,11 +836,14 @@ export function StructuredTablesEditor({
                         "annexe_engagement",
                       ].includes(id)
                   )
-                  .map((id) => (
-                    <option key={id} value={id}>
-                      Section : {id}
-                    </option>
-                  ))}
+                  .map((id) => {
+                    const label = canvas?.find((s) => s.id === id)?.title || id;
+                    return (
+                      <option key={id} value={id}>
+                        {label}
+                      </option>
+                    );
+                  })}
               </select>
               <input
                 type="text"
@@ -900,7 +913,7 @@ export function StructuredTablesEditor({
                     <div className="min-w-0 flex-1">
                       <div className="font-semibold text-slate-800">{img.title}</div>
                       <div className="text-[11px] text-slate-500">
-                        Section : {img.target_section_id}
+                        Section : {canvas?.find((s) => s.id === img.target_section_id)?.title || img.target_section_id}
                       </div>
                       <div className="mt-0.5 text-[11px] text-slate-600">
                         {img.caption || "Sans légende"}

@@ -41,6 +41,143 @@ interface Module2Props {
   saving: boolean;
 }
 
+const DEDICATED_SUB_ANNEX_IDS = new Set([
+  "annexe_notice_information",
+  "annexe_consentement",
+  "annexe_fiche_collecte",
+  "annexe_autorisation_recherche",
+  "annexe_clairance_ethique",
+  "annexe_confidentialite",
+  "annexe_engagement",
+]);
+
+const LEGACY_REDUNDANT_HEADINGS = new Set([
+  "introduction",
+  "introduction generale",
+  "problematique",
+  "problem statement",
+  "revue de la litterature",
+  "literature review",
+  "methodologie",
+  "methodology",
+  "justification de l etude",
+  "contexte epidemiologie",
+  "interet de la recherche",
+  "liste des variables",
+  "bibliographie systeme vancouver",
+  "bibliography vancouver style",
+]);
+
+function normalizeHeadingProbe(raw: string): string {
+  const noTags = (raw || "").replace(/<[^>]+>/g, " ");
+  const ascii = noTags
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  const stripped = ascii
+    .replace(/^[#*\s]+/, "")
+    .replace(/\*\*|__/g, "")
+    .replace(/^(?:chapitre|chapter)\s+[ivx1-9]+\s*[:.\-–]?\s*/i, "")
+    .replace(/^(?:\d+|[ivx]+)(?:\.\d+)*\s*[:.)\-–]*\s*/i, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+  return stripped;
+}
+
+function isRedundantSectionHeading(candidate: string, spec: CanvasSectionSpec): boolean {
+  const probe = normalizeHeadingProbe(candidate);
+  if (!probe) return false;
+  const asciiRaw = (candidate || "")
+    .replace(/<[^>]+>/g, " ")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim()
+    .replace(/^[#*\s]+/, "");
+  if (/^(?:chapitre|chapter)\s+[ivx1-9]+\b/.test(asciiRaw)) {
+    return true;
+  }
+  if (LEGACY_REDUNDANT_HEADINGS.has(probe)) {
+    return true;
+  }
+  const specTitleProbe = normalizeHeadingProbe(spec.title);
+  const chapTitleProbe = normalizeHeadingProbe(spec.chapter_title);
+  return probe === specTitleProbe || probe === chapTitleProbe;
+}
+
+function stripRedundantLeadingHeadingHtml(html: string, spec: CanvasSectionSpec): string {
+  let out = (html || "").trim();
+  for (let i = 0; i < 3; i += 1) {
+    const mHead = out.match(/^\s*<h[1-4][^>]*>([\s\S]*?)<\/h[1-4]>/i);
+    if (mHead && isRedundantSectionHeading(mHead[1], spec)) {
+      out = out.slice(mHead[0].length).trim();
+      continue;
+    }
+    const mStrongP = out.match(/^\s*<p[^>]*>\s*(?:<strong>|<b>)([\s\S]*?)(?:<\/strong>|<\/b>)\s*<\/p>/i);
+    if (mStrongP && mStrongP[1].length <= 120 && isRedundantSectionHeading(mStrongP[1], spec)) {
+      out = out.slice(mStrongP[0].length).trim();
+      continue;
+    }
+    break;
+  }
+  return out;
+}
+
+function stripRedundantLeadingHeadingMd(md: string, spec: CanvasSectionSpec): string {
+  const lines = (md || "").split(/\r?\n/);
+  while (lines.length > 0) {
+    const cur = lines[0].trim();
+    if (!cur) {
+      lines.shift();
+      continue;
+    }
+    const isMarkdownOrShortHeading =
+      /^#{1,4}\s+/.test(cur) ||
+      (/^\*\*[^*]+\*\*$/.test(cur) && cur.length <= 120) ||
+      (/^chapitre\s+[ivx1-9]+/i.test(cur) && cur.length <= 120);
+    if (isMarkdownOrShortHeading && isRedundantSectionHeading(cur, spec)) {
+      lines.shift();
+      continue;
+    }
+    break;
+  }
+  return lines.join("\n").trim();
+}
+
+function splitChapterBannerTitle(chapterTitle: string): { label: string; subtitle: string } {
+  const clean = (chapterTitle || "").trim();
+  const m = clean.match(/^((?:CHAPITRE|CHAPTER)\s+[IVX]+)\s*:\s*(.+)$/i);
+  if (m) {
+    return { label: m[1].toUpperCase(), subtitle: m[2].trim() };
+  }
+  return { label: "", subtitle: clean };
+}
+
+function renderFormattedAnnexLine(rawLine: string) {
+  let clean = (rawLine || "").trim();
+  clean = clean.replace(/^(?:[-*•]\s*)?\[\s*\]\s*/, "☐ ");
+  clean = clean.replace(/^(?:[-*•]\s*)?\[[xX]\]\s*/, "☑ ");
+  const headingMatch = clean.match(/^#{1,6}\s+(.+)$/);
+  if (headingMatch) {
+    const hText = headingMatch[1].replace(/\*\*/g, "").trim();
+    return <span className="font-bold text-slate-900">{hText}</span>;
+  }
+  if (!clean.startsWith("☐") && !clean.startsWith("☑") && /^[-*]\s+/.test(clean)) {
+    clean = "• " + clean.replace(/^[-*]\s+/, "");
+  }
+  const parts = clean.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, idx) => {
+    if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+      return (
+        <strong key={idx} className="font-semibold text-slate-900">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    return <span key={idx}>{part.replace(/\*\*/g, "")}</span>;
+  });
+}
+
 export function Module2Editor({
   project,
   canvas,
@@ -75,10 +212,30 @@ export function Module2Editor({
     project.timeline_grid
   );
   const [savingTimeline, setSavingTimeline] = useState(false);
+  const [previewAnnexes, setPreviewAnnexes] = useState<Array<Record<string, any>>>([]);
 
   const syncedTransportProjectRef = useRef<string | null>(null);
   const fmtDirtyRef = useRef(false);
   const prevFmtProjectIdRef = useRef(project.project_id);
+
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .previewAnnexes(project.project_id)
+      .then((res) => {
+        if (!cancelled) {
+          setPreviewAnnexes(Array.isArray(res?.annexes) ? res.annexes : []);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setPreviewAnnexes([]);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project.project_id, project.updated_at]);
 
   const accentColor = fmt.border_color || "#6C2826";
   const hfRuleColor = (fmt.header_footer_rule_color || "#CBD5E1").trim();
@@ -289,6 +446,32 @@ export function Module2Editor({
       setSavingTimeline(false);
     }
   };
+
+  const chapterGroups = canvas
+    .filter((s) => s.chapter_id !== "preliminaires")
+    .reduce<
+      Array<{
+        chapterId: string;
+        chapterTitle: string;
+        validatedCount: number;
+        totalCount: number;
+      }>
+    >((acc, sec) => {
+      const isVal = project.sections[sec.id]?.status === "validated" ? 1 : 0;
+      const existing = acc.find((c) => c.chapterId === sec.chapter_id);
+      if (existing) {
+        existing.totalCount += 1;
+        existing.validatedCount += isVal;
+      } else {
+        acc.push({
+          chapterId: sec.chapter_id,
+          chapterTitle: sec.chapter_title,
+          validatedCount: isVal,
+          totalCount: 1,
+        });
+      }
+      return acc;
+    }, []);
 
   const validatedSections = canvas.filter(
     (s) =>
@@ -886,8 +1069,8 @@ export function Module2Editor({
           </h3>
           <p className="mt-1 text-xs text-emerald-900/80">
             {lang === "en"
-              ? `Compiled from the official master template (${fmt.margin_cm} cm margins).`
-              : `Généré depuis le gabarit maître officiel 2025_Canevas_protocole.docx (marges ${fmt.margin_cm} cm).`}
+              ? `Compiled from the 5-chapter FMSB/CAMES master template (${fmt.margin_cm} cm margins).`
+              : `Compilé selon le canevas maître FMSB/CAMES à 5 chapitres (marges ${fmt.margin_cm} cm).`}
           </p>
           <div className="mt-4 space-y-2">
             <button
@@ -1024,11 +1207,45 @@ export function Module2Editor({
         {viewMode === "tables" ? (
           <StructuredTablesEditor
             project={project}
+            canvas={canvas}
             onProjectUpdated={onProjectUpdated}
             onError={onError}
           />
         ) : (
           <div className="space-y-4">
+            {chapterGroups.length > 0 && (
+              <div className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 shadow-xs">
+                <div className="mb-1.5 flex items-center justify-between text-[11px] font-bold uppercase tracking-wide text-slate-600">
+                  <span>
+                    {lang === "en"
+                      ? `Protocol Structure (${chapterGroups.length} chapters)`
+                      : `Architecture du protocole (${chapterGroups.length} chapitres)`}
+                  </span>
+                  <span className="font-normal text-slate-400">
+                    {lang === "en" ? "Click a chapter to jump" : "Cliquer pour naviguer"}
+                  </span>
+                </div>
+                <div className="flex flex-wrap gap-1.5">
+                  {chapterGroups.map((ch) => (
+                    <button
+                      key={ch.chapterId}
+                      type="button"
+                      onClick={() => {
+                        document
+                          .getElementById(`m2-chap-${ch.chapterId}`)
+                          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      }}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:border-[#6C2826]/40 hover:bg-[#6C2826]/5 hover:text-[#6C2826]"
+                    >
+                      <span>{ch.chapterTitle}</span>
+                      <span className="rounded bg-white px-1.5 py-0.5 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">
+                        {ch.validatedCount}/{ch.totalCount}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {totalPlaceholdersCount > 0 && (
               <div className="rounded-xl border-2 border-amber-400 bg-amber-50/95 p-4 text-xs text-rose-950 shadow-sm">
                 <div className="flex items-start gap-2.5">
@@ -1318,18 +1535,39 @@ export function Module2Editor({
                     const isNewMajorChapter =
                       spec.chapter_id !== "preliminaires" &&
                       spec.chapter_id !== prevSpec?.chapter_id;
+                    const chapBanner = splitChapterBannerTitle(spec.chapter_title);
                     const st = project.sections[spec.id];
-                    const hasHtml = Boolean(st?.content_html?.trim());
-                    const hasText = Boolean(st?.content_markdown?.trim());
+                    const cleanHtml = stripRedundantLeadingHeadingHtml(
+                      st?.content_html ?? "",
+                      spec
+                    );
+                    const cleanMd = stripRedundantLeadingHeadingMd(
+                      st?.content_markdown ?? "",
+                      spec
+                    );
+                    const hasHtml = Boolean(cleanHtml.trim());
+                    const hasText = Boolean(cleanMd.trim());
                     const isRefs =
                       spec.id === "references" &&
                       project.references.length > 0 &&
                       !(st?.status === "validated" && hasText);
+                    const matchedAutoAnnex =
+                      !hasHtml &&
+                      !hasText &&
+                      DEDICATED_SUB_ANNEX_IDS.has(spec.id)
+                        ? previewAnnexes.find(
+                            (a) =>
+                              a.section_id === spec.id ||
+                              (spec.id === "annexe_fiche_collecte" &&
+                                a.kind === "data_collection")
+                          ) ?? null
+                        : null;
                     return (
                       <div key={spec.id}>
                         {isNewMajorChapter && (
                           <div
-                            className="my-6 px-4 py-3 text-center text-base font-bold uppercase tracking-wide text-slate-900"
+                            id={`m2-chap-${spec.chapter_id}`}
+                            className="my-6 scroll-mt-24 px-4 py-3 text-center text-slate-900"
                             style={{
                               borderWidth: `${fmt.box_border_width_pt ?? 2.5}px`,
                               borderStyle: "solid",
@@ -1337,7 +1575,14 @@ export function Module2Editor({
                               borderRadius: `${fmt.box_corner_radius_pct ?? 18}px`,
                             }}
                           >
-                            {spec.chapter_title}
+                            {chapBanner.label && (
+                              <div className="text-xs font-bold uppercase tracking-widest text-slate-700">
+                                {chapBanner.label}
+                              </div>
+                            )}
+                            <div className="text-base font-bold uppercase tracking-wide text-slate-900">
+                              {chapBanner.subtitle}
+                            </div>
                           </div>
                         )}
                         <div className="flex items-center gap-2 text-left">
@@ -1362,7 +1607,7 @@ export function Module2Editor({
                               spec.id === "toc" ? "text-left" : ""
                             }`}
                             dangerouslySetInnerHTML={{
-                              __html: highlightPlaceholdersInHtml(st.content_html),
+                              __html: highlightPlaceholdersInHtml(cleanHtml),
                             }}
                           />
                         ) : hasText ? (
@@ -1371,7 +1616,7 @@ export function Module2Editor({
                               spec.id === "toc" ? "text-left" : ""
                             }`}
                           >
-                            {splitTextWithPlaceholders(st.content_markdown).map(
+                            {splitTextWithPlaceholders(cleanMd).map(
                               (part, pIdx) =>
                                 part.isPlaceholder ? (
                                   <mark
@@ -1385,6 +1630,90 @@ export function Module2Editor({
                                 )
                             )}
                           </p>
+                        ) : matchedAutoAnnex ? (
+                          <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 text-left text-sm text-slate-800">
+                            <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-200 pb-1.5 text-[11px] font-sans">
+                              <span className="font-semibold text-slate-700">
+                                {String(matchedAutoAnnex.title || spec.title)}
+                              </span>
+                              <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700">
+                                {lang === "en"
+                                  ? "Auto-generated for your Faculty"
+                                  : "Générée automatiquement selon votre Faculté"}
+                              </span>
+                            </div>
+                            {matchedAutoAnnex.kind === "data_collection" ? (
+                              <div className="space-y-2 text-xs">
+                                {Array.isArray(matchedAutoAnnex.paragraphs) &&
+                                  matchedAutoAnnex.paragraphs.map(
+                                    (pTxt: string, pIdx: number) => (
+                                      <p key={pIdx} className="text-slate-600 italic">
+                                        {pTxt}
+                                      </p>
+                                    )
+                                  )}
+                                {Array.isArray(matchedAutoAnnex.crf_fields) &&
+                                matchedAutoAnnex.crf_fields.length > 0 ? (
+                                  <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+                                    <table className="w-full text-left text-xs">
+                                      <thead
+                                        className="text-white"
+                                        style={{ backgroundColor: accentColor }}
+                                      >
+                                        <tr>
+                                          <th className="p-1.5">Code</th>
+                                          <th className="p-1.5">
+                                            {lang === "en" ? "Item / Question" : "Item / Question"}
+                                          </th>
+                                          <th className="p-1.5">
+                                            {lang === "en" ? "Response Field" : "Réponse / Modalités"}
+                                          </th>
+                                        </tr>
+                                      </thead>
+                                      <tbody className="divide-y divide-slate-100">
+                                        {matchedAutoAnnex.crf_fields.map(
+                                          (cf: Record<string, any>, cIdx: number) => (
+                                            <tr key={cIdx}>
+                                              <td className="p-1.5 font-semibold text-slate-700">
+                                                {cf.code || `Q${cIdx + 1}`}
+                                              </td>
+                                              <td className="p-1.5">{cf.label}</td>
+                                              <td className="p-1.5 text-slate-600">
+                                                {Array.isArray(cf.options) && cf.options.length > 0
+                                                  ? cf.options
+                                                      .map((o: string) => `☐ ${o}`)
+                                                      .join("   ")
+                                                  : cf.unit
+                                                  ? `[ ________ ] ${cf.unit}`
+                                                  : "[ ____________________ ]"}
+                                              </td>
+                                            </tr>
+                                          )
+                                        )}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                ) : (
+                                  <p className="font-sans text-xs italic text-slate-500">
+                                    {lang === "en"
+                                      ? "Structured fields will compile from Chapter III.3 variables and Module 3 CRF."
+                                      : "Les items structurés seront compilés depuis les variables (III.3) et le Module 3."}
+                                  </p>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="space-y-1.5 text-sm leading-relaxed">
+                                {Array.isArray(matchedAutoAnnex.paragraphs) &&
+                                  matchedAutoAnnex.paragraphs.map(
+                                    (pTxt: string, pIdx: number) => (
+                                      <p key={pIdx} className="text-slate-800">
+                                        {renderFormattedAnnexLine(String(pTxt || ""))}
+                                      </p>
+                                    )
+                                  )}
+                              </div>
+                            )}
+                          </div>
                         ) : (
                           <p className="mt-1 font-sans text-xs italic text-slate-400">
                             {lang === "en"

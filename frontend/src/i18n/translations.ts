@@ -142,7 +142,7 @@ export const TRANSLATIONS: Record<AppLang, Record<string, string>> = {
     "m2.annexes_heading": "ANNEXES DU PROTOCOLE",
 
     "m3.title": "Module 3 — Masque de saisie CRF & Base Patients",
-    "m3.subtitle": "Collecte structurée alignée sur le Chapitre I.5 et l'Annexe 1",
+    "m3.subtitle": "Collecte structurée alignée sur le Chapitre III.3 et l'Annexe 3",
     "m3.crf_tab": "Architecture du CRF",
     "m3.patients_tab": "Fiches Patients",
     "m3.export_csv": "Exporter CSV",
@@ -311,7 +311,7 @@ export const TRANSLATIONS: Record<AppLang, Record<string, string>> = {
     "m2.annexes_heading": "PROTOCOL APPENDICES",
 
     "m3.title": "Module 3 — Electronic CRF & Patient Database",
-    "m3.subtitle": "Structured data capture aligned with Chapter I.5 and Appendix 1",
+    "m3.subtitle": "Structured data capture aligned with Chapter III.3 and Appendix 3",
     "m3.crf_tab": "CRF Schema",
     "m3.patients_tab": "Patient Records",
     "m3.export_csv": "Export CSV",

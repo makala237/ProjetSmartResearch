@@ -331,7 +331,7 @@ def run_global_protocol_audit(project: ProtocolProject) -> Dict[str, object]:
 
     checks: List[Dict[str, object]] = []
 
-    # 1. Exhaustivité du canevas (24 étapes)
+    # 1. Exhaustivité du canevas (5 chapitres)
     if missing_required or revision_needed:
         st_exh = "error" if missing_required else "warning"
         det_exh = []
@@ -351,7 +351,7 @@ def run_global_protocol_audit(project: ProtocolProject) -> Dict[str, object]:
     checks.append(
         {
             "id": "exhaustivite",
-            "label": "Exhaustivité du canevas FMSB (24 étapes)",
+            "label": f"Exhaustivité du canevas FMSB / CAMES (5 chapitres — {total_sections} étapes)",
             "status": st_exh,
             "summary": sum_exh,
             "details": det_exh,
@@ -366,11 +366,11 @@ def run_global_protocol_audit(project: ProtocolProject) -> Dict[str, object]:
     has_vars = bool(project.variables) or bool(var_txt) or bool(var_sec and var_sec.custom_tables)
     missing_align: List[str] = []
     if not obj_txt:
-        missing_align.append("Objectifs spécifiques (Chapitre I) non rédigés")
+        missing_align.append("Objectifs spécifiques (Chapitre I — I.6) non rédigés")
     if not has_vars:
-        missing_align.append("Variables opérationnelles (Chapitre I / Tableau structuré) absentes")
+        missing_align.append("Variables opérationnelles (Chapitre III — III.3 / Tableau structuré) absentes")
     if not ana_txt:
-        missing_align.append("Plan d'analyse statistique (Chapitre III) non rédigé")
+        missing_align.append("Plan d'analyse statistique (Chapitre III — III.5) non rédigé")
     if missing_align:
         st_align = "error" if len(missing_align) >= 2 else "warning"
         sum_align = f"{len(missing_align)} maillon(s) manquant(s) dans la chaîne Objectifs → Variables → Analyse."
@@ -394,14 +394,14 @@ def run_global_protocol_audit(project: ProtocolProject) -> Dict[str, object]:
     site_txt = _section_plain_text(project, "chap3_type_site_duree").lower()
     det_ech: List[str] = []
     if not pop_txt:
-        det_ech.append("Section Population & calcul de taille d'échantillon (Chapitre III) vide.")
+        det_ech.append("Section Population & calcul de taille d'échantillon (Chapitre III — III.2) vide.")
     else:
         if not re.search(r"\d+", pop_txt):
             det_ech.append("Aucun effectif chiffré (n) ou seuil numérique détecté dans Population & échantillon.")
         if not any(k in pop_txt for k in ("inclusion", "exclusion", "sélection", "éligib")):
-            det_ech.append("Critères d'inclusion / exclusion peu explicites dans Chapitre III.")
+            det_ech.append("Critères d'inclusion / exclusion peu explicites dans Chapitre III (III.2).")
     if not site_txt:
-        det_ech.append("Type d'étude, site et période (Chapitre III) non renseignés.")
+        det_ech.append("Type d'étude, site et période (Chapitre III — III.1) non renseignés.")
     if not (project.cover.host_institutions or []):
         det_ech.append("Aucune structure d'accueil renseignée sur la Page de garde.")
 
@@ -508,8 +508,8 @@ def run_global_protocol_audit(project: ProtocolProject) -> Dict[str, object]:
         det_ann.append("Chronogramme des activités (Gantt) vide.")
     if not project.budget:
         det_ann.append("Tableau du budget prévisionnel vide.")
-    if not project.variables:
-        det_ann.append("Aucune variable structurée pour générer automatiquement la Fiche de collecte (Annexe 1).")
+    if not (project.variables or project.crf_fields or _section_plain_text(project, "annexe_fiche_collecte")):
+        det_ann.append("Aucune variable structurée pour générer automatiquement la Fiche de collecte (Annexe 3 — Fiche de collecte).")
     cfg = project.annexes_config
     if not (cfg.include_info_notice and cfg.include_consent_form and cfg.include_ethics_clearance_request):
         det_ann.append("Certaines annexes éthiques recommandées FMSB sont désactivées.")

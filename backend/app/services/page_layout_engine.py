@@ -140,11 +140,13 @@ def clean_heading_text(raw: str) -> str:
 
 def normalize_for_dedup(text: str) -> str:
     s = _strip_accents_lower(clean_heading_text(text))
-    s = re.sub(r"^chapitre\s+[ivx1-9]+\s*[:.\-–]*\s*", "", s)
+    s = re.sub(r"^(?:chapitre|chapter)\s+[ivx1-9]+\s*[:.\-–]*\s*", "", s)
+    s = re.sub(r"^[ivx]+(?:\.\d+)+\s*[:.)\-–]*\s*", "", s)
+    s = re.sub(r"^[ivx]+\.\s+", "", s)
     s = re.sub(r"^\d+(?:[–\-]\d+)?(?:\.\d+)*\s*[:.)\-–]*\s*", "", s)
     s = re.sub(r"\([^)]*\)", "", s)
     s = re.sub(r"[^a-z0-9]+", " ", s)
-    s = re.sub(r"\b(?:et|de|du|des|la|le|les|l|d|a)\b", " ", s)
+    s = re.sub(r"\b(?:et|de|du|des|la|le|les|l|d|a|the|of|and|for|in)\b", " ", s)
     return re.sub(r"\s+", " ", s).strip()
 
 
@@ -165,15 +167,27 @@ def is_duplicate_heading(candidate: str, references: List[str]) -> bool:
     if any(cand_raw.startswith(p) for p in redundant_prefixes):
         return True
 
-    if re.match(r"^chapitre\s+[ivx1-9]+\b", cand_raw):
+    if re.match(r"^(?:chapitre|chapter)\s+[ivx1-9]+\b", cand_raw):
         return True
-    if cand_raw in (
+    cand_no_num = re.sub(r"^(?:\d+|[ivx]+)(?:\.\d+)*\s*[:.)\-–]*\s*", "", cand_raw).strip()
+    legacy_redundant_titles = (
         "introduction",
         "introduction generale",
         "references",
         "bibliographie",
         "annexes",
-    ):
+        "problematique",
+        "problem statement",
+        "revue de la litterature",
+        "literature review",
+        "methodologie",
+        "methodology",
+        "justification de l'etude",
+        "contexte & epidemiologie",
+        "interet de la recherche",
+        "liste des variables",
+    )
+    if cand_raw in legacy_redundant_titles or cand_no_num in legacy_redundant_titles:
         return True
 
     norm_cand = normalize_for_dedup(candidate)
@@ -808,7 +822,11 @@ def _build_layout_blocks(
                 figure_idx += 1
 
     # 3. References (grand framed title centered on its own page -> bibliography starts next page)
-    ref_bib_title = "Bibliography (Vancouver Style)" if lang == "en" else "Bibliographie (Système Vancouver)"
+    ref_bib_title = (
+        "IV. Bibliography (Vancouver Style)"
+        if lang == "en"
+        else "IV. Références bibliographiques (Système Vancouver)"
+    )
     blocks.append(
         LayoutBlock(
             block_id=next_id("chap"),

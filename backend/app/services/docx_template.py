@@ -5,6 +5,7 @@ import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from xml.sax.saxutils import escape
 import xml.etree.ElementTree as ET
 
 from docx import Document
@@ -566,22 +567,74 @@ def _center_grand_chapter_box(p_obj, fmt: FormattingRules) -> None:
         v_el.set("style", style)
 
 
-def _set_anchor_box_text(p_obj, new_text: str) -> None:
-    """Replace visible text inside a chapter box (DrawingML + VML txbxContent) or heading paragraph."""
+def _set_anchor_box_text(
+    p_obj,
+    new_text: str,
+    font_family: str = "Times New Roman",
+) -> None:
+    """Replace visible text inside a chapter box (DrawingML + VML txbxContent) cleanly on centered lines."""
+    clean_txt = re.sub(r"\s+", " ", (new_text or "")).strip()
+    safe_font = escape(font_family or "Times New Roman")
+    WPS_NS = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape"
+    V_NS = "urn:schemas-microsoft-com:vml"
+
+    # Center text vertically inside both DrawingML (<wps:bodyPr>) and VML (<v:textbox>) frames
+    for body_pr in p_obj._element.iter(f"{{{WPS_NS}}}bodyPr"):
+        body_pr.set("anchor", "ctr")
+        body_pr.set("anchorCtr", "0")
+    for v_tb in p_obj._element.iter(f"{{{V_NS}}}textbox"):
+        style_attr = v_tb.get("style") or ""
+        if "v-text-anchor" in style_attr:
+            style_attr = re.sub(r"v-text-anchor\s*:\s*[^;]+", "v-text-anchor:middle", style_attr)
+        else:
+            sep = ";" if (style_attr and not style_attr.rstrip().endswith(";")) else ""
+            style_attr = f"{style_attr}{sep}mso-fit-shape-to-text:false;v-text-anchor:middle"
+        v_tb.set("style", style_attr)
+
+    m_chap = re.match(r"^((?:CHAPITRE|CHAPTER)\s+[IVX]+\s*:\s*)(.+)$", clean_txt, flags=re.IGNORECASE)
+    if m_chap:
+        line1 = m_chap.group(1)  # keep trailing space so concatenated box text preserves exact title
+        line2 = m_chap.group(2).strip()
+        sz1_half = "30"  # 15 pt
+        sz2_half = "30" if len(line2) > 20 else "34"  # 15 pt or 17 pt so long titles stay single-line
+        lines_spec = [(line1, sz1_half, "60"), (line2, sz2_half, "0")]
+    else:
+        sz_half = "28" if len(clean_txt) > 24 else "32"
+        lines_spec = [(clean_txt, sz_half, "0")]
+
     txbxs = list(p_obj._element.iter(f"{{{W_NS}}}txbxContent"))
     if txbxs:
         for txbx in txbxs:
-            ts = list(txbx.iter(f"{{{W_NS}}}t"))
-            if not ts:
-                continue
-            ts[0].text = new_text
-            for extra in ts[1:]:
-                extra.text = ""
+            for old_p in list(txbx.findall(f"{{{W_NS}}}p")):
+                txbx.remove(old_p)
+            for l_txt, sz_val, after_dxa in lines_spec:
+                p_xml = parse_xml(
+                    f'<w:p {nsdecls("w")}>'
+                    f'  <w:pPr>'
+                    f'    <w:spacing w:before="0" w:after="{after_dxa}" w:line="260" w:lineRule="auto"/>'
+                    f'    <w:jc w:val="center"/>'
+                    f'    <w:rPr>'
+                    f'      <w:rFonts w:ascii="{safe_font}" w:eastAsia="{safe_font}" w:hAnsi="{safe_font}" w:cs="{safe_font}"/>'
+                    f'      <w:b/><w:bCs/><w:color w:val="000000"/>'
+                    f'      <w:sz w:val="{sz_val}"/><w:szCs w:val="{sz_val}"/>'
+                    f'    </w:rPr>'
+                    f'  </w:pPr>'
+                    f'  <w:r>'
+                    f'    <w:rPr>'
+                    f'      <w:rFonts w:ascii="{safe_font}" w:eastAsia="{safe_font}" w:hAnsi="{safe_font}" w:cs="{safe_font}"/>'
+                    f'      <w:b/><w:bCs/><w:color w:val="000000"/>'
+                    f'      <w:sz w:val="{sz_val}"/><w:szCs w:val="{sz_val}"/>'
+                    f'    </w:rPr>'
+                    f'    <w:t xml:space="preserve">{escape(l_txt)}</w:t>'
+                    f'  </w:r>'
+                    f'</w:p>'
+                )
+                txbx.append(p_xml)
         return
 
     ts = list(p_obj._element.iter(f"{{{W_NS}}}t"))
     if ts:
-        ts[0].text = new_text
+        ts[0].text = clean_txt
         for extra in ts[1:]:
             extra.text = ""
 
@@ -640,7 +693,6 @@ def ensure_master_template() -> Path:
     keep_markers = {
         "TABLE DE MATIERES",
         "ABREVIATIONS, ACRONYMES & SIGLES",
-        "INTRODUCTION",
         "Chapitre I",
         "Chapitre II",
         "REFERENCES",
@@ -675,20 +727,25 @@ def ensure_master_template() -> Path:
             )
             continue
 
-        if "METHODLOGIE" in full_text:
-            _replace_text_in_element(
-                elem,
-                {
-                    "Chapitre II\xa0: METHODLOGIE": "Chapitre III : METHODOLOGIE",
-                    "Chapitre II : METHODLOGIE": "Chapitre III : METHODOLOGIE",
-                },
-            )
-
         if not any(m in full_text for m in keep_markers):
             to_remove.append(elem)
 
     for elem in to_remove:
         body.remove(elem)
+
+    # Normalize the 5 grand chapter boxes inside the master template itself
+    for p in doc.paragraphs:
+        txt = "".join(t.text for t in p._element.iter(f"{{{W_NS}}}t") if t.text).strip()
+        if "METHODLOGIE" in txt or "METHODOLOGIE" in txt:
+            _set_anchor_box_text(p, FMSB_CHAPTER_TITLES["chapitre_3"])
+        elif "REVUE DE LA LITT" in txt or "Chapitre II" in txt:
+            _set_anchor_box_text(p, FMSB_CHAPTER_TITLES["chapitre_2"])
+        elif "Chapitre I" in txt or "Problematique" in txt:
+            _set_anchor_box_text(p, FMSB_CHAPTER_TITLES["chapitre_1"])
+        elif "REFERENCES" in txt:
+            _set_anchor_box_text(p, FMSB_CHAPTER_TITLES["references"])
+        elif "ANNEXES" in txt:
+            _set_anchor_box_text(p, FMSB_CHAPTER_TITLES["annexes"])
 
     _strip_header_page_numbers(doc)
     doc.save(str(target_path))
@@ -767,7 +824,23 @@ def _set_paragraph_outline(
         pPr.append(ol)
 
     if invisible_toc_label:
-        # Remove any stale hidden TOC label runs then append a 1pt white run
+        # Remove any stale hidden 1pt white TOC label direct <w:r> runs before appending
+        MC_AC = "{http://schemas.openxmlformats.org/markup-compatibility/2006}AlternateContent"
+        for child_r in list(p_obj._p.findall(qn("w:r"))):
+            if (
+                child_r.find(qn("w:t")) is not None
+                and child_r.find(qn("w:drawing")) is None
+                and child_r.find(qn("w:pict")) is None
+                and child_r.find(qn("w:br")) is None
+                and child_r.find(MC_AC) is None
+            ):
+                rPr = child_r.find(qn("w:rPr"))
+                sz_el = rPr.find(qn("w:sz")) if rPr is not None else None
+                clr_el = rPr.find(qn("w:color")) if rPr is not None else None
+                if (sz_el is not None and sz_el.get(qn("w:val")) == "2") or (
+                    clr_el is not None and (clr_el.get(qn("w:val")) or "").upper() == "FFFFFF"
+                ):
+                    p_obj._p.remove(child_r)
         p_obj.add_run()
         r = p_obj.runs[-1]
         r.text = invisible_toc_label
@@ -1633,21 +1706,35 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
     chapter_map = [
         ("TABLE DE MATIERES", "toc"),
         ("ABREVIATIONS, ACRONYMES & SIGLES", "abbreviations"),
-        ("INTRODUCTION", "introduction"),
+        ("CHAPITRE V", "annexes"),
+        ("CHAPTER V", "annexes"),
+        ("ANNEXES", "annexes"),
+        ("CHAPITRE IV", "references"),
+        ("CHAPTER IV", "references"),
+        ("RÉFÉRENCES", "references"),
+        ("REFERENCES", "references"),
+        ("CHAPITRE III", "chapitre_3"),
+        ("CHAPTER III", "chapitre_3"),
+        ("MÉTHODOLOGIE", "chapitre_3"),
         ("METHODOLOGIE", "chapitre_3"),
         ("METHODLOGIE", "chapitre_3"),
-        ("Chapitre III", "chapitre_3"),
-        ("REVUE DE LA LITTERATURE", "chapitre_2"),
+        ("CHAPITRE II", "chapitre_2"),
+        ("CHAPTER II", "chapitre_2"),
+        ("REVUE DE LA LITT", "chapitre_2"),
         ("Chapitre II", "chapitre_2"),
+        ("CHAPITRE I", "chapitre_1"),
+        ("CHAPTER I", "chapitre_1"),
         ("Chapitre I", "chapitre_1"),
-        ("REFERENCES", "references"),
-        ("ANNEXES", "annexes"),
+        ("INTRODUCTION", "introduction"),
     ]
 
     anchors = {}
     for p in doc.paragraphs:
         full_text = "".join(t.text for t in p._element.iter(f"{{{W_NS}}}t") if t.text)
+        full_up = full_text.upper()
         for marker, key in chapter_map:
+            if key == "introduction" and ("CHAPITRE" in full_up or "CHAPTER" in full_up):
+                continue
             if marker in full_text and key not in anchors:
                 anchors[key] = p
                 break
@@ -1668,9 +1755,10 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         "references": chap_titles["references"],
         "annexes": chap_titles["annexes"],
     }
+    banner_font = fmt.font_family or "Times New Roman"
     for b_key, b_txt in banner_texts.items():
         if b_key in anchors:
-            _set_anchor_box_text(anchors[b_key], b_txt)
+            _set_anchor_box_text(anchors[b_key], b_txt, font_family=banner_font)
 
     # Remove legacy standalone "INTRODUCTION" anchor when intro sections live inside chapitre_1
     active_chapter_ids = {spec.chapter_id for spec in localized_canvas}
@@ -2377,9 +2465,9 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         )
         cursor = insert_page_break_after(anchors["references"])
         ref_heading = (
-            "Bibliography (Vancouver Style)"
+            "IV. Bibliography (Vancouver Style)"
             if lang == "en"
-            else "Bibliographie (Système Vancouver)"
+            else "IV. Références bibliographiques (Système Vancouver)"
         )
         cursor = insert_after(
             cursor,
@@ -2418,6 +2506,8 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 ref_sec.content_html,
                 ref_sec.content_markdown,
                 skip_duplicate_headings=[
+                    "IV. Références bibliographiques (Système Vancouver)",
+                    "IV. Bibliography (Vancouver Style)",
                     "Bibliographie (Système Vancouver)",
                     "Bibliography (Vancouver Style)",
                     "REFERENCES",
@@ -2448,9 +2538,11 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             "à monsieur",
             "to the",
             "objet :",
+            "objet:",
             "subject:",
             "subject :",
             "pièces jointes",
+            "pièce jointe",
             "attachments:",
             "attachments :",
             "fait à",
@@ -2461,8 +2553,10 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             "name:",
             "names:",
             "téléphone",
+            "tél.",
             "phone",
             "email",
+            "e-mail",
             "investigateur",
             "investigator",
             "directeur",
@@ -2473,9 +2567,68 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             "4.",
             "5.",
             "6.",
+            "7.",
+            "8.",
+            "9.",
             "•",
             "- ",
+            "☐",
+            "☑",
         )
+        inline_md_re = re.compile(r"(\*\*[^*\n]+\*\*|__[^_\n]+__|(?<!\*)\*[^*\n]+?\*(?!\*))")
+        pipe_sep_re = re.compile(r"^\s*\|[\s:\-|]+\|\s*$")
+
+        def _render_annex_rich_line(anchor_c, raw_line: str):
+            norm_line = re.sub(r"^\s*(?:[-*•]\s*)?\[\s*\]\s*", "☐ ", raw_line.strip())
+            norm_line = re.sub(r"^\s*(?:[-*•]\s*)?\[[xX]\]\s*", "☑ ", norm_line)
+            if not norm_line.startswith(("☐", "☑")) and re.match(r"^[-*]\s+", norm_line):
+                norm_line = "• " + re.sub(r"^[-*]\s+", "", norm_line)
+
+            plain_for_align = re.sub(r"\*\*|__|(?<!\*)\*(?!\*)", "", norm_line).strip()
+            lower_s = plain_for_align.lower()
+            is_short_or_form = (
+                fmt.text_align != "justify"
+                or len(plain_for_align) < 75
+                or "..." in plain_for_align
+                or "___" in plain_for_align
+                or plain_for_align.startswith(("☐", "☑", "•"))
+                or lower_s.startswith(left_prefixes)
+            )
+            align = WD_ALIGN_PARAGRAPH.LEFT if is_short_or_form else WD_ALIGN_PARAGRAPH.JUSTIFY
+
+            new_p = OxmlElement("w:p")
+            anchor_c._p.addnext(new_p)
+            p_obj = doc.paragraphs[0].__class__(new_p, anchor_c._parent)
+            _apply_paragraph_rules(p_obj, fmt, align_override=align)
+            p_obj.paragraph_format.space_after = Pt(4)
+
+            tokens = inline_md_re.split(norm_line)
+            for tok in tokens:
+                if not tok:
+                    continue
+                is_b = False
+                is_it = False
+                seg = tok
+                if (tok.startswith("**") and tok.endswith("**") and len(tok) > 4) or (
+                    tok.startswith("__") and tok.endswith("__") and len(tok) > 4
+                ):
+                    is_b = True
+                    seg = tok[2:-2]
+                elif tok.startswith("*") and tok.endswith("*") and len(tok) > 2:
+                    is_it = True
+                    seg = tok[1:-1]
+                else:
+                    seg = seg.replace("**", "").replace("__", "")
+                if "$" in seg:
+                    for seg_kind, seg_val in split_math_segments(seg):
+                        out_val = latex_to_plain_math(seg_val) if seg_kind != "text" else seg_val
+                        r = p_obj.add_run(out_val)
+                        _apply_run_font(r, fmt, bold=is_b, italic=(is_it or seg_kind != "text"))
+                else:
+                    r = p_obj.add_run(seg)
+                    _apply_run_font(r, fmt, bold=is_b, italic=is_it)
+            return p_obj
+
         for idx_ann, ann in enumerate(annexes):
             cursor = insert_after(cursor, ann["title"], bold=True, size_pt=13, align_override=WD_ALIGN_PARAGRAPH.LEFT)
             if idx_ann > 0:
@@ -2484,17 +2637,49 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             if ann.get("kind") == "data_collection":
                 cursor = _render_crf_form_in_docx(doc, cursor, ann, fmt, lang=lang)
             else:
+                flat_lines: List[str] = []
                 for p_txt in ann["paragraphs"]:
-                    stripped = p_txt.strip()
-                    lower_s = stripped.lower()
-                    is_short_or_form = (
-                        len(stripped) < 75
-                        or "..." in stripped
-                        or "___" in stripped
-                        or lower_s.startswith(left_prefixes)
-                    )
-                    align = WD_ALIGN_PARAGRAPH.LEFT if is_short_or_form else WD_ALIGN_PARAGRAPH.JUSTIFY
-                    cursor = insert_after(cursor, p_txt, align_override=align)
+                    for sub_ln in str(p_txt or "").splitlines():
+                        st_ln = sub_ln.strip()
+                        if st_ln:
+                            flat_lines.append(st_ln)
+                li = 0
+                ann_title_low = str(ann.get("title") or "").strip().lower()
+                while li < len(flat_lines):
+                    cur_ln = flat_lines[li]
+                    if cur_ln in ("---", "***", "___"):
+                        li += 1
+                        continue
+                    if (
+                        cur_ln.startswith("|")
+                        and cur_ln.endswith("|")
+                        and li + 1 < len(flat_lines)
+                        and pipe_sep_re.match(flat_lines[li + 1])
+                    ):
+                        headers = _parse_pipe_row(cur_ln)
+                        li += 2
+                        tbl_rows: List[List[str]] = []
+                        while li < len(flat_lines) and flat_lines[li].startswith("|") and flat_lines[li].endswith("|"):
+                            tbl_rows.append(_parse_pipe_row(flat_lines[li]))
+                            li += 1
+                        cursor = _insert_table_after(doc, cursor, headers, tbl_rows, fmt)
+                        continue
+                    m_hd = re.match(r"^(#{1,6})\s+(.+)$", cur_ln)
+                    if m_hd:
+                        h_txt = _strip_md_inline(m_hd.group(2))
+                        if h_txt and h_txt.lower() != ann_title_low:
+                            cursor = insert_after(
+                                cursor,
+                                h_txt,
+                                bold=True,
+                                size_pt=fmt.body_font_size_pt,
+                                align_override=WD_ALIGN_PARAGRAPH.LEFT,
+                            )
+                            cursor.paragraph_format.keep_with_next = True
+                        li += 1
+                        continue
+                    cursor = _render_annex_rich_line(cursor, cur_ln)
+                    li += 1
         cursor = render_custom_tables(ann_sec, cursor)
         cursor = render_custom_diagrams(ann_sec, cursor)
 

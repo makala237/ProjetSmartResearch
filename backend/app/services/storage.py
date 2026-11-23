@@ -171,16 +171,50 @@ def _build_special_section_markdown(project: ProtocolProject, section_id: str) -
     return ""
 
 
+def _is_legacy_toc_content(md: str, html: str, lang: str) -> bool:
+    """Detect pre-migration 3-chapter TOC content so existing projects auto-align to 5 chapters."""
+    combined = f"{md or ''}\n{html or ''}".lower()
+    if not combined.strip():
+        return False
+    legacy_markers = (
+        "chapitre i : probl",
+        "chapter i: problem",
+        "contexte & épidémiologie",
+        "context & epidemiology",
+        "1. justification de l'étude",
+        "1. study justification",
+        "5. liste des variables",
+        "5. study variables",
+    )
+    if any(m in combined for m in legacy_markers):
+        return True
+    norm_lang = normalize_lang(lang)
+    required_markers = (
+        ("chapter i: introduction", "chapter iv", "chapter v")
+        if norm_lang == "en"
+        else ("chapitre i : introduction", "chapitre iv", "chapitre v")
+    )
+    return not all(m in combined for m in required_markers)
+
+
+def _is_legacy_monolithic_annexes(md: str) -> bool:
+    """Detect old pre-migration monolithic unvalidated annexes dump."""
+    txt = md or ""
+    return "### ANNEXES DU PROTOCOLE FMSB" in txt and "Consigne : Cocher la case" in txt
+
+
 def sync_special_sections(
     project: ProtocolProject,
     force_section_id: Optional[str] = None,
 ) -> None:
     """Ensure all FMSB-CAMES 5-chapter sections exist and auto-populate/refresh derived special sections."""
-    special_ids = ("toc", "abbreviations", "list_of_tables", "list_of_figures", "references", "annexes")
+    # Refresh annexes/preliminaries before toc so TOC pagination reflects updated Chapter V structure
+    special_ids = ("abbreviations", "list_of_tables", "list_of_figures", "references", "annexes", "toc")
     for spec in FMSB_SECTIONS:
         if spec.id not in project.sections:
             project.sections[spec.id] = SectionState(section_id=spec.id)
 
+    lang = normalize_lang(getattr(project, "language", "fr"))
     for sid in special_ids:
         sec = project.sections[sid]
         has_structured_table = "<table" in (sec.content_html or "").lower() or "| :---" in (sec.content_markdown or "")
@@ -192,7 +226,20 @@ def sync_special_sections(
                 and sec.status != StepStatus.VALIDATED
                 and not has_structured_table
             )
+            or (
+                sid == "annexes"
+                and sec.status != StepStatus.VALIDATED
+                and _is_legacy_monolithic_annexes(sec.content_markdown)
+            )
         )
+        if sid == "toc":
+            if should_refresh or _is_legacy_toc_content(sec.content_markdown, sec.content_html, lang):
+                from app.services.toc_builder import generate_clean_toc_section_content
+
+                toc_md, toc_html, _ = generate_clean_toc_section_content(project)
+                sec.content_markdown = toc_md
+                sec.content_html = toc_html
+            continue
         if should_refresh:
             md = _build_special_section_markdown(project, sid)
             if md:

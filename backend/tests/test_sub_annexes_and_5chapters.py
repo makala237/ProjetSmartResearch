@@ -2,8 +2,12 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
+import zipfile
 
 from docx import Document
+from docx.oxml import OxmlElement, parse_xml
+from docx.oxml.ns import nsdecls
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -12,7 +16,7 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.data.fmsb_canvas import DEDICATED_SUB_ANNEX_IDS, FMSB_SECTIONS
 from app.data.i18n import get_chapter_titles, get_localized_canvas
-from app.schemas.protocol import CoverMetadata, ProtocolProject, SectionState, StepStatus
+from app.schemas.protocol import CoverMetadata, ProtocolProject, SectionState, StepStatus, VariableItem
 from app.services.annexe_engine import (
     extract_all_sub_annexes_from_blocks,
     generate_sub_annex_content,
@@ -25,7 +29,10 @@ from app.services.crf_extractor import (
     slice_crf_from_text_or_blocks,
 )
 from app.services.docx_template import W_NS, compile_protocol_docx
+from app.services.global_audit import run_global_protocol_audit
 from app.services.importer import split_upload_into_blocks
+from app.services.storage import sync_special_sections
+from app.services.toc_builder import extract_word_toc_entries_from_docx
 
 
 def _make_full_project(project_id: str = "test-5ch", cover: CoverMetadata | None = None) -> ProtocolProject:
@@ -242,6 +249,140 @@ class TestSubAnnexesAnd5Chapters(unittest.TestCase):
             self.assertIn("CHAPITRE V : ANNEXES", joined)
             # Standalone legacy "INTRODUCTION" chapter banner must be absent
             self.assertNotIn("INTRODUCTION", [p for p in all_paras if p == "INTRODUCTION"])
+
+    def test_module2_migration_audit_docx_polish_and_toc_levels(self):
+        # 1. Legacy 3-chapter TOC & unvalidated monolithic annexes migration in sync_special_sections
+        proj = _make_full_project("m2-align")
+        proj.sections["toc"] = SectionState(
+            section_id="toc",
+            status=StepStatus.VALIDATED,
+            content_markdown=(
+                "| Rubrique / Section du Protocole | Page |\n| :--- | ---: |\n"
+                "| INTRODUCTION | 1 |\n"
+                "| CHAPITRE I : PROBLÉMATIQUE | 4 |\n"
+                "| 1. Justification de l'étude | 5 |\n"
+                "| 5. Liste des variables | 8 |"
+            ),
+            content_html=(
+                "<table><tbody>"
+                "<tr><td>INTRODUCTION</td><td>1</td></tr>"
+                "<tr><td>CHAPITRE I : PROBLÉMATIQUE</td><td>4</td></tr>"
+                "<tr><td>1. Justification de l'étude</td><td>5</td></tr>"
+                "</tbody></table>"
+            ),
+        )
+        proj.sections["annexes"] = SectionState(
+            section_id="annexes",
+            status=StepStatus.PENDING,
+            content_markdown=(
+                "### ANNEXES DU PROTOCOLE FMSB\n\n"
+                "#### ANNEXE 1 : FICHE DE COLLECTE DES DONNÉES\n"
+                "Consigne : Cocher la case correspondante."
+            ),
+        )
+        sync_special_sections(proj)
+        migrated_toc = proj.sections["toc"].content_markdown
+        self.assertIn("CHAPITRE I : INTRODUCTION", migrated_toc)
+        self.assertIn("CHAPITRE IV : RÉFÉRENCES", migrated_toc)
+        self.assertIn("CHAPITRE V : ANNEXES", migrated_toc)
+        self.assertNotIn("CHAPITRE I : PROBLÉMATIQUE", migrated_toc)
+        self.assertNotIn("### ANNEXES DU PROTOCOLE FMSB", proj.sections["annexes"].content_markdown)
+
+        # 2. Global audit alignment (5 chapters - 34 sections + Chapitre III - III.3)
+        proj.variables = []
+        proj.sections["chap1_variables"] = SectionState(section_id="chap1_variables")
+        audit_missing = run_global_protocol_audit(proj)
+        labels = {str(c["id"]): str(c["label"]) for c in audit_missing["checks"]}  # type: ignore[index]
+        details_all = " ".join(str(d) for c in audit_missing["checks"] for d in c["details"])  # type: ignore[index]
+        self.assertIn("5 chapitres — 34 étapes", labels["exhaustivite"])
+        self.assertIn("Chapitre III — III.3", details_all)
+
+        # 3. DOCX compilation polish: centered 5-chapter banners, IV. Références heading, dedup legacy headings, rich Annexes
+        proj.variables = [
+            VariableItem(
+                name="Âge",
+                category="Sociodémographie",
+                role="Indépendante",
+                measurement_scale="Quantitative continue",
+                modalities="En années",
+                collection_tool="Questionnaire",
+            )
+        ]
+        proj.sections["chap1_justification"].content_markdown = (
+            "### 1. Justification de l'étude\n"
+            "#### 1.1. Identification du vide scientifique local\n"
+            "Texte justificatif complet."
+        )
+        generate_sub_annex_content(proj, "annexe_notice_information", use_ai=False)
+        generate_sub_annex_content(proj, "annexe_consentement", use_ai=False)
+        generate_sub_annex_content(proj, "annexe_autorisation_recherche", use_ai=False)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            out_docx = Path(tmp) / "module2_polish.docx"
+            compile_protocol_docx(proj, out_docx)
+            with zipfile.ZipFile(out_docx) as zf:
+                xml_bytes = zf.read("word/document.xml")
+            root = ET.fromstring(xml_bytes)
+            ns = {
+                "w": W_NS,
+                "wps": "http://schemas.microsoft.com/office/word/2010/wordprocessingShape",
+            }
+            all_p_texts = [
+                "".join(t.text or "" for t in p.findall(".//w:t", ns)).strip()
+                for p in root.findall(".//w:body/w:p", ns)
+            ]
+            joined = "\n".join(all_p_texts)
+            self.assertIn("IV. Références bibliographiques (Système Vancouver)", joined)
+            self.assertNotIn("1. Justification de l'étude", all_p_texts)
+            self.assertIn("1.1. Identification du vide scientifique local", joined)
+            # Zero raw markdown ** or - [ ] left anywhere in compiled DOCX text
+            self.assertNotIn("**", joined)
+            self.assertNotIn("- [ ]", joined)
+
+            banner_count = 0
+            for idx, p in enumerate(root.findall(".//w:body/w:p", ns)):
+                txbxs = p.findall(".//w:txbxContent", ns)
+                if txbxs and idx > 5:
+                    banner_count += 1
+                    for bpr in p.findall(".//wps:bodyPr", ns):
+                        self.assertEqual(bpr.get("anchor"), "ctr")
+                    for tb in txbxs:
+                        for child_p in tb.findall("w:p", ns):
+                            ptxt = "".join(t.text or "" for t in child_p.findall(".//w:t", ns)).strip()
+                            self.assertTrue(ptxt, "Orphan blank paragraph found inside chapter banner textbox")
+            self.assertEqual(banner_count, 5, "Expected exactly 5 framed chapter banners in compiled DOCX")
+
+            # 4. TOC Level-1 preservation when extracting Word TOC fields
+            sim_doc = Document()
+            toc_entries_spec = [
+                ("LISTE DES TABLEAUX\tiv", "TM1"),
+                ("CHAPITRE I : INTRODUCTION\t1", "Tabledesmatires1"),
+                ("I.1. Situation du problème et contexte\t2", "TM2"),
+                ("CHAPITRE IV : RÉFÉRENCES\t12", "TM1"),
+                ("CHAPITRE V : ANNEXES\t14", "TM1"),
+            ]
+            for idx_t, (raw_ln, style_nm) in enumerate(toc_entries_spec):
+                p_obj = sim_doc.add_paragraph()
+                p_pr = p_obj._element.get_or_add_pPr()
+                p_pr.append(parse_xml(f'<w:pStyle {nsdecls("w")} w:val="{style_nm}"/>'))
+                if idx_t == 0:
+                    r0 = p_obj.add_run()
+                    r0._r.append(parse_xml(f'<w:fldChar {nsdecls("w")} w:fldCharType="begin"/>'))
+                    r0._r.append(parse_xml(f'<w:instrText {nsdecls("w")} xml:space="preserve"> TOC \\o "1-2" \\h \\z \\u </w:instrText>'))
+                    r0._r.append(parse_xml(f'<w:fldChar {nsdecls("w")} w:fldCharType="separate"/>'))
+                r_txt = p_obj.add_run(raw_ln)
+                if idx_t == len(toc_entries_spec) - 1:
+                    r_txt._r.append(parse_xml(f'<w:fldChar {nsdecls("w")} w:fldCharType="end"/>'))
+            sim_docx = Path(tmp) / "sim_toc.docx"
+            sim_doc.save(str(sim_docx))
+
+            parsed_toc = extract_word_toc_entries_from_docx(sim_docx)
+            level_by_title = {e.title: e.level for e in parsed_toc}
+            self.assertEqual(level_by_title.get("LISTE DES TABLEAUX"), 1)
+            self.assertEqual(level_by_title.get("CHAPITRE I : INTRODUCTION"), 1)
+            self.assertEqual(level_by_title.get("I.1. Situation du problème et contexte"), 2)
+            self.assertEqual(level_by_title.get("CHAPITRE IV : RÉFÉRENCES"), 1)
+            self.assertEqual(level_by_title.get("CHAPITRE V : ANNEXES"), 1)
 
 
 if __name__ == "__main__":

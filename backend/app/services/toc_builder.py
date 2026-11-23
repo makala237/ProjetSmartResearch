@@ -216,9 +216,27 @@ def extract_word_toc_entries_from_docx(
                 pPr = p._element.find(qn("w:pPr"))
                 pStyle_el = pPr.find(qn("w:pStyle")) if pPr is not None else None
                 style_id = (pStyle_el.get(qn("w:val")) if pStyle_el is not None else "") or getattr(p.style, "style_id", "") or ""
-                if any(k in style_id.upper() for k in ("TM1", "TOC1")):
+                style_up = style_id.upper()
+                title_up = title.upper()
+                is_front_l1 = title_up.startswith(
+                    (
+                        "ABREVIATIONS",
+                        "ABRÉVIATIONS",
+                        "ABBREVIATIONS",
+                        "LISTE DES TABLEAUX",
+                        "LIST OF TABLES",
+                        "LISTE DES FIGURES",
+                        "LIST OF FIGURES",
+                    )
+                )
+                is_chap_l1 = bool(re.match(r"^(?:CHAPITRE|CHAPTER)\s+[IVX]+\b", title, re.IGNORECASE))
+                if (
+                    is_chap_l1
+                    or is_front_l1
+                    or re.search(r"(?:TM\s*1|TOC\s*1|TABLEDESMATI.*1|HEADING\s*1)", style_up)
+                ):
                     lvl = 1
-                elif any(k in style_id.upper() for k in ("TM3", "TOC3")):
+                elif re.search(r"(?:TM\s*3|TOC\s*3|TABLEDESMATI.*3|HEADING\s*3)", style_up):
                     lvl = 3
                 else:
                     lvl = 2
