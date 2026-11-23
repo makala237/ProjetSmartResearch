@@ -136,16 +136,32 @@ def extract_crf_annexe_block(annexes_md: str) -> Tuple[str, str, str, str]:
         return "", "", "", ""
     lines = annexes_md.splitlines()
 
-    # Locate all annex header lines (e.g. ## ANNEXE ..., ## APPENDIX ..., or major section headers)
+    # Locate all annex header lines (supporting BOTH Markdown # headers AND raw Word/PDF headers without #)
     header_indices: List[int] = []
     for idx, line in enumerate(lines):
         s = line.strip()
+        if not s or len(s) > 130:
+            continue
+        has_ctrl = bool("[ ]" in s or "☐" in s or "□" in s or "____" in s or "....." in s)
         if re.match(r"^#{1,3}\s+(?:ANNEXE|APPENDIX)\b", s, re.IGNORECASE):
             header_indices.append(idx)
         elif re.match(
             r"^#{1,3}\s+(?:FICHE|FORMULAIRE|QUESTIONNAIRE|NOTICE|CONSENTEMENT|CLAIRANCE|LETTRE|D[ÉE]CLARATION|CAHIER|CASE\s+REPORT)\b",
             s,
             re.IGNORECASE,
+        ):
+            header_indices.append(idx)
+        elif not has_ctrl and not s.startswith(("-", "•", "*")) and (
+            re.match(r"^(?:\*\*)?(?:ANNEXE|APPENDIX)\s+(?:\d+|[IVX]+)\b", s, re.IGNORECASE)
+            or re.match(
+                r"^(?:\*\*)?(?:FICHE\s+(?:DE\s+COLLECTE|D['’]ENQU[ÊE]TE|D['’]INFORMATION)|"
+                r"FORMULAIRE\s+(?:DE\s+COLLECTE|D['’]ENREGISTREMENT|DE\s+CONSENTEMENT)|"
+                r"NOTICE\s+D['’]INFORMATION|CONSENTEMENT\s+[ÉE]CLAIR[ÉE]|CLAIRANCE\s+[ÉE]THIQUE|"
+                r"DEMANDE\s+D['’]AUTORISATION|LETTRE\s+D['’]ENGAGEMENT|CAHIER\s+D['’]OBSERVATION|"
+                r"QUESTIONNAIRE(?:\s+D['’]ENQU[ÊE]TE)?|CASE\s+REPORT\s+FORM)\b",
+                s,
+                re.IGNORECASE,
+            )
         ):
             header_indices.append(idx)
 
@@ -418,6 +434,9 @@ def extract_crf_fields_from_project(project: ProtocolProject) -> List[CRFFieldSp
 
     ann1_md = get_crf_markdown_from_project(project)
     if ann1_md:
+        from app.services.crf_extractor import _preprocess_raw_crf_text
+
+        ann1_md = _preprocess_raw_crf_text(ann1_md)
         lines = ann1_md.splitlines()
         current_section = "SECTION A : IDENTIFICATION ET CARACTÉRISTIQUES SOCIODÉMOGRAPHIQUES"
 

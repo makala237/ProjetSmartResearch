@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from enum import Enum
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, model_validator
@@ -496,6 +496,12 @@ class UpdateCRFSchemaRequest(BaseModel):
 class GenerateCRFRequest(BaseModel):
     mode: str = "auto"  # "auto" | "generate" | "improve"
     user_instruction: str = ""
+
+
+class ExtractCRFRequest(BaseModel):
+    source_mode: Literal["auto", "section", "internal_source"] = "auto"
+    source_id: Optional[str] = None
+    use_ai: bool = True
 
 
 class UpsertPatientRecordRequest(BaseModel):

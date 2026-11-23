@@ -460,6 +460,9 @@ export interface ImportReport {
   internal_entries_added?: number;
   citable?: boolean;
   vancouver_citation?: string;
+  crf_detected?: boolean;
+  crf_fields_count?: number;
+  crf_detection?: CRFBoundaryDetection | null;
 }
 
 export interface GlobalAuditCheck {
@@ -556,4 +559,38 @@ export interface HarmonizeSectionResult {
   study_type?: string;
   remaining_alerts_count: number;
   message: string;
+}
+
+export interface CRFBoundaryDetection {
+  found: boolean;
+  start_block_id?: number | null;
+  end_block_id?: number | null;
+  start_excerpt: string;
+  end_excerpt: string;
+  confidence: number;
+  detected_title: string;
+  method: string;
+  excluded_neighbor_annexes: string[];
+  notes: string;
+}
+
+export interface CRFSyncReport {
+  preserved_count: number;
+  modified_count: number;
+  added_count: number;
+  removed_count: number;
+  total_fields: number;
+  sections_count: number;
+  types_breakdown: Record<string, number>;
+  cames_warnings: string[];
+  source_origin?: string;
+}
+
+export interface CRFExtractAndSyncResult {
+  project: ProtocolProject;
+  crf_fields: CRFFieldSpec[];
+  annexe1_html: string;
+  detection: CRFBoundaryDetection;
+  sync_report: CRFSyncReport;
+  model_used: string;
 }

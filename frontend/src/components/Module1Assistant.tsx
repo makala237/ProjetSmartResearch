@@ -175,6 +175,8 @@ export function Module1Assistant({
   const [busyHarmonize, setBusyHarmonize] = useState(false);
   const [busyToc, setBusyToc] = useState(false);
   const [busyRefs, setBusyRefs] = useState(false);
+  const [busyExtractCrf, setBusyExtractCrf] = useState(false);
+  const [crfExtractNote, setCrfExtractNote] = useState<string | null>(null);
   const [busyAntigravityBySec, setBusyAntigravityBySec] = useState<Record<string, boolean>>({});
 
   const busyDraft = Boolean(busyDraftBySec[activeSpec.id]);
@@ -593,6 +595,53 @@ export function Module1Assistant({
       onError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusyFixBySec((prev) => ({ ...prev, [targetSectionId]: false }));
+    }
+  }
+
+  async function handleExtractAndSyncToMask() {
+    setBusyExtractCrf(true);
+    setCrfExtractNote(null);
+    onError("");
+    try {
+      if (draft.trim() && draft.trim() !== (activeState?.content_markdown ?? "").trim()) {
+        await onSaveSection(
+          activeSpec.id,
+          draft,
+          activeState?.status ?? "in_progress",
+          notes,
+          draftHtml
+        );
+      }
+      const res = await tracker.runWithProgress(
+        {
+          operation: "extract_crf",
+          titleFr: "Extraction & synchronisation de la fiche vers le Masque de saisie",
+          titleEn: "Extracting & syncing Data Collection Form into Mask",
+          projectId: project.project_id,
+        },
+        (taskId) =>
+          api.extractAndSyncCrf(
+            project.project_id,
+            { source_mode: "auto", use_ai: true },
+            taskId
+          )
+      );
+      onProjectUpdated(res.project);
+      const updatedSec = res.project.sections["annexe_fiche_collecte"];
+      if (selectedSectionIdRef.current === "annexe_fiche_collecte" && updatedSec) {
+        setDraft(updatedSec.content_markdown);
+        setDraftHtml(updatedSec.content_html ?? "");
+      }
+      const r = res.sync_report;
+      setCrfExtractNote(
+        lang === "en"
+          ? `${r.total_fields} field(s) synced into the Data Mask (${r.preserved_count} preserved, ${r.added_count} added, ${r.modified_count} updated).`
+          : `${r.total_fields} champ(s) compilé(s) et synchronisé(s) vers le Masque de saisie (${r.preserved_count} conservé(s), ${r.added_count} ajouté(s), ${r.modified_count} modifié(s)).`
+      );
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyExtractCrf(false);
     }
   }
 
@@ -1407,6 +1456,40 @@ export function Module1Assistant({
                       </button>
                     )}
                   </form>
+                  {activeSpec.id === "annexe_fiche_collecte" && (
+                    <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs text-emerald-950">
+                      <div className="min-w-0 flex-1 text-[11px]">
+                        <strong>
+                          {lang === "en"
+                            ? "Dedicated CRF Extractor → Data Mask:"
+                            : "Extracteur dédié Fiche → Masque de saisie :"}
+                        </strong>{" "}
+                        {crfExtractNote ||
+                          (lang === "en"
+                            ? "Isolates form boundaries and compiles every question, table, and choice non-destructively into Module 3."
+                            : "Isole le début et la fin exacts de la fiche (tableaux, pointillés, choix) et synchronise sans perte vers le Module 3.")}
+                      </div>
+                      <button
+                        type="button"
+                        disabled={busyExtractCrf || busyDraft}
+                        onClick={handleExtractAndSyncToMask}
+                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-1.5 text-[11px] font-semibold text-white shadow-xs hover:bg-emerald-800 disabled:opacity-50"
+                      >
+                        {busyExtractCrf ? (
+                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3.5 w-3.5" />
+                        )}
+                        {busyExtractCrf
+                          ? lang === "en"
+                            ? "Compiling Mask..."
+                            : "Synchronisation..."
+                          : lang === "en"
+                            ? "Extract & Sync to Mask"
+                            : "Extraire & synchroniser vers Masque de saisie"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 

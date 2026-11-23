@@ -22,6 +22,13 @@ from app.services.crf_builder import (
     extract_crf_annexe_block,
     extract_crf_fields_from_project,
     is_crf_annexe_content,
+    sync_crf_to_project,
+)
+from app.services.crf_extractor import (
+    compile_crf_fields_hybrid,
+    detect_crf_boundaries_in_blocks,
+    reconcile_crf_fields,
+    slice_crf_from_text_or_blocks,
 )
 from app.services.drafting import deterministic_section_checks
 from app.services.figure_extractor import extract_images_from_uploaded_document
@@ -228,6 +235,18 @@ def _parse_imported_references(raw_ref_text: str) -> List[ReferenceItem]:
 def _fallback_map_blocks_to_sections(blocks: List[DocBlock]) -> ImportedProtocolIndexAnalysis:
     """Deterministic keyword mapping when AI segmentation is temporarily unavailable."""
     section_rules = [
+        (
+            "annexe_fiche_collecte",
+            (
+                "fiche de collecte",
+                "fiche d'enquête",
+                "fiche d'enquete",
+                "formulaire de collecte",
+                "formulaire d'enregistrement",
+                "cahier d'observation",
+                "grille de collecte",
+            ),
+        ),
         ("abbreviations", ("abréviation", "abreviation", "sigle", "acronyme")),
         ("references", ("référence", "reference", "bibliograph")),
         ("annexes", ("annexe", "consentement", "clairance", "questionnaire")),
@@ -447,11 +466,20 @@ def analyze_and_import_protocol(
     total_chars = sum(len(b.full_text) for b in blocks)
     blocks_by_id = {b.block_id: b for b in blocks}
 
-    # Build a compact catalog of blocks (no full-text regurgitation!)
-    # Cap catalog at ~140 blocks if a huge thesis has hundreds of micro-headings
+    # Build a compact catalog of blocks without truncating the tail (where annexes & CRF live!)
+    if len(blocks) <= 140:
+        catalog_blocks = blocks
+    else:
+        seen_bids = set()
+        catalog_blocks = []
+        for blk in list(blocks[:95]) + list(blocks[-45:]):
+            if blk.block_id not in seen_bids:
+                seen_bids.add(blk.block_id)
+                catalog_blocks.append(blk)
+
     catalog_lines = [
         f"[B{b.block_id}] Titre: {b.heading} | Aperçu: {b.preview}"
-        for b in blocks[:140]
+        for b in catalog_blocks
     ]
     sections_list = "\n".join(
         f"- {s.id}: {s.chapter_title} — {s.title}"
@@ -567,6 +595,28 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
             tables_md = _extract_markdown_tables(reassembled_text)
             prepared_sections.append((item.section_id, reassembled_text, tables_md, item.diagnostic_note or ""))
 
+        # Dedicated deterministic CRF boundary pass for internal_source documents
+        crf_det = detect_crf_boundaries_in_blocks(blocks, lang=lang, use_ai=False)
+        existing_prepared_sids = {sid for sid, _, _, _ in prepared_sections}
+        if crf_det.found and "annexe_fiche_collecte" not in existing_prepared_sids:
+            _, pure_crf, _, crf_det = slice_crf_from_text_or_blocks(
+                blocks=blocks,
+                lang=lang,
+                use_ai=False,
+                precomputed_detection=crf_det,
+            )
+            if pure_crf.strip():
+                if "annexe_fiche_collecte" not in project.sections:
+                    project.sections["annexe_fiche_collecte"] = SectionState(section_id="annexe_fiche_collecte")
+                prepared_sections.append(
+                    (
+                        "annexe_fiche_collecte",
+                        pure_crf,
+                        _extract_markdown_tables(pure_crf),
+                        "Fiche de collecte identifiée automatiquement (début → fin) pour la bibliothèque interne.",
+                    )
+                )
+
         emit_pipeline_step(
             "extract_images",
             "Extraction des figures vers la bibliothèque interne...",
@@ -633,6 +683,8 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
             "citable": meta.citable,
             "vancouver_citation": meta.vancouver_citation,
             "source_document": source_doc.model_dump(mode="json"),
+            "crf_detected": bool(crf_det.found or "annexe_fiche_collecte" in existing_prepared_sids or any(s == "annexe_fiche_collecte" for s, _, _, _ in prepared_sections)),
+            "crf_detection": crf_det.model_dump(mode="json") if crf_det.found else None,
         }
 
     project.entry_mode = EntryMode.EXISTING_PROTOCOL
@@ -641,15 +693,46 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
     if analysis.detected_study_type and not project.study_type:
         project.study_type = analysis.detected_study_type
 
+    # Dedicated Stage 1 CRF boundary detection across ALL blocks before mapping annexes
+    emit_pipeline_step(
+        "crf_detect",
+        "Identification chirurgicale de la fiche de collecte (début → fin)...",
+        "Detecting exact Data Collection Form boundaries (start → end)...",
+        progress_pct=70,
+    )
+    crf_det = detect_crf_boundaries_in_blocks(blocks, lang=lang, use_ai=True)
+    crf_span_ids: set[int] = set()
+    pure_crf_text = ""
+    crf_before_tail_annex = ""
+    if crf_det.found and crf_det.start_block_id is not None and crf_det.end_block_id is not None:
+        id_to_pos = {b.block_id: idx for idx, b in enumerate(blocks)}
+        s_pos = id_to_pos.get(crf_det.start_block_id)
+        e_pos = id_to_pos.get(crf_det.end_block_id)
+        if s_pos is not None and e_pos is not None and s_pos <= e_pos:
+            crf_span_ids = {blocks[k].block_id for k in range(s_pos, e_pos + 1)}
+            _, pure_crf_text, after_crf_doc, crf_det = slice_crf_from_text_or_blocks(
+                blocks=blocks,
+                lang=lang,
+                use_ai=False,
+                precomputed_detection=crf_det,
+            )
+            crf_before_tail_annex = after_crf_doc
+
     mapped_count = 0
+    mapped_section_ids: set[str] = set()
     page_to_section = {}
     elem_idx_to_section = {}
 
     for item in analysis.mapped_sections:
         if item.section_id not in project.sections:
             continue
+        effective_bids = [
+            bid
+            for bid in item.block_ids
+            if not (item.section_id == "annexes" and bid in crf_span_ids)
+        ]
         valid_blocks = []
-        for bid in item.block_ids:
+        for bid in effective_bids:
             blk = blocks_by_id.get(bid)
             if blk is None:
                 continue
@@ -673,8 +756,9 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
         det_notes = deterministic_section_checks(project, item.section_id, reassembled_text)
         sec.audit_notes = det_notes + ([item.diagnostic_note] if item.diagnostic_note else [])
         mapped_count += 1
+        mapped_section_ids.add(item.section_id)
 
-        if item.section_id == "annexes":
+        if item.section_id == "annexes" and not pure_crf_text:
             before_crf, crf_block, after_crf, crf_title = extract_crf_annexe_block(reassembled_text)
             if crf_block and is_crf_annexe_content(crf_title, crf_block):
                 if "annexe_fiche_collecte" not in project.sections:
@@ -683,6 +767,7 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
                 crf_sec.content_markdown = crf_block
                 crf_sec.content_html = markdown_to_clean_html(crf_block)
                 crf_sec.status = StepStatus(item.status)
+                mapped_section_ids.add("annexe_fiche_collecte")
                 # Keep non-CRF appendices in `annexes` when separating into dedicated CRF sub-section
                 other_parts = [p for p in (before_crf, after_crf) if p and p.strip()]
                 if other_parts:
@@ -700,6 +785,60 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
                         project.references.append(pr)
                         existing_titles.add(pr.vancouver_citation.lower())
                 refresh_vancouver_references(project)
+
+    # Apply the surgical CRF extractor result into `annexe_fiche_collecte` + Masque de saisie
+    crf_detected = False
+    if pure_crf_text.strip():
+        crf_detected = True
+        for bid in crf_span_ids:
+            blk = blocks_by_id.get(bid)
+            if blk is None:
+                continue
+            for pno in blk.page_numbers:
+                page_to_section[pno] = "annexe_fiche_collecte"
+            for eidx in blk.elem_indices:
+                elem_idx_to_section[eidx] = "annexe_fiche_collecte"
+
+        if "annexe_fiche_collecte" not in project.sections:
+            project.sections["annexe_fiche_collecte"] = SectionState(section_id="annexe_fiche_collecte")
+        crf_sec = project.sections["annexe_fiche_collecte"]
+        crf_sec.content_markdown = pure_crf_text
+        crf_sec.content_html = markdown_to_clean_html(pure_crf_text)
+        crf_sec.status = StepStatus.IN_PROGRESS
+        if "annexe_fiche_collecte" not in mapped_section_ids:
+            mapped_count += 1
+            mapped_section_ids.add("annexe_fiche_collecte")
+
+        # Ensure trailing non-CRF annexes inside a shared block are not dropped
+        if crf_before_tail_annex and "annexes" in project.sections:
+            ann_sec = project.sections["annexes"]
+            if not (ann_sec.content_markdown or "").strip():
+                ann_sec.content_markdown = crf_before_tail_annex
+                ann_sec.content_html = markdown_to_clean_html(crf_before_tail_annex)
+                ann_sec.status = StepStatus.IN_PROGRESS
+                if "annexes" not in mapped_section_ids:
+                    mapped_count += 1
+                    mapped_section_ids.add("annexes")
+
+        compiled = compile_crf_fields_hybrid(project, pure_crf_text, use_ai=True)
+        compiled_fields = compiled.get("fields") or []
+        if compiled_fields:
+            reconciled, _ = reconcile_crf_fields(project.crf_fields, compiled_fields)
+            project.crf_fields = reconciled
+        else:
+            project.crf_fields = extract_crf_fields_from_project(project)
+        sync_crf_to_project(project, sync_annexe1_markdown=False)
+    else:
+        crf_sec_existing = project.sections.get("annexe_fiche_collecte")
+        if crf_sec_existing and (crf_sec_existing.content_markdown or "").strip():
+            crf_detected = True
+            compiled = compile_crf_fields_hybrid(project, crf_sec_existing.content_markdown, use_ai=True)
+            if compiled.get("fields"):
+                reconciled, _ = reconcile_crf_fields(project.crf_fields, compiled["fields"])
+                project.crf_fields = reconciled
+                sync_crf_to_project(project, sync_annexe1_markdown=False)
+            elif not project.crf_fields:
+                project.crf_fields = extract_crf_fields_from_project(project)
 
     # Extract ALL valid embedded images/figures from the user-imported document with section context
     emit_pipeline_step(
@@ -739,4 +878,7 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
         ],
         "global_summary": analysis.global_summary,
         "mapped_sections_count": mapped_count,
+        "crf_detected": crf_detected,
+        "crf_fields_count": len(project.crf_fields),
+        "crf_detection": crf_det.model_dump(mode="json") if crf_det.found else None,
     }

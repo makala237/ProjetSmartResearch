@@ -595,6 +595,24 @@ export function ResearchPanel({
                 </div>
               )}
               <p className="mt-1 text-emerald-900">{importReport.global_summary}</p>
+              {importReport.crf_detected && (
+                <div className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-emerald-300 bg-white/80 px-2.5 py-1.5 text-[11px] text-emerald-950">
+                  <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-bold text-emerald-900">
+                    {lang === "en" ? "Data Collection Form isolated" : "Fiche de collecte isolée (début → fin)"}
+                  </span>
+                  {typeof importReport.crf_fields_count === "number" && importReport.crf_fields_count > 0 && (
+                    <span className="font-semibold text-indigo-900">
+                      • {importReport.crf_fields_count}{" "}
+                      {lang === "en" ? "fields compiled into Mask" : "champ(s) compilé(s) dans le Masque de saisie"}
+                    </span>
+                  )}
+                  {importReport.crf_detection?.detected_title && (
+                    <span className="truncate text-slate-600" title={importReport.crf_detection.detected_title}>
+                      ({importReport.crf_detection.detected_title})
+                    </span>
+                  )}
+                </div>
+              )}
               {importReport.extracted_images && importReport.extracted_images.length > 0 && (
                 <div className="mt-2.5 border-t border-emerald-200/80 pt-2">
                   <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold text-emerald-900">

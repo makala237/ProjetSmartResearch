@@ -25,7 +25,10 @@ import type {
   BudgetItem,
   CanvasSectionSpec,
   CoverMetadata,
+  CRFBoundaryDetection,
+  CRFExtractAndSyncResult,
   CRFFieldSpec,
+  CRFSyncReport,
   DiagramConnection,
   DiagramNode,
   DraftResult,
@@ -795,11 +798,36 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  extractAndSyncCrf: (
+    projectId: string,
+    payload: {
+      source_mode?: "auto" | "section" | "internal_source";
+      source_id?: string | null;
+      use_ai?: boolean;
+    } = {},
+    taskId?: string
+  ) =>
+    request<CRFExtractAndSyncResult>(
+      `/api/projects/${projectId}/crf/extract-and-sync`,
+      {
+        method: "POST",
+        headers: pipelineHeaders(taskId),
+        body: JSON.stringify({
+          source_mode: payload.source_mode ?? "auto",
+          source_id: payload.source_id ?? null,
+          use_ai: payload.use_ai ?? true,
+        }),
+      }
+    ),
+
   syncProjectCrf: (projectId: string, forceExtract = false) =>
     request<{
       project: ProtocolProject;
       crf_fields: CRFFieldSpec[];
       annexe1_html: string;
+      detection?: CRFBoundaryDetection | null;
+      sync_report?: CRFSyncReport | null;
+      model_used?: string;
     }>(`/api/projects/${projectId}/crf/sync?force_extract=${forceExtract}`, {
       method: "POST",
     }),

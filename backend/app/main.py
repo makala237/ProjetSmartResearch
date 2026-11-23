@@ -55,6 +55,7 @@ from app.schemas.protocol import (
     CRFFieldSpec,
     DiagramConnection,
     DiagramNode,
+    ExtractCRFRequest,
     GenerateCRFRequest,
     ImageAsset,
     PatientRecord,
@@ -82,6 +83,7 @@ from app.services.crf_builder import (
     render_crf_annexe1_html,
     sync_crf_to_project,
 )
+from app.services.crf_extractor import extract_and_sync_crf_for_project
 from app.services.diagram_renderer import render_diagram_svg
 from app.services.docx_template import compile_protocol_docx, ensure_master_template
 from app.services.drafting import (
@@ -2103,6 +2105,74 @@ def ai_generate_project_crf(
         reset_ai_routing_policy()
 
 
+@app.post("/api/projects/{project_id}/crf/extract-and-sync")
+def extract_and_sync_project_crf(
+    project_id: str,
+    payload: ExtractCRFRequest,
+    request: Request,
+    current_user: UserRecord = Depends(require_module_write("module3")),
+    db: Any = Depends(get_db),
+) -> Dict[str, object]:
+    """
+    Dedicated CRF extractor & compiler pipeline:
+    1. Isolates exact start/end boundaries of the CRF from Annexes or Internal Library.
+    2. Compiles questions/tables/choices into structured CRFFieldSpec[] via Hybrid AI/Deterministic engine.
+    3. Reconciles non-destructively (preserving patient_records field_ids) and syncs Mask & Annexe 1.
+    """
+    project = get_authorized_project(project_id, current_user)
+    cost = 0
+    if payload.use_ai:
+        cost = assert_ai_quota_available(db, current_user, module_key="module3", action="extract_crf")
+    tracked = _begin_request_pipeline_task(
+        request,
+        current_user,
+        project,
+        operation="extract_crf",
+        title_fr="Identification & Compilation dédiée de la Fiche de Collecte",
+        title_en="Dedicated Data Collection Form Extraction & Compilation",
+    )
+    try:
+        res = extract_and_sync_crf_for_project(
+            project,
+            source_mode=payload.source_mode,
+            source_id=payload.source_id,
+            use_ai=payload.use_ai,
+        )
+        evaluate_project_coherence(project, changed_section_id="annexe_fiche_collecte")
+        saved = project_storage.save(project)
+        if payload.use_ai:
+            record_usage_and_debit(
+                db=db,
+                user=current_user,
+                module_key="module3",
+                action="extract_crf",
+                credits_cost=cost,
+                project_id=project_id,
+                model_used=str(res.get("model_used", "")),
+                ip_address=get_client_ip(request),
+            )
+        if tracked:
+            finish_pipeline_task("done")
+        return {
+            "project": saved.model_dump(mode="json"),
+            "crf_fields": [f.model_dump(mode="json") for f in saved.crf_fields],
+            "annexe1_html": res["annexe1_html"],
+            "detection": res["detection"],
+            "sync_report": res["sync_report"],
+            "model_used": res["model_used"],
+        }
+    except ValueError as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        if tracked:
+            finish_pipeline_task("error", error_message=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
+    finally:
+        reset_ai_routing_policy()
+
+
 @app.post("/api/projects/{project_id}/crf/sync")
 def sync_project_crf(
     project_id: str,
@@ -2110,16 +2180,38 @@ def sync_project_crf(
     current_user: UserRecord = Depends(require_module_write("module3")),
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
+    detection_out: Optional[Dict[str, object]] = None
+    sync_report_out: Optional[Dict[str, object]] = None
+    model_used_out = "deterministic-crf-compiler"
+
     if force_extract or not project.crf_fields:
-        project.crf_fields = extract_crf_fields_from_project(project)
+        try:
+            ext_res = extract_and_sync_crf_for_project(
+                project,
+                source_mode="auto",
+                use_ai=bool(force_extract),
+            )
+            detection_out = ext_res.get("detection")
+            sync_report_out = ext_res.get("sync_report")
+            model_used_out = str(ext_res.get("model_used", model_used_out))
+        except Exception:
+            if force_extract or not project.crf_fields:
+                project.crf_fields = extract_crf_fields_from_project(project)
+            else:
+                ensure_project_crf_fields(project)
+            sync_crf_to_project(project, sync_annexe1_markdown=True)
     else:
         ensure_project_crf_fields(project)
-    sync_crf_to_project(project, sync_annexe1_markdown=True)
+        sync_crf_to_project(project, sync_annexe1_markdown=True)
+
     saved = project_storage.save(project)
     return {
         "project": saved.model_dump(mode="json"),
         "crf_fields": [f.model_dump(mode="json") for f in saved.crf_fields],
         "annexe1_html": render_crf_annexe1_html(saved),
+        "detection": detection_out,
+        "sync_report": sync_report_out,
+        "model_used": model_used_out,
     }
 
 

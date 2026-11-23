@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
+  BookOpen,
   CheckCircle2,
   ClipboardCheck,
   Database,
@@ -22,8 +24,10 @@ import {
 import { api } from "../api/client";
 import { useLanguage } from "../i18n/LanguageContext";
 import type {
+  CRFBoundaryDetection,
   CRFFieldSpec,
   CRFFieldType,
+  CRFSyncReport,
   PatientRecord,
   ProtocolProject,
 } from "../types/protocol";
@@ -80,6 +84,15 @@ export function Module3DataEntry({
   const [subTab, setSubTab] = useState<SubTab>("entry");
   const [busy, setBusy] = useState(false);
   const [aiBusy, setAiBusy] = useState(false);
+  const [extractBusy, setExtractBusy] = useState(false);
+  const [selectedInternalSourceId, setSelectedInternalSourceId] = useState<string>(
+    () => (project.internal_sources ?? [])[0]?.source_id ?? ""
+  );
+  const [extractReport, setExtractReport] = useState<{
+    detection: CRFBoundaryDetection;
+    sync_report: CRFSyncReport;
+    model_used: string;
+  } | null>(null);
   const [aiInstruction, setAiInstruction] = useState("");
   const [aiReport, setAiReport] = useState<{
     model_used: string;
@@ -296,6 +309,40 @@ export function Module3DataEntry({
     }
   }
 
+  async function handleExtractAndSyncCrf(
+    sourceMode: "auto" | "section" | "internal_source" = "auto",
+    sourceId?: string
+  ) {
+    setExtractBusy(true);
+    setNotice(null);
+    onError("");
+    try {
+      const res = await api.extractAndSyncCrf(project.project_id, {
+        source_mode: sourceMode,
+        source_id: sourceId || null,
+        use_ai: true,
+      });
+      onProjectUpdated(res.project);
+      setDraftFields(res.crf_fields);
+      setAnnexe1Html(res.annexe1_html);
+      setExtractReport({
+        detection: res.detection,
+        sync_report: res.sync_report,
+        model_used: res.model_used,
+      });
+      const r = res.sync_report;
+      setNotice(
+        lang === "en"
+          ? `Dedicated CRF extraction complete: ${r.total_fields} fields compiled (${r.preserved_count} preserved, ${r.added_count} added, ${r.modified_count} updated).`
+          : `Extraction dédiée terminée : ${r.total_fields} champs compilés (${r.preserved_count} conservé(s), ${r.added_count} ajouté(s), ${r.modified_count} mis à jour — données patients préservées).`
+      );
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExtractBusy(false);
+    }
+  }
+
   async function handleSyncFromAnnexe1(forceExtract: boolean) {
     setBusy(true);
     onError("");
@@ -304,6 +351,13 @@ export function Module3DataEntry({
       onProjectUpdated(res.project);
       setDraftFields(res.crf_fields);
       setAnnexe1Html(res.annexe1_html);
+      if (res.detection && res.sync_report) {
+        setExtractReport({
+          detection: res.detection,
+          sync_report: res.sync_report,
+          model_used: res.model_used || "hybrid-crf-compiler",
+        });
+      }
       setNotice(
         lang === "en"
           ? `Mask synchronized (${res.crf_fields.length} fields) from dedicated Data Collection sub-section (Appendix 1).`
@@ -419,7 +473,7 @@ export function Module3DataEntry({
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
-              disabled={busy || aiBusy}
+              disabled={busy || aiBusy || extractBusy}
               onClick={() => handleSyncFromAnnexe1(true)}
               className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               title={
@@ -582,6 +636,145 @@ export function Module3DataEntry({
                     </li>
                   ))}
                 </ul>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Dedicated CRF Extractor & Non-Destructive Compiler Control Strip */}
+        <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50/40 p-3.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-xs font-bold text-emerald-950">
+                <Search className="h-4 w-4 text-emerald-700" />
+                {lang === "en"
+                  ? "Dedicated CRF Boundary Extractor & Non-Destructive Mask Sync"
+                  : "Extracteur & Compilateur dédié de Fiche de Collecte (Début → Fin)"}
+              </div>
+              <p className="mt-0.5 text-[11px] text-slate-600">
+                {lang === "en"
+                  ? "Isolates the Data Collection Form cleanly (even from Word tables or dotted lines), compiles fields into the mask, and preserves existing patient record IDs."
+                  : "Isole précisément les bornes de votre fiche (tableaux Word, pointillés, choix /), recompile le masque sans altérer les données patients déjà saisies, et contrôle l'anonymat CAMES."}
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                disabled={busy || aiBusy || extractBusy}
+                onClick={() => handleExtractAndSyncCrf("auto")}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-700 px-3 py-2 text-xs font-semibold text-white shadow-xs hover:bg-emerald-800 disabled:opacity-50"
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${extractBusy ? "animate-spin" : ""}`} />
+                {extractBusy
+                  ? lang === "en"
+                    ? "Extracting & Compiling..."
+                    : "Extraction & Compilation..."
+                  : lang === "en"
+                    ? "Analyze & Extract Form (AI)"
+                    : "Analyser & extraire la fiche (IA)"}
+              </button>
+            </div>
+          </div>
+
+          {(project.internal_sources ?? []).length > 0 && (
+            <div className="mt-2.5 flex flex-wrap items-center gap-2 border-t border-emerald-200/70 pt-2.5 text-xs">
+              <BookOpen className="h-3.5 w-3.5 shrink-0 text-emerald-700" />
+              <span className="text-[11px] font-semibold text-emerald-950">
+                {lang === "en" ? "From internal library:" : "Depuis une source interne :"}
+              </span>
+              <select
+                value={selectedInternalSourceId}
+                onChange={(e) => setSelectedInternalSourceId(e.target.value)}
+                disabled={extractBusy}
+                className="min-w-[180px] flex-1 rounded-lg border border-emerald-200 bg-white px-2.5 py-1.5 text-xs text-slate-800"
+              >
+                {(project.internal_sources ?? []).map((src) => (
+                  <option key={src.source_id} value={src.source_id}>
+                    {src.filename} ({src.mapped_sections.length} section(s))
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={busy || aiBusy || extractBusy || !selectedInternalSourceId}
+                onClick={() => handleExtractAndSyncCrf("internal_source", selectedInternalSourceId)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-600 bg-white px-3 py-1.5 text-xs font-semibold text-emerald-800 hover:bg-emerald-50 disabled:opacity-50"
+              >
+                {lang === "en" ? "Extract from Source" : "Extraire depuis source interne"}
+              </button>
+            </div>
+          )}
+
+          {extractReport && (
+            <div className="mt-3 rounded-lg border border-emerald-200 bg-white p-3 text-xs text-slate-800">
+              <div className="flex flex-wrap items-center justify-between gap-2 font-semibold text-emerald-950">
+                <span>
+                  {extractReport.detection.detected_title ||
+                    (lang === "en" ? "CRF Boundary Control Report" : "Carte de contrôle d'extraction CRF")}
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5 text-[10px]">
+                  <span className="rounded-full bg-emerald-100 px-2 py-0.5 font-bold text-emerald-800">
+                    {lang === "en" ? "Confidence" : "Confiance"} :{" "}
+                    {Math.round((extractReport.detection.confidence || 0) * 100)}%
+                  </span>
+                  <span className="rounded bg-slate-100 px-2 py-0.5 font-semibold text-slate-700">
+                    {extractReport.model_used}
+                  </span>
+                </div>
+              </div>
+
+              {(extractReport.detection.start_excerpt || extractReport.detection.end_excerpt) && (
+                <div className="mt-2 grid grid-cols-1 gap-2 rounded bg-slate-50 p-2 text-[11px] sm:grid-cols-2">
+                  <div>
+                    <span className="font-bold text-slate-700">
+                      {lang === "en" ? "Detected start:" : "Début repéré :"}
+                    </span>{" "}
+                    <span className="text-slate-600">{extractReport.detection.start_excerpt}</span>
+                  </div>
+                  <div>
+                    <span className="font-bold text-slate-700">
+                      {lang === "en" ? "Detected end:" : "Fin repérée :"}
+                    </span>{" "}
+                    <span className="text-slate-600">{extractReport.detection.end_excerpt}</span>
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px]">
+                <span className="rounded bg-emerald-50 px-2 py-0.5 font-semibold text-emerald-800">
+                  {extractReport.sync_report.preserved_count} {lang === "en" ? "preserved" : "conservé(s)"}
+                </span>
+                <span className="rounded bg-indigo-50 px-2 py-0.5 font-semibold text-indigo-800">
+                  +{extractReport.sync_report.added_count} {lang === "en" ? "added" : "ajouté(s)"}
+                </span>
+                <span className="rounded bg-amber-50 px-2 py-0.5 font-semibold text-amber-800">
+                  {extractReport.sync_report.modified_count} {lang === "en" ? "updated" : "modifié(s)"}
+                </span>
+                <span className="text-slate-600">
+                  • {extractReport.sync_report.sections_count}{" "}
+                  {lang === "en" ? "clinical sections" : "sections cliniques"}
+                </span>
+              </div>
+
+              {extractReport.detection.excluded_neighbor_annexes.length > 0 && (
+                <div className="mt-1.5 text-[11px] text-slate-600">
+                  <strong>
+                    {lang === "en" ? "Excluded neighbor annexes:" : "Annexes voisines écartées :"}
+                  </strong>{" "}
+                  {extractReport.detection.excluded_neighbor_annexes.join(" ; ")}
+                </div>
+              )}
+
+              {extractReport.sync_report.cames_warnings.length > 0 && (
+                <div className="mt-2 space-y-1 rounded border border-amber-200 bg-amber-50/70 p-2 text-[11px] text-amber-950">
+                  {extractReport.sync_report.cames_warnings.map((w, i) => (
+                    <div key={i} className="flex items-start gap-1.5">
+                      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-700" />
+                      <span>{w}</span>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           )}
