@@ -104,10 +104,54 @@ def _clear_table_borders(tbl) -> None:
 def _strip_dept_prefix(raw: str, is_french: bool) -> str:
     txt = (raw or "").strip()
     if is_french:
-        txt = re.sub(r"^d[ée]partement\s+(?:de\s+la\s+|de\s+l'|du\s+|des\s+|d'|de\s+)?", "", txt, flags=re.IGNORECASE)
+        txt = re.sub(
+            r"^(?:d[ée]partement\s+)?(?:de\s+la\s+|de\s+l['’]\s*|du\s+|des\s+|d['’]\s*|de\s+)?",
+            "",
+            txt,
+            flags=re.IGNORECASE,
+        )
+        txt = re.sub(r"^d[ée]partement\s+", "", txt, flags=re.IGNORECASE)
         return (txt.strip() or "SANTE PUBLIQUE").upper()
-    txt = re.sub(r"^departe?ment\s+(?:of\s+)?", "", txt, flags=re.IGNORECASE)
+    txt = re.sub(r"^(?:departe?ment\s+)?(?:of\s+)?", "", txt, flags=re.IGNORECASE)
+    txt = re.sub(r"^departe?ment\s+", "", txt, flags=re.IGNORECASE)
     return (txt.strip() or "PUBLIC HEALTH").upper()
+
+
+def format_department_full_line(raw: str, is_french: bool) -> str:
+    """Format a standalone full-width department heading without duplicating prepositions."""
+    txt = re.sub(r"\s+", " ", (raw or "").strip())
+    if is_french:
+        if not txt:
+            return "DÉPARTEMENT DE SANTÉ PUBLIQUE"
+        if re.match(
+            r"^d[ée]partement\s+(?:de\s+la\s+|de\s+l['’]\s*|du\s+|des\s+|d['’]\s*|de\s+)",
+            txt,
+            flags=re.IGNORECASE,
+        ):
+            return re.sub(r"^d[ée]partement\b", "DÉPARTEMENT", txt, flags=re.IGNORECASE).upper()
+        txt = re.sub(r"^d[ée]partement\s*", "", txt, flags=re.IGNORECASE).strip()
+        if not txt:
+            return "DÉPARTEMENT DE SANTÉ PUBLIQUE"
+        if re.match(
+            r"^(?:de\s+la\s+|de\s+l['’]\s*|du\s+|des\s+|d['’]\s*|de\s+)",
+            txt,
+            flags=re.IGNORECASE,
+        ):
+            return f"DÉPARTEMENT {txt}".upper()
+        if re.match(r"^[AEIOUYÀÂÄÉÈÊËÎÏÔÖÙÛÜŸ]", txt, flags=re.IGNORECASE):
+            return f"DÉPARTEMENT D'{txt}".upper()
+        return f"DÉPARTEMENT DE {txt}".upper()
+
+    if not txt:
+        return "DEPARTMENT OF PUBLIC HEALTH"
+    if re.match(r"^departe?ment\s+of\b", txt, flags=re.IGNORECASE):
+        return re.sub(r"^departe?ment\b", "DEPARTMENT", txt, flags=re.IGNORECASE).upper()
+    txt = re.sub(r"^departe?ment\s*", "", txt, flags=re.IGNORECASE).strip()
+    if not txt:
+        return "DEPARTMENT OF PUBLIC HEALTH"
+    if re.match(r"^of\s+", txt, flags=re.IGNORECASE):
+        return f"DEPARTMENT {txt}".upper()
+    return f"DEPARTMENT OF {txt}".upper()
 
 
 def format_contact_tier_lines(po_box: str, email: str) -> Tuple[List[str], List[str]]:
@@ -132,6 +176,7 @@ def format_contact_tier_lines(po_box: str, email: str) -> Tuple[List[str], List[
 
 def build_cover_header_lines(
     cover: CoverMetadata,
+    include_department: bool = True,
 ) -> Tuple[List[Tuple[str, float, bool, bool]], List[Tuple[str, float, bool, bool]]]:
     """Build bilingual header lines for Word cover page with editable tiers 3-5 & optional contact tiers."""
     dept_fr = _strip_dept_prefix(cover.department_fr, is_french=True)
@@ -173,14 +218,19 @@ def build_cover_header_lines(
             ("**************", sz_star, False, False),
             (fac_fr, sz_fac, True, False),
             ("**************", sz_star, False, False),
-            ("DÉPARTEMENT DE", sz_main, True, False),
-            (dept_fr, sz_main, True, False),
         ]
     )
-    if fac_fr_contacts:
-        left_lines.append(("**************", sz_star, False, False))
-        for c_line in fac_fr_contacts:
-            left_lines.append((c_line, sz_contact, False, False))
+    if include_department:
+        left_lines.extend(
+            [
+                ("DÉPARTEMENT DE", sz_main, True, False),
+                (dept_fr, sz_main, True, False),
+            ]
+        )
+        if fac_fr_contacts:
+            left_lines.append(("**************", sz_star, False, False))
+    for c_line in fac_fr_contacts:
+        left_lines.append((c_line, sz_contact, False, False))
 
     right_lines: List[Tuple[str, float, bool, bool]] = [
         ("REPUBLIC OF CAMEROON", sz_head, True, False),
@@ -197,14 +247,19 @@ def build_cover_header_lines(
             ("************", sz_star, False, False),
             (fac_en, sz_fac, True, False),
             ("************", sz_star, False, False),
-            ("DEPARTMENT OF", sz_main, True, False),
-            (dept_en, sz_main, True, False),
         ]
     )
-    if fac_en_contacts:
-        right_lines.append(("************", sz_star, False, False))
-        for c_line in fac_en_contacts:
-            right_lines.append((c_line, sz_contact, False, False))
+    if include_department:
+        right_lines.extend(
+            [
+                ("DEPARTMENT OF", sz_main, True, False),
+                (dept_en, sz_main, True, False),
+            ]
+        )
+        if fac_en_contacts:
+            right_lines.append(("************", sz_star, False, False))
+    for c_line in fac_en_contacts:
+        right_lines.append((c_line, sz_contact, False, False))
 
     return left_lines, right_lines
 
@@ -283,7 +338,11 @@ def _append_inline_graphic_el(
     run_logo._r.append(inline_drawing)
 
 
-def _rebuild_bilingual_header_table(doc, project: ProtocolProject) -> int:
+def _rebuild_bilingual_header_table(
+    doc,
+    project: ProtocolProject,
+    include_department: bool = True,
+) -> int:
     """Build dynamic multi-university bilingual header tiers and 1 or 2 stacked center logos. Returns extra line count."""
     if not doc.tables:
         return 0
@@ -328,7 +387,10 @@ def _rebuild_bilingual_header_table(doc, project: ProtocolProject) -> int:
             r = p.add_run(text)
             _apply_cover_run_font(r, "Times New Roman", size_pt=sz, bold=is_bold, italic=is_italic)
 
-    left_lines, right_lines = build_cover_header_lines(project.cover)
+    left_lines, right_lines = build_cover_header_lines(
+        project.cover,
+        include_department=include_department,
+    )
     _write_side_cell(t0.rows[0].cells[0], left_lines)
     _write_side_cell(t0.rows[0].cells[2], right_lines)
 
@@ -520,7 +582,16 @@ def build_fmsb_cover_page(
         body.remove(el)
 
     # 2. Condense lateral headers & enlarge UY1/FMSB logo(s) in center
-    extra_header_lines = _rebuild_bilingual_header_table(doc, project)
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    labels = get_doc_labels(lang)
+    dept_above_title = (
+        getattr(fmt, "cover_department_layout", "header_columns") == "above_title"
+    )
+    extra_header_lines = _rebuild_bilingual_header_table(
+        doc,
+        project,
+        include_department=not dept_above_title,
+    )
 
     cover = project.cover
     font_family = fmt.font_family or "Times New Roman"
@@ -554,6 +625,20 @@ def build_fmsb_cover_page(
             _apply_cover_run_font(run, font_family, size_pt=size_pt, bold=bold, italic=italic)
         return p_obj
 
+    if dept_above_title:
+        dept_heading = format_department_full_line(
+            cover.department_en if lang == "en" else cover.department_fr,
+            is_french=(lang != "en"),
+        )
+        add_cover_para(
+            dept_heading,
+            size_pt=12,
+            bold=True,
+            space_before=12,
+            space_after=6,
+            line_spacing=1.15,
+        )
+
     # 3. Title Box (wide, single-instance rounded/styled DrawingML inline box, 18pt, dynamic height)
     title_text = (cover.title or project.name or "TITRE DU PROTOCOLE DE RECHERCHE").strip()
     chars_per_line = max(30, int((usable_width_cm - 0.8) / 0.32))
@@ -572,13 +657,11 @@ def build_fmsb_cover_page(
         font_family=font_family,
         size_pt=title_pt,
         fmt=fmt,
-        space_before_pt=14,
+        space_before_pt=6 if dept_above_title else 14,
         space_after_pt=12,
     )
 
     # 4. Exact FMSB thesis protocol line just below title box + Student identity
-    lang = normalize_lang(getattr(project, "language", "fr"))
-    labels = get_doc_labels(lang)
     degree = (cover.degree_label or ("Medical Doctor Thesis" if lang == "en" else "Doctorat en Médecine Générale")).strip()
     add_cover_para(
         labels["cover_written_by"].format(degree=degree),
@@ -653,6 +736,7 @@ def build_fmsb_cover_page(
     extra_codir_lines = max(0, len(codir_list) - 1) * 3
     approx_used_pt = (
         130 + (extra_header_lines * 9)  # header table
+        + (32 if dept_above_title else 0)  # optional full-width department line
         + (title_box_h_cm * 28.35)
         + 105  # degree + student + matricule
         + (95 + extra_codir_lines * 18)  # supervision table

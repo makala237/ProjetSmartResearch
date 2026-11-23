@@ -776,6 +776,36 @@ export function Module2Editor({
                   </select>
                 </div>
               </div>
+              <div>
+                <label className="block text-[11px] font-medium text-slate-600">
+                  {lang === "en"
+                    ? "Department placement (cover page)"
+                    : "Position du département (page de garde)"}
+                </label>
+                <select
+                  data-testid="cover-dept-layout-select"
+                  value={fmt.cover_department_layout ?? "header_columns"}
+                  onChange={(e) =>
+                    setFmt({
+                      ...fmt,
+                      cover_department_layout: e.target
+                        .value as FormattingRules["cover_department_layout"],
+                    })
+                  }
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
+                >
+                  <option value="header_columns">
+                    {lang === "en"
+                      ? "Inside bilingual header columns (Classic)"
+                      : "Dans les colonnes d'en-tête (Classique)"}
+                  </option>
+                  <option value="above_title">
+                    {lang === "en"
+                      ? "Centered above protocol title (FMSB / Fokou)"
+                      : "Centré au-dessus du titre (FMSB / Fokou)"}
+                  </option>
+                </select>
+              </div>
               <div className="flex items-center justify-between gap-2">
                 <label className="text-[11px] font-medium text-slate-600">
                   {lang === "en" ? "Border color" : "Couleur des bordures"}
@@ -1299,6 +1329,8 @@ export function Module2Editor({
                 <div>
                   {(() => {
                     const ch = getFormattedCoverHeader(project.cover);
+                    const deptAboveTitle =
+                      (fmt.cover_department_layout ?? "header_columns") === "above_title";
                     const uniLogoSrc = project.cover.university_logo_url
                       ? withAuthToken(project.cover.university_logo_url)
                       : "/tamplates/fmsb_uy1_logo.png";
@@ -1306,84 +1338,103 @@ export function Module2Editor({
                       ? withAuthToken(project.cover.faculty_logo_url)
                       : null;
                     return (
-                      <div
-                        className={`grid grid-cols-12 items-center gap-2 font-bold leading-tight text-slate-800 ${
-                          ch.hasOptionalTiers ? "text-[9px]" : "text-[10px]"
-                        }`}
-                      >
-                        <div className="col-span-5 text-center">
-                          <div>RÉPUBLIQUE DU CAMEROUN</div>
-                          <div className="font-normal italic">Paix – Travail – Patrie</div>
-                          <div className="text-[8px]">************</div>
-                          <div>MINISTÈRE DE L&apos;ENSEIGNEMENT SUPÉRIEUR</div>
-                          <div className="text-[8px]">**************</div>
-                          <div>{ch.universityFr}</div>
-                          {ch.universityContactsFr.map((ln, idx) => (
-                            <div key={idx} className="text-[8.5px] font-normal text-slate-700">
-                              {ln}
-                            </div>
-                          ))}
-                          <div className="text-[8px]">**************</div>
-                          <div>{ch.facultyFr}</div>
-                          <div className="text-[8px]">**************</div>
-                          <div className="mt-0.5">DÉPARTEMENT DE {ch.departmentFr}</div>
-                          {ch.facultyContactsFr.length > 0 && (
-                            <>
-                              <div className="text-[8px]">**************</div>
-                              {ch.facultyContactsFr.map((ln, idx) => (
-                                <div key={idx} className="text-[8.5px] font-normal text-slate-700">
-                                  {ln}
-                                </div>
-                              ))}
-                            </>
-                          )}
-                        </div>
-                        <div className="col-span-2 flex flex-col items-center justify-center gap-1.5">
-                          <img
-                            src={uniLogoSrc}
-                            alt="Logo Université"
-                            className={`w-auto object-contain ${facLogoSrc ? "max-h-14" : "max-h-24"}`}
-                          />
-                          {facLogoSrc && (
+                      <>
+                        <div
+                          className={`grid grid-cols-12 items-center gap-2 font-bold leading-tight text-slate-800 ${
+                            ch.hasOptionalTiers ? "text-[9px]" : "text-[10px]"
+                          }`}
+                        >
+                          <div className="col-span-5 text-center">
+                            <div>RÉPUBLIQUE DU CAMEROUN</div>
+                            <div className="font-normal italic">Paix – Travail – Patrie</div>
+                            <div className="text-[8px]">************</div>
+                            <div>MINISTÈRE DE L&apos;ENSEIGNEMENT SUPÉRIEUR</div>
+                            <div className="text-[8px]">**************</div>
+                            <div>{ch.universityFr}</div>
+                            {ch.universityContactsFr.map((ln, idx) => (
+                              <div key={idx} className="text-[8.5px] font-normal text-slate-700">
+                                {ln}
+                              </div>
+                            ))}
+                            <div className="text-[8px]">**************</div>
+                            <div>{ch.facultyFr}</div>
+                            <div className="text-[8px]">**************</div>
+                            {!deptAboveTitle && (
+                              <div className="mt-0.5">DÉPARTEMENT DE {ch.departmentFr}</div>
+                            )}
+                            {ch.facultyContactsFr.length > 0 && (
+                              <>
+                                {!deptAboveTitle && <div className="text-[8px]">**************</div>}
+                                {ch.facultyContactsFr.map((ln, idx) => (
+                                  <div key={idx} className="text-[8.5px] font-normal text-slate-700">
+                                    {ln}
+                                  </div>
+                                ))}
+                              </>
+                            )}
+                          </div>
+                          <div className="col-span-2 flex flex-col items-center justify-center gap-1.5">
                             <img
-                              src={facLogoSrc}
-                              alt="Logo Faculté"
-                              className="max-h-14 w-auto object-contain"
+                              src={uniLogoSrc}
+                              alt="Logo Université"
+                              className={`w-auto object-contain ${facLogoSrc ? "max-h-14" : "max-h-24"}`}
                             />
-                          )}
+                            {facLogoSrc && (
+                              <img
+                                src={facLogoSrc}
+                                alt="Logo Faculté"
+                                className="max-h-14 w-auto object-contain"
+                              />
+                            )}
+                          </div>
+                          <div className="col-span-5 text-center">
+                            <div>REPUBLIC OF CAMEROON</div>
+                            <div className="font-normal italic">Peace – Work – Fatherland</div>
+                            <div className="text-[8px]">************</div>
+                            <div>MINISTRY OF HIGHER EDUCATION</div>
+                            <div className="text-[8px]">************</div>
+                            <div>{ch.universityEn}</div>
+                            {ch.universityContactsEn.map((ln, idx) => (
+                              <div key={idx} className="text-[8.5px] font-normal text-slate-700">
+                                {ln}
+                              </div>
+                            ))}
+                            <div className="text-[8px]">************</div>
+                            <div>{ch.facultyEn}</div>
+                            <div className="text-[8px]">************</div>
+                            {!deptAboveTitle && (
+                              <div className="mt-0.5">DEPARTMENT OF {ch.departmentEn}</div>
+                            )}
+                            {ch.facultyContactsEn.length > 0 && (
+                              <>
+                                {!deptAboveTitle && <div className="text-[8px]">************</div>}
+                                {ch.facultyContactsEn.map((ln, idx) => (
+                                  <div key={idx} className="text-[8.5px] font-normal text-slate-700">
+                                    {ln}
+                                  </div>
+                                ))}
+                              </>
+                            )}
+                          </div>
                         </div>
-                        <div className="col-span-5 text-center">
-                          <div>REPUBLIC OF CAMEROON</div>
-                          <div className="font-normal italic">Peace – Work – Fatherland</div>
-                          <div className="text-[8px]">************</div>
-                          <div>MINISTRY OF HIGHER EDUCATION</div>
-                          <div className="text-[8px]">************</div>
-                          <div>{ch.universityEn}</div>
-                          {ch.universityContactsEn.map((ln, idx) => (
-                            <div key={idx} className="text-[8.5px] font-normal text-slate-700">
-                              {ln}
-                            </div>
-                          ))}
-                          <div className="text-[8px]">************</div>
-                          <div>{ch.facultyEn}</div>
-                          <div className="text-[8px]">************</div>
-                          <div className="mt-0.5">DEPARTMENT OF {ch.departmentEn}</div>
-                          {ch.facultyContactsEn.length > 0 && (
-                            <>
-                              <div className="text-[8px]">************</div>
-                              {ch.facultyContactsEn.map((ln, idx) => (
-                                <div key={idx} className="text-[8.5px] font-normal text-slate-700">
-                                  {ln}
-                                </div>
-                              ))}
-                            </>
-                          )}
-                        </div>
-                      </div>
+                        {deptAboveTitle && (
+                          <div
+                            data-testid="cover-dept-above-title"
+                            className="mt-5 mb-2 text-center font-bold uppercase text-slate-900"
+                            style={{ fontSize: "12pt", lineHeight: 1.25 }}
+                          >
+                            {lang === "en" ? ch.departmentFullEn : ch.departmentFullFr}
+                          </div>
+                        )}
+                      </>
                     );
                   })()}
                   <div
-                    className="my-6 px-4 py-5 font-bold text-slate-900"
+                    className={`${
+                      (fmt.cover_department_layout ?? "header_columns") === "above_title"
+                        ? "mt-2 mb-6"
+                        : "my-6"
+                    } px-4 py-5 font-bold text-slate-900`}
                     style={{
                       fontSize: "18pt",
                       lineHeight: 1.3,

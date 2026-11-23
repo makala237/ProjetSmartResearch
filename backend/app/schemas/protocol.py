@@ -279,6 +279,7 @@ class FormattingRules(BaseModel):
     page_numbering: str = "bottom-center"
     chapter_box_style: str = "rounded"  # "square" | "rounded" | "minimal"
     cover_border_style: str = "double"  # "double" | "single" | "none"
+    cover_department_layout: str = "header_columns"  # "header_columns" | "above_title"
     border_color: str = "#6C2826"
     box_border_width_pt: float = 2.5
     box_corner_radius_pct: int = 18
@@ -287,6 +288,10 @@ class FormattingRules(BaseModel):
 
     @model_validator(mode="after")
     def _sync_border_geometry(self) -> "FormattingRules":
+        raw_dept_layout = (self.cover_department_layout or "header_columns").strip().lower()
+        if raw_dept_layout not in {"header_columns", "above_title"}:
+            raw_dept_layout = "header_columns"
+        self.cover_department_layout = raw_dept_layout
         self.box_border_width_pt = max(0.75, min(8.0, float(self.box_border_width_pt or 2.5)))
         self.header_footer_rule_width_pt = max(
             0.25, min(6.0, float(self.header_footer_rule_width_pt or 0.5))

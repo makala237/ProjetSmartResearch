@@ -229,6 +229,7 @@ export interface FormattingRules {
   box_corner_radius_pct?: number;
   header_footer_rule_color?: string;
   header_footer_rule_width_pt?: number;
+  cover_department_layout?: "header_columns" | "above_title";
 }
 
 export type ImportMode = "skeleton" | "internal_source";

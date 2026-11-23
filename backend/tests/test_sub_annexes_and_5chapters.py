@@ -16,13 +16,21 @@ if str(BACKEND_ROOT) not in sys.path:
 
 from app.data.fmsb_canvas import DEDICATED_SUB_ANNEX_IDS, FMSB_SECTIONS
 from app.data.i18n import get_chapter_titles, get_localized_canvas
-from app.schemas.protocol import CoverMetadata, ProtocolProject, SectionState, StepStatus, VariableItem
+from app.schemas.protocol import (
+    CoverMetadata,
+    FormattingRules,
+    ProtocolProject,
+    SectionState,
+    StepStatus,
+    VariableItem,
+)
 from app.services.annexe_engine import (
     extract_all_sub_annexes_from_blocks,
     generate_sub_annex_content,
     resolve_faculty_admin_context,
 )
 from app.services.annexes_generator import build_annexes_pack
+from app.services.cover_builder import format_department_full_line
 from app.services.crf_extractor import (
     compile_crf_fields_hybrid,
     detect_crf_boundaries_in_blocks,
@@ -383,6 +391,112 @@ class TestSubAnnexesAnd5Chapters(unittest.TestCase):
             self.assertEqual(level_by_title.get("I.1. Situation du problème et contexte"), 2)
             self.assertEqual(level_by_title.get("CHAPITRE IV : RÉFÉRENCES"), 1)
             self.assertEqual(level_by_title.get("CHAPITRE V : ANNEXES"), 1)
+
+    def test_cover_department_layout_option_header_vs_above_title(self) -> None:
+        # 1. Helper formatting & preposition handling (without duplicating prefixes)
+        self.assertEqual(
+            format_department_full_line("Santé Publique", True),
+            "DÉPARTEMENT DE SANTÉ PUBLIQUE",
+        )
+        self.assertEqual(
+            format_department_full_line(
+                "des Sciences Morphologiques et Anatomie Pathologique", True
+            ),
+            "DÉPARTEMENT DES SCIENCES MORPHOLOGIQUES ET ANATOMIE PATHOLOGIQUE",
+        )
+        self.assertEqual(
+            format_department_full_line("Département de la Mère et de l'Enfant", True),
+            "DÉPARTEMENT DE LA MÈRE ET DE L'ENFANT",
+        )
+        self.assertEqual(
+            format_department_full_line("Anatomie Pathologique", True),
+            "DÉPARTEMENT D'ANATOMIE PATHOLOGIQUE",
+        )
+        self.assertEqual(
+            format_department_full_line("Department of Public Health", False),
+            "DEPARTMENT OF PUBLIC HEALTH",
+        )
+        self.assertEqual(
+            format_department_full_line("Morphological Sciences", False),
+            "DEPARTMENT OF MORPHOLOGICAL SCIENCES",
+        )
+
+        # Unknown value falls back cleanly to classic lateral header columns
+        self.assertEqual(
+            FormattingRules(cover_department_layout="invalid").cover_department_layout,
+            "header_columns",
+        )
+
+        cover = CoverMetadata(
+            title="Aspects épidémiologiques et anatomopathologiques des lésions gastriques",
+            department_fr="des Sciences Morphologiques et Anatomie Pathologique",
+            department_en="Morphological Sciences and Pathology",
+            faculty_po_box="BP 1364 Yaoundé",
+            faculty_email="contact@fmsb.cm",
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            # 2. Classic default: department inside lateral header columns
+            proj_classic = _make_full_project("test-dept-header", cover=cover)
+            proj_classic.formatting = FormattingRules(cover_department_layout="header_columns")
+            out_classic = Path(tmp) / "classic_cover.docx"
+            compile_protocol_docx(proj_classic, out_classic)
+            doc_classic = Document(str(out_classic))
+            fr_cell_classic = doc_classic.tables[0].rows[0].cells[0].text
+            en_cell_classic = doc_classic.tables[0].rows[0].cells[2].text
+            self.assertIn("DÉPARTEMENT DE", fr_cell_classic)
+            self.assertIn("SCIENCES MORPHOLOGIQUES ET ANATOMIE PATHOLOGIQUE", fr_cell_classic)
+            self.assertIn("DEPARTMENT OF", en_cell_classic)
+            self.assertIn("MORPHOLOGICAL SCIENCES AND PATHOLOGY", en_cell_classic)
+
+            # 3. Fokou/FMSB above-title option (French): omitted from header columns, centered above Title Box
+            proj_above_fr = _make_full_project("test-dept-above-fr", cover=cover)
+            proj_above_fr.formatting = FormattingRules(cover_department_layout="above_title")
+            out_above_fr = Path(tmp) / "above_title_fr.docx"
+            compile_protocol_docx(proj_above_fr, out_above_fr)
+            doc_above_fr = Document(str(out_above_fr))
+            fr_lines = [p.text.strip() for p in doc_above_fr.tables[0].rows[0].cells[0].paragraphs if p.text.strip()]
+            en_lines = [p.text.strip() for p in doc_above_fr.tables[0].rows[0].cells[2].paragraphs if p.text.strip()]
+            self.assertNotIn("DÉPARTEMENT", " ".join(fr_lines))
+            self.assertNotIn("SCIENCES MORPHOLOGIQUES", " ".join(fr_lines))
+            self.assertNotIn("DEPARTMENT", " ".join(en_lines))
+            self.assertNotIn("MORPHOLOGICAL", " ".join(en_lines))
+            for lines in (fr_lines, en_lines):
+                for a, b in zip(lines, lines[1:]):
+                    self.assertFalse(
+                        set(a) == {"*"} and set(b) == {"*"},
+                        f"Redundant adjacent star rows found: {lines}",
+                    )
+
+            body_nodes = list(doc_above_fr.element.body)
+            dept_idx = None
+            title_box_idx = None
+            ns = {"w": W_NS}
+            expected_fr = "DÉPARTEMENT DES SCIENCES MORPHOLOGIQUES ET ANATOMIE PATHOLOGIQUE"
+            for i, node in enumerate(body_nodes):
+                if node.tag.endswith("}p"):
+                    txt = "".join(t.text or "" for t in node.findall(".//w:t", ns)).strip()
+                    if txt == expected_fr and dept_idx is None:
+                        dept_idx = i
+                    if cover.title in txt and node.findall(".//w:drawing", ns) and title_box_idx is None:
+                        title_box_idx = i
+            self.assertIsNotNone(dept_idx, "Centered FR department paragraph missing from cover body")
+            self.assertIsNotNone(title_box_idx, "Cover Title Box drawing paragraph not found")
+            self.assertLess(dept_idx, title_box_idx, "Department must appear above the Title Box")
+
+            # 4. Fokou/FMSB above-title option (English)
+            proj_above_en = _make_full_project("test-dept-above-en", cover=cover)
+            proj_above_en.language = "en"
+            proj_above_en.formatting = FormattingRules(cover_department_layout="above_title")
+            out_above_en = Path(tmp) / "above_title_en.docx"
+            compile_protocol_docx(proj_above_en, out_above_en)
+            doc_above_en = Document(str(out_above_en))
+            body_texts_en = [
+                "".join(t.text or "" for t in n.findall(".//w:t", ns)).strip()
+                for n in doc_above_en.element.body
+                if n.tag.endswith("}p")
+            ]
+            self.assertIn("DEPARTMENT OF MORPHOLOGICAL SCIENCES AND PATHOLOGY", body_texts_en)
 
 
 if __name__ == "__main__":

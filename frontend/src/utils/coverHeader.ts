@@ -11,7 +11,50 @@ export interface FormattedCoverHeader {
   facultyContactsEn: string[];
   departmentFr: string;
   departmentEn: string;
+  departmentFullFr: string;
+  departmentFullEn: string;
   hasOptionalTiers: boolean;
+}
+
+export function formatDepartmentFullLine(
+  raw: string | undefined,
+  isFrench: boolean
+): string {
+  const txt = (raw || "").replace(/\s+/g, " ").trim();
+  if (isFrench) {
+    if (!txt) {
+      return "DÉPARTEMENT DE SANTÉ PUBLIQUE";
+    }
+    if (/^d[ée]partement\s+(?:de\s+la\s+|de\s+l['’]\s*|du\s+|des\s+|d['’]\s*|de\s+)/i.test(txt)) {
+      return txt.replace(/^d[ée]partement\b/i, "DÉPARTEMENT").toUpperCase();
+    }
+    const stripped = txt.replace(/^d[ée]partement\s*/i, "").trim();
+    if (!stripped) {
+      return "DÉPARTEMENT DE SANTÉ PUBLIQUE";
+    }
+    if (/^(?:de\s+la\s+|de\s+l['’]\s*|du\s+|des\s+|d['’]\s*|de\s+)/i.test(stripped)) {
+      return `DÉPARTEMENT ${stripped}`.toUpperCase();
+    }
+    if (/^[AEIOUYÀÂÄÉÈÊËÎÏÔÖÙÛÜŸ]/i.test(stripped)) {
+      return `DÉPARTEMENT D'${stripped}`.toUpperCase();
+    }
+    return `DÉPARTEMENT DE ${stripped}`.toUpperCase();
+  }
+
+  if (!txt) {
+    return "DEPARTMENT OF PUBLIC HEALTH";
+  }
+  if (/^departe?ment\s+of\b/i.test(txt)) {
+    return txt.replace(/^departe?ment\b/i, "DEPARTMENT").toUpperCase();
+  }
+  const stripped = txt.replace(/^departe?ment\s*/i, "").trim();
+  if (!stripped) {
+    return "DEPARTMENT OF PUBLIC HEALTH";
+  }
+  if (/^of\s+/i.test(stripped)) {
+    return `DEPARTMENT ${stripped}`.toUpperCase();
+  }
+  return `DEPARTMENT OF ${stripped}`.toUpperCase();
 }
 
 export function formatBilingualContactTier(
@@ -90,6 +133,8 @@ export function getFormattedCoverHeader(
     facultyContactsEn: facContacts.en,
     departmentFr,
     departmentEn,
+    departmentFullFr: formatDepartmentFullLine(cover?.department_fr, true),
+    departmentFullEn: formatDepartmentFullLine(cover?.department_en, false),
     hasOptionalTiers: uniContacts.fr.length > 0 || facContacts.fr.length > 0,
   };
 }
