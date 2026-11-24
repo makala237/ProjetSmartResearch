@@ -246,6 +246,8 @@ export interface ModelRoutingEntry {
 export interface UserModelRoutingConfig {
   enabled: boolean;
   models: ModelRoutingEntry[];
+  copilot_text_models?: ModelRoutingEntry[];
+  copilot_voice_models?: ModelRoutingEntry[];
 }
 
 export interface ModelCatalogItemOut {
@@ -268,6 +270,7 @@ export interface ModelRoutingPresetOut {
 
 export interface ModelCatalogResponse {
   models: ModelCatalogItemOut[];
+  live_models?: ModelCatalogItemOut[];
   presets: ModelRoutingPresetOut[];
   note: string;
 }

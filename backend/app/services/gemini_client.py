@@ -75,6 +75,8 @@ def set_ai_routing_policy(
     custom_model_chain: Optional[List[str]] = None,
     custom_chain_enabled: bool = False,
     custom_chain_skipped: Optional[List[Dict[str, Any]]] = None,
+    copilot_text_chain: Optional[List[str]] = None,
+    copilot_voice_chain: Optional[List[str]] = None,
 ) -> None:
     """Bind per-request Gemini reasoning routing policy, custom ordered chain, and assigned API key."""
     _ai_routing_policy.set(
@@ -88,6 +90,8 @@ def set_ai_routing_policy(
             "custom_model_chain": [str(m).strip() for m in (custom_model_chain or []) if str(m).strip()],
             "custom_chain_enabled": bool(custom_chain_enabled),
             "custom_chain_skipped": list(custom_chain_skipped or []),
+            "copilot_text_chain": [str(m).strip() for m in (copilot_text_chain or []) if str(m).strip()],
+            "copilot_voice_chain": [str(m).strip() for m in (copilot_voice_chain or []) if str(m).strip()],
         }
     )
 
@@ -202,8 +206,23 @@ class GeminiRouter:
     def _resolve_candidates(self, role: str) -> Tuple[List[str], bool]:
         """Resolve ordered model fallback chain (per-user custom chain or system default)."""
         chains = self.settings.model_chains()
-        candidates = list(chains.get(role, chains["drafting"]))
+        if role == "copilot_text":
+            candidates = [
+                "gemini-3.8-flash",
+                "gemini-3.5-flash",
+                "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite",
+            ]
+        else:
+            candidates = list(chains.get(role, chains["drafting"]))
         policy = get_ai_routing_policy()
+
+        if role == "copilot_text" and policy.get("copilot_text_chain"):
+            resolved = list(policy["copilot_text_chain"])
+            cap_active = bool(policy.get("custom_chain_skipped"))
+            healthy = [m for m in resolved if not self._is_model_in_cooldown(m)]
+            cooled = [m for m in resolved if self._is_model_in_cooldown(m)]
+            return healthy + cooled, cap_active
 
         if policy.get("custom_chain_enabled") and policy.get("custom_model_chain"):
             custom_ordered = list(policy["custom_model_chain"])
@@ -241,6 +260,15 @@ class GeminiRouter:
         cooled = [m for m in resolved if self._is_model_in_cooldown(m)]
         final_chain = healthy + cooled
         return final_chain, cap_active
+
+    def resolve_copilot_voice_models(self) -> List[str]:
+        """Resolve ordered Live API (bidiGenerateContent) model chain for Assistant Smart Research voice."""
+        policy = get_ai_routing_policy()
+        custom_voice = list(policy.get("copilot_voice_chain") or [])
+        resolved = custom_voice if custom_voice else ["gemini-3.8-live", "gemini-2.5-flash-native-audio-latest"]
+        healthy = [m for m in resolved if not self._is_model_in_cooldown(m)]
+        cooled = [m for m in resolved if self._is_model_in_cooldown(m)]
+        return healthy + cooled
 
     def generate_with_fallback(
         self,

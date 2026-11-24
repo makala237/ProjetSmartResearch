@@ -373,6 +373,46 @@ class InternalSourceDocument(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class SectionVersionEntry(BaseModel):
+    version_id: str = Field(default_factory=lambda: str(uuid4())[:10])
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    source: str = "generation"  # generation | fix | manual | copilot | restore
+    note: str = ""
+    content_markdown: str = ""
+    cited_ref_ids: List[str] = Field(default_factory=list)
+    word_count: int = 0
+
+
+class SupervisorDirectiveItem(BaseModel):
+    directive_id: str = Field(default_factory=lambda: str(uuid4())[:10])
+    text: str
+    source: str = "manual"
+    active: bool = True
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class CopilotProposal(BaseModel):
+    section_id: str
+    proposed_markdown: str
+    summary: str = ""
+    applied: bool = False
+
+
+class CopilotMessage(BaseModel):
+    message_id: str = Field(default_factory=lambda: str(uuid4())[:10])
+    role: str = "user"  # user | assistant
+    content: str
+    intent: str = "answer"
+    model_used: str = ""
+    active_module: str = ""
+    active_section_id: Optional[str] = None
+    proposal: Optional[CopilotProposal] = None
+    suggested_directive: Optional[str] = None
+    restore_version_id: Optional[str] = None
+    target_module: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class SectionState(BaseModel):
     section_id: str
     status: StepStatus = StepStatus.PENDING
@@ -384,6 +424,7 @@ class SectionState(BaseModel):
     custom_tables: List[SectionTable] = Field(default_factory=list)
     custom_diagrams: List[SectionDiagram] = Field(default_factory=list)
     internal_library: List[InternalLibraryEntry] = Field(default_factory=list)
+    versions: List[SectionVersionEntry] = Field(default_factory=list)
     suppress_structured_table: bool = False
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -455,6 +496,8 @@ class ProtocolProject(BaseModel):
     budget: List[BudgetItem] = Field(default_factory=list)
     annexes_config: AnnexesConfig = Field(default_factory=AnnexesConfig)
     formatting: FormattingRules = Field(default_factory=FormattingRules)
+    supervisor_directives: List[SupervisorDirectiveItem] = Field(default_factory=list)
+    copilot_messages: List[CopilotMessage] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

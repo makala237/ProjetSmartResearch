@@ -17,6 +17,10 @@ from app.schemas.protocol import (
     SectionTable,
     StepStatus,
 )
+from app.services.copilot_service import (
+    format_supervisor_directives_block,
+    snapshot_section_version,
+)
 from app.services.gemini_client import gemini_router
 from app.services.humanizer import (
     HUMAN_ACADEMIC_STYLE_INSTRUCTIONS,
@@ -594,6 +598,11 @@ def draft_section_with_ai(
         det_notes = deterministic_section_checks(project, section_id, clean_md)
         current_sec = project.sections.get(section_id)
         if current_sec is not None:
+            snapshot_section_version(
+                current_sec,
+                source="generation",
+                note="Avant regénération du budget",
+            )
             current_sec.content_markdown = clean_md
             current_sec.content_html = clean_html
             current_sec.status = StepStatus.IN_PROGRESS
@@ -616,6 +625,11 @@ def draft_section_with_ai(
     if section_id == "annexe_fiche_collecte":
         from app.services.crf_builder import generate_or_improve_crf_with_ai
 
+        snapshot_section_version(
+            project.sections.get(section_id),
+            source="generation",
+            note="Avant regénération Fiche de collecte",
+        )
         crf_res = generate_or_improve_crf_with_ai(
             project,
             user_instruction=user_instruction or "",
@@ -640,6 +654,11 @@ def draft_section_with_ai(
     ):
         from app.services.annexe_engine import generate_sub_annex_content
 
+        snapshot_section_version(
+            project.sections.get(section_id),
+            source="generation",
+            note="Avant regénération Annexe",
+        )
         bilingual = "bilingue" in (user_instruction or "").lower() or "english" in (user_instruction or "").lower()
         ann_res = generate_sub_annex_content(
             project,
@@ -730,6 +749,7 @@ def draft_section_with_ai(
 
     cames_block = _format_cames_granularity_block(spec, lang=lang)
     intro_budget_block = _build_intro_shared_budget_block(project, section_id, lang=lang)
+    supervisor_block = format_supervisor_directives_block(project)
     lang_directive = get_language_prompt_directive(lang)
     style_instructions = get_human_style_instructions(lang)
 
@@ -743,6 +763,8 @@ TARGET SECTION: {spec.chapter_title} — {spec.title}
 DESCRIPTION: {spec.description}
 EXPECTED POINTS:
 {chr(10).join('- ' + g for g in spec.guidance_points)}
+
+{supervisor_block}
 
 {cames_block}
 
@@ -832,6 +854,11 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
     det_notes = deterministic_section_checks(project, section_id, clean_md)
 
     if current_sec is not None:
+        snapshot_section_version(
+            current_sec,
+            source="generation",
+            note=f"Avant rédaction IA ({res['model_used']})",
+        )
         current_sec.content_markdown = clean_md
         current_sec.content_html = clean_html
         current_sec.status = StepStatus.IN_PROGRESS
@@ -1036,6 +1063,7 @@ def fix_section_issues_with_ai(
 
     cames_block = _format_cames_granularity_block(spec, lang=lang)
     intro_budget_block = _build_intro_shared_budget_block(project, section_id, lang=lang)
+    supervisor_block = format_supervisor_directives_block(project)
     lang_directive = get_language_prompt_directive(lang)
     style_instructions = get_human_style_instructions(lang)
 
@@ -1045,6 +1073,8 @@ The investigator authorizes you to fix every CAMES/FMSB audit issue flagged in t
 
 SECTION: {spec.chapter_title} — {spec.title}
 EXPECTATIONS: {spec.guidance_points}
+
+{supervisor_block}
 
 {cames_block}
 
@@ -1109,6 +1139,11 @@ Instructions:
     det_notes = deterministic_section_checks(project, section_id, clean_md)
 
     if sec is not None:
+        snapshot_section_version(
+            sec,
+            source="fix",
+            note="Avant correction CAMES",
+        )
         sec.content_markdown = clean_md
         sec.content_html = clean_html
         if len(det_notes) == 0:

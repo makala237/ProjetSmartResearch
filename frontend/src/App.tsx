@@ -27,6 +27,7 @@ import {
   setUnauthorizedHandler,
 } from "./api/client";
 import { AdminPortal } from "./components/AdminPortal";
+import { AssistantSmartResearchWidget } from "./components/AssistantSmartResearchWidget";
 import { ChangePasswordModal } from "./components/ChangePasswordModal";
 import { LoginScreen } from "./components/LoginScreen";
 import { Module1Assistant } from "./components/Module1Assistant";
@@ -1540,6 +1541,25 @@ export default function App() {
           </>
         )}
       </main>
+
+      {currentUser && activeProject && activeView === "studio" && (
+        <AssistantSmartResearchWidget
+          project={activeProject}
+          activeModule={activeModule}
+          selectedSectionId={selectedSectionId}
+          sectionTitle={
+            canvas.find((c) => c.id === selectedSectionId)?.title || selectedSectionId
+          }
+          lang={lang}
+          onProjectUpdate={(updated) => {
+            setActiveProject(updated);
+            setProjects((prev) =>
+              prev.map((p) => (p.project_id === updated.project_id ? updated : p))
+            );
+          }}
+          onNavigateModule={(modKey) => setActiveModule(modKey)}
+        />
+      )}
 
       {/* Fixed Mobile Bottom Navigation Bar (< md) */}
       {(activeProject || isAdmin) && (

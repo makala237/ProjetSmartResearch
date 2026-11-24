@@ -28,6 +28,8 @@ import type {
   AuditResult,
   BudgetItem,
   CanvasSectionSpec,
+  CopilotChatResponse,
+  CopilotStatusResponse,
   CoverMetadata,
   CRFBoundaryDetection,
   CRFExtractAndSyncResult,
@@ -51,6 +53,7 @@ import type {
   ResearchReport,
   ResearchScope,
   SectionOrchestrationTrace,
+  SectionVersionEntry,
   SegmentReport,
   StepStatus,
   SyncStructuredReport,
@@ -1291,4 +1294,99 @@ export const api = {
 
   adminGetModelCatalog: () =>
     request<ModelCatalogResponse>("/api/admin/model-catalog"),
+
+  getCopilotStatus: (projectId: string) =>
+    request<CopilotStatusResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/copilot/status`
+    ),
+
+  copilotChat: (
+    projectId: string,
+    payload: {
+      message: string;
+      active_module: string;
+      active_section_id?: string;
+      mode?: "auto" | "question" | "edit";
+    }
+  ) =>
+    request<CopilotChatResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/copilot/chat`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  applyCopilotProposal: (
+    projectId: string,
+    payload: {
+      section_id: string;
+      proposed_markdown: string;
+      message_id?: string;
+    }
+  ) =>
+    request<ProtocolProject>(
+      `/api/projects/${encodeURIComponent(projectId)}/copilot/apply-proposal`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  clearCopilotMessages: (projectId: string) =>
+    request<ProtocolProject>(
+      `/api/projects/${encodeURIComponent(projectId)}/copilot/messages`,
+      { method: "DELETE" }
+    ),
+
+  listSectionVersions: (projectId: string, sectionId: string) =>
+    request<{ section_id: string; versions: SectionVersionEntry[] }>(
+      `/api/projects/${encodeURIComponent(projectId)}/sections/${encodeURIComponent(
+        sectionId
+      )}/versions`
+    ),
+
+  restoreSectionVersion: (
+    projectId: string,
+    sectionId: string,
+    versionId: string
+  ) =>
+    request<ProtocolProject>(
+      `/api/projects/${encodeURIComponent(projectId)}/sections/${encodeURIComponent(
+        sectionId
+      )}/versions/${encodeURIComponent(versionId)}/restore`,
+      { method: "POST" }
+    ),
+
+  createDirective: (projectId: string, text: string, source = "manual") =>
+    request<ProtocolProject>(
+      `/api/projects/${encodeURIComponent(projectId)}/directives`,
+      {
+        method: "POST",
+        body: JSON.stringify({ text, source }),
+      }
+    ),
+
+  updateDirective: (
+    projectId: string,
+    directiveId: string,
+    payload: { text?: string; active?: boolean }
+  ) =>
+    request<ProtocolProject>(
+      `/api/projects/${encodeURIComponent(projectId)}/directives/${encodeURIComponent(
+        directiveId
+      )}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  deleteDirective: (projectId: string, directiveId: string) =>
+    request<ProtocolProject>(
+      `/api/projects/${encodeURIComponent(projectId)}/directives/${encodeURIComponent(
+        directiveId
+      )}`,
+      { method: "DELETE" }
+    ),
 };

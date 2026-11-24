@@ -1,5 +1,5 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 
@@ -59,6 +59,7 @@ AI_ACTION_COSTS: Dict[str, int] = {
     "generate_crf": 2,
     "humanize_protocol": 3,
     "pptx_generate_all": 5,
+    "copilot_chat": 1,
 }
 
 
@@ -277,14 +278,31 @@ def assert_ai_quota_available(
     daily_38 = get_student_daily_38_usage(store, user)
     eff_key_id, eff_raw_key = resolve_user_gemini_api_key(store, user)
     custom_chain = resolve_user_model_chain(store, user)
-    if custom_chain["enabled"] and not custom_chain["eligible_models"]:
-        only_tpm = any(item.get("reason") == "tpm_cap" for item in custom_chain["skipped"])
+
+    active_override_models = (
+        custom_chain["copilot_text_models"]
+        if (action == "copilot_chat" and custom_chain.get("has_copilot_text_chain"))
+        else custom_chain["eligible_models"]
+    )
+    has_active_override = (
+        custom_chain.get("has_copilot_text_chain")
+        if (action == "copilot_chat" and custom_chain.get("has_copilot_text_chain"))
+        else custom_chain.get("has_main_chain")
+    )
+    skipped_items = (
+        custom_chain.get("copilot_text_skipped", [])
+        if (action == "copilot_chat" and custom_chain.get("has_copilot_text_chain"))
+        else custom_chain["skipped"]
+    )
+
+    if custom_chain["enabled"] and has_active_override and not active_override_models:
+        only_tpm = any(item.get("reason") == "tpm_cap" for item in skipped_items)
         if only_tpm:
             raise HTTPException(
                 status_code=429,
                 detail={
                     "code": "AI_MODEL_CHAIN_TPM_EXHAUSTED",
-                    "skipped": custom_chain["skipped"],
+                    "skipped": skipped_items,
                     "message": bi(
                         "Limite de débit (TPM) momentanément atteinte sur tous les modèles configurés pour votre compte. "
                         "Veuillez patienter quelques secondes avant de relancer.",
@@ -297,7 +315,7 @@ def assert_ai_quota_available(
             status_code=429,
             detail={
                 "code": "AI_MODEL_CHAIN_RPD_EXHAUSTED",
-                "skipped": custom_chain["skipped"],
+                "skipped": skipped_items,
                 "message": bi(
                     "Plafond journalier (RPD) atteint sur tous les modèles IA configurés pour votre compte aujourd'hui. "
                     "Vos quotas journaliers seront réinitialisés demain.",
@@ -314,33 +332,21 @@ def assert_ai_quota_available(
         api_key=eff_raw_key,
         api_key_id=eff_key_id,
         custom_model_chain=custom_chain["eligible_models"],
-        custom_chain_enabled=custom_chain["enabled"],
+        custom_chain_enabled=bool(custom_chain["enabled"] and custom_chain.get("has_main_chain")),
         custom_chain_skipped=custom_chain["skipped"],
+        copilot_text_chain=custom_chain.get("copilot_text_models", []),
+        copilot_voice_chain=custom_chain.get("copilot_voice_models", []),
     )
     return max(0, cost)
 
 
-def resolve_user_model_chain(store: Any, user: Any) -> Dict[str, Any]:
-    """Evaluate a user's custom ordered model chain against today's RPD and rolling 60s TPM caps."""
-    from app.core.model_catalog import normalize_model_routing_config
-
-    cfg = normalize_model_routing_config(getattr(user, "model_routing_config", None))
-    if not cfg:
-        return {
-            "enabled": False,
-            "eligible_models": [],
-            "skipped": [],
-            "usage_by_model": {},
-        }
-
-    now = utcnow()
-    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    minute_ago = now - timedelta(seconds=60)
-    usage_by_model = store.get_user_model_usage_windows(user.id, day_start, minute_ago)
-
+def _evaluate_model_entries_against_usage(
+    entries: List[Dict[str, Any]],
+    usage_by_model: Dict[str, Dict[str, int]],
+) -> Tuple[List[str], List[Dict[str, Any]]]:
     eligible: List[str] = []
     skipped: List[Dict[str, Any]] = []
-    for entry in cfg["models"]:
+    for entry in entries:
         model_id = str(entry["model"]).strip()
         max_rpd = entry.get("max_rpd")
         max_tpm = entry.get("max_tpm")
@@ -369,11 +375,53 @@ def resolve_user_model_chain(store: Any, user: Any) -> Dict[str, Any]:
             )
             continue
         eligible.append(model_id)
+    return eligible, skipped
+
+
+def resolve_user_model_chain(store: Any, user: Any) -> Dict[str, Any]:
+    """Evaluate a user's custom ordered model chains (main + Assistant text/voice) against RPD/TPM caps."""
+    from app.core.model_catalog import normalize_model_routing_config
+
+    cfg = normalize_model_routing_config(getattr(user, "model_routing_config", None))
+    if not cfg:
+        return {
+            "enabled": False,
+            "has_main_chain": False,
+            "has_copilot_text_chain": False,
+            "eligible_models": [],
+            "skipped": [],
+            "copilot_text_models": [],
+            "copilot_text_skipped": [],
+            "copilot_voice_models": [],
+            "usage_by_model": {},
+        }
+
+    now = utcnow()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    minute_ago = now - timedelta(seconds=60)
+    usage_by_model = store.get_user_model_usage_windows(user.id, day_start, minute_ago)
+
+    main_entries = list(cfg.get("models") or [])
+    text_entries = list(cfg.get("copilot_text_models") or [])
+    voice_entries = list(cfg.get("copilot_voice_models") or [])
+
+    eligible, skipped = _evaluate_model_entries_against_usage(main_entries, usage_by_model)
+    copilot_text_eligible, copilot_text_skipped = _evaluate_model_entries_against_usage(
+        text_entries, usage_by_model
+    )
+    copilot_voice_eligible, _ = _evaluate_model_entries_against_usage(
+        voice_entries, usage_by_model
+    )
 
     return {
         "enabled": True,
+        "has_main_chain": bool(main_entries),
+        "has_copilot_text_chain": bool(text_entries),
         "eligible_models": eligible,
         "skipped": skipped,
+        "copilot_text_models": copilot_text_eligible,
+        "copilot_text_skipped": copilot_text_skipped,
+        "copilot_voice_models": copilot_voice_eligible,
         "usage_by_model": usage_by_model,
     }
 

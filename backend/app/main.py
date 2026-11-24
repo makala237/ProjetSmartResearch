@@ -48,7 +48,15 @@ from app.services.licensing_service import (
     assert_ai_quota_available,
     is_module_active,
     record_usage_and_debit,
+    resolve_user_model_chain,
 )
+from app.services.copilot_service import (
+    format_supervisor_directives_block,
+    restore_section_version,
+    run_copilot_chat,
+    snapshot_section_version,
+)
+from app.services.gemini_client import gemini_router
 from app.schemas.protocol import (
     CoverMetadata,
     CreateProjectRequest,
@@ -64,6 +72,7 @@ from app.schemas.protocol import (
     SectionDiagram,
     SectionTable,
     StepStatus,
+    SupervisorDirectiveItem,
     UpdateCRFSchemaRequest,
     UpdateFormattingRequest,
     UpdateLanguageRequest,
@@ -831,6 +840,12 @@ def update_section(
 
     sec = project.sections[section_id]
     if payload.content_markdown is not None:
+        if (payload.content_markdown or "").strip() != (sec.content_markdown or "").strip():
+            snapshot_section_version(
+                sec,
+                source="manual",
+                note="Sauvegarde manuelle",
+            )
         sec.content_markdown = payload.content_markdown
         # If HTML wasn't explicitly sent, rebuild clean HTML so Module 2 never displays stale HTML tables
         if payload.content_html is None:
@@ -2896,6 +2911,265 @@ def get_presentation_preview_png(
 def list_presentation_templates() -> Dict[str, Any]:
     """Return available FMSB/CAMES slide graphic templates."""
     return {"templates": SLIDE_TEMPLATE_CATALOG}
+
+
+class DirectiveCreateRequest(BaseModel):
+    text: str
+    source: str = "manual"
+
+
+class DirectiveUpdateRequest(BaseModel):
+    text: Optional[str] = None
+    active: Optional[bool] = None
+
+
+class CopilotChatRequest(BaseModel):
+    message: str
+    active_module: str = "module1"
+    active_section_id: Optional[str] = None
+    mode: str = "auto"
+
+
+class CopilotApplyProposalRequest(BaseModel):
+    section_id: str
+    proposed_markdown: str
+    message_id: Optional[str] = None
+
+
+@app.get("/api/projects/{project_id}/sections/{section_id}/versions")
+def list_section_versions(
+    project_id: str,
+    section_id: str,
+    current_user: UserRecord = Depends(get_active_user),
+) -> Dict[str, Any]:
+    project = get_authorized_project(project_id, current_user)
+    sec = project.sections.get(section_id)
+    if sec is None:
+        raise HTTPException(status_code=404, detail="Section inconnue dans le canevas.")
+    return {
+        "section_id": section_id,
+        "versions": [v.model_dump(mode="json") for v in reversed(sec.versions or [])],
+    }
+
+
+@app.post(
+    "/api/projects/{project_id}/sections/{section_id}/versions/{version_id}/restore",
+    response_model=ProtocolProject,
+)
+def restore_section_version_endpoint(
+    project_id: str,
+    section_id: str,
+    version_id: str,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
+    try:
+        restore_section_version(project, section_id, version_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    from app.services.working_memory import update_section_working_memory
+
+    update_section_working_memory(project, section_id)
+    return project_storage.save(project)
+
+
+@app.get("/api/projects/{project_id}/directives")
+def list_project_directives(
+    project_id: str,
+    current_user: UserRecord = Depends(get_active_user),
+) -> Dict[str, Any]:
+    project = get_authorized_project(project_id, current_user)
+    return {
+        "directives": [d.model_dump(mode="json") for d in (project.supervisor_directives or [])],
+    }
+
+
+@app.post("/api/projects/{project_id}/directives", response_model=ProtocolProject)
+def add_project_directive(
+    project_id: str,
+    payload: DirectiveCreateRequest,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    clean_text = (payload.text or "").strip()
+    if not clean_text:
+        raise HTTPException(status_code=400, detail="Le texte de la directive ne peut pas être vide.")
+    project = get_authorized_project(project_id, current_user)
+    project.supervisor_directives.append(
+        SupervisorDirectiveItem(
+            text=clean_text,
+            source=(payload.source or "manual").strip() or "manual",
+            active=True,
+        )
+    )
+    project.updated_at = datetime.now(timezone.utc)
+    return project_storage.save(project)
+
+
+@app.patch("/api/projects/{project_id}/directives/{directive_id}", response_model=ProtocolProject)
+def update_project_directive(
+    project_id: str,
+    directive_id: str,
+    payload: DirectiveUpdateRequest,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
+    target = next(
+        (d for d in project.supervisor_directives if d.directive_id == directive_id),
+        None,
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Directive introuvable.")
+    if payload.text is not None:
+        clean_text = payload.text.strip()
+        if not clean_text:
+            raise HTTPException(status_code=400, detail="Le texte de la directive ne peut pas être vide.")
+        target.text = clean_text
+    if payload.active is not None:
+        target.active = bool(payload.active)
+    project.updated_at = datetime.now(timezone.utc)
+    return project_storage.save(project)
+
+
+@app.delete("/api/projects/{project_id}/directives/{directive_id}", response_model=ProtocolProject)
+def delete_project_directive(
+    project_id: str,
+    directive_id: str,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
+    before = len(project.supervisor_directives)
+    project.supervisor_directives = [
+        d for d in project.supervisor_directives if d.directive_id != directive_id
+    ]
+    if len(project.supervisor_directives) == before:
+        raise HTTPException(status_code=404, detail="Directive introuvable.")
+    project.updated_at = datetime.now(timezone.utc)
+    return project_storage.save(project)
+
+
+@app.get("/api/projects/{project_id}/copilot/status")
+def get_copilot_status(
+    project_id: str,
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    from app.db.datastore import as_store
+
+    project = get_authorized_project(project_id, current_user)
+    chain = resolve_user_model_chain(as_store(db), current_user)
+    if chain.get("has_copilot_text_chain"):
+        text_models = list(chain.get("copilot_text_models") or [])
+    elif chain.get("has_main_chain"):
+        text_models = list(chain.get("eligible_models") or [])
+    else:
+        text_models = [
+            "gemini-3.8-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+        ]
+    voice_models = (
+        list(chain.get("copilot_voice_models") or [])
+        if chain.get("copilot_voice_models")
+        else ["gemini-3.8-live", "gemini-2.5-flash-native-audio-latest"]
+    )
+    return {
+        "text_models": text_models,
+        "voice_models": voice_models,
+        "directives_count": sum(1 for d in project.supervisor_directives if d.active),
+        "messages": [m.model_dump(mode="json") for m in (project.copilot_messages or [])],
+    }
+
+
+@app.post("/api/projects/{project_id}/copilot/chat")
+def copilot_chat_endpoint(
+    project_id: str,
+    payload: CopilotChatRequest,
+    request: Request,
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    project = get_authorized_project(project_id, current_user)
+    if not (payload.message or "").strip():
+        raise HTTPException(status_code=400, detail="Le message ne peut pas être vide.")
+
+    cost = assert_ai_quota_available(
+        db,
+        current_user,
+        module_key="module1",
+        action="copilot_chat",
+        credits_cost=1,
+    )
+    res = run_copilot_chat(
+        project,
+        message=payload.message,
+        active_module=payload.active_module,
+        active_section_id=payload.active_section_id,
+        mode=payload.mode,
+    )
+    saved = project_storage.save(project)
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module1",
+        action="copilot_chat",
+        credits_cost=cost,
+        project_id=project_id,
+        model_used=str(res.get("model_used") or ""),
+        ip_address=get_client_ip(request),
+    )
+    return {
+        "assistant_message": res["assistant_message"].model_dump(mode="json"),
+        "project": saved.model_dump(mode="json"),
+        "model_used": res["model_used"],
+        "active_text_models": res["active_text_models"],
+        "active_voice_models": res["active_voice_models"],
+    }
+
+
+@app.post("/api/projects/{project_id}/copilot/apply-proposal", response_model=ProtocolProject)
+def apply_copilot_proposal_endpoint(
+    project_id: str,
+    payload: CopilotApplyProposalRequest,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
+    sec = project.sections.get(payload.section_id)
+    if sec is None:
+        raise HTTPException(status_code=404, detail="Section introuvable.")
+    clean_md = (payload.proposed_markdown or "").strip()
+    if not clean_md:
+        raise HTTPException(status_code=400, detail="La proposition ne peut pas être vide.")
+
+    snapshot_section_version(
+        sec,
+        source="copilot",
+        note="Avant application proposition Assistant Smart Research",
+    )
+    sec.content_markdown = clean_md
+    sec.content_html = markdown_to_clean_html(clean_md)
+    now = datetime.now(timezone.utc)
+    sec.updated_at = now
+    if payload.message_id:
+        for msg in project.copilot_messages:
+            if msg.message_id == payload.message_id and msg.proposal is not None:
+                msg.proposal.applied = True
+    project.updated_at = now
+    from app.services.working_memory import update_section_working_memory
+
+    update_section_working_memory(project, payload.section_id)
+    return project_storage.save(project)
+
+
+@app.delete("/api/projects/{project_id}/copilot/messages", response_model=ProtocolProject)
+def clear_copilot_messages_endpoint(
+    project_id: str,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    project = get_authorized_project(project_id, current_user)
+    project.copilot_messages = []
+    project.updated_at = datetime.now(timezone.utc)
+    return project_storage.save(project)
 
 
 app.include_router(admin_router)

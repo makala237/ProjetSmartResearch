@@ -275,6 +275,8 @@ class ModelRoutingEntry(BaseModel):
 class UserModelRoutingConfig(BaseModel):
     enabled: bool = False
     models: List[ModelRoutingEntry] = Field(default_factory=list)
+    copilot_text_models: List[ModelRoutingEntry] = Field(default_factory=list)
+    copilot_voice_models: List[ModelRoutingEntry] = Field(default_factory=list)
 
 
 class ModelCatalogItemOut(BaseModel):
@@ -297,6 +299,7 @@ class ModelRoutingPresetOut(BaseModel):
 
 class ModelCatalogResponse(BaseModel):
     models: List[ModelCatalogItemOut] = Field(default_factory=list)
+    live_models: List[ModelCatalogItemOut] = Field(default_factory=list)
     presets: List[ModelRoutingPresetOut] = Field(default_factory=list)
     note: str = ""
 

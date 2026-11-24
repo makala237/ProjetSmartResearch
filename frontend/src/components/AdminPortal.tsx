@@ -258,8 +258,19 @@ export function AdminPortal({
           ? {
               enabled: true,
               models: det.user.model_routing_config.models.map((m) => ({ ...m })),
+              copilot_text_models: (
+                det.user.model_routing_config.copilot_text_models ?? []
+              ).map((m) => ({ ...m })),
+              copilot_voice_models: (
+                det.user.model_routing_config.copilot_voice_models ?? []
+              ).map((m) => ({ ...m })),
             }
-          : { enabled: false, models: [] }
+          : {
+              enabled: false,
+              models: [],
+              copilot_text_models: [],
+              copilot_voice_models: [],
+            }
       );
       if (det.project_cover) {
         setEditCover(withStructuredSupervisors(det.project_cover));
@@ -404,14 +415,20 @@ export function AdminPortal({
     setBusy(true);
     setError(null);
     try {
+      const hasAnyChain =
+        drawerModelRouting.models.length > 0 ||
+        (drawerModelRouting.copilot_text_models?.length ?? 0) > 0 ||
+        (drawerModelRouting.copilot_voice_models?.length ?? 0) > 0;
       const payloadCfg: UserModelRoutingConfig =
-        drawerModelRouting.enabled && drawerModelRouting.models.length > 0
+        drawerModelRouting.enabled && hasAnyChain
           ? drawerModelRouting
-          : { enabled: false, models: [] };
+          : { enabled: false, models: [], copilot_text_models: [], copilot_voice_models: [] };
       await api.adminUpdateUser(userId, { model_routing_config: payloadCfg });
       setNotice(
         payloadCfg.enabled
-          ? `Chaîne personnalisée enregistrée (${payloadCfg.models.length} modèle(s) : ${payloadCfg.models[0].model} en primaire).`
+          ? `Chaîne personnalisée enregistrée (${payloadCfg.models.length} modèle(s) texte principal${
+              payloadCfg.models[0]?.model ? ` : ${payloadCfg.models[0].model}` : ""
+            }${(payloadCfg.copilot_voice_models?.length ?? 0) > 0 ? `, micro : ${payloadCfg.copilot_voice_models![0].model}` : ""}).`
           : "Chaîne de modèles réinitialisée sur la configuration système par défaut."
       );
       await loadAllCore();
@@ -474,7 +491,10 @@ export function AdminPortal({
           : undefined,
         gemini_api_key_id: newUserApiKeyId && newUserApiKeyId !== "default" ? newUserApiKeyId : "default",
         model_routing_config:
-          newUserModelRouting.enabled && newUserModelRouting.models.length > 0
+          newUserModelRouting.enabled &&
+          (newUserModelRouting.models.length > 0 ||
+            (newUserModelRouting.copilot_text_models?.length ?? 0) > 0 ||
+            (newUserModelRouting.copilot_voice_models?.length ?? 0) > 0)
             ? newUserModelRouting
             : undefined,
       });

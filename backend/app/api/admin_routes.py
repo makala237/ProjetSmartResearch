@@ -9,6 +9,7 @@ from app.api.deps import require_admin
 from app.core.config import get_settings
 from app.core.model_catalog import (
     FREE_TIER_REFERENCE_NOTE,
+    GEMINI_LIVE_MODEL_CATALOG,
     GEMINI_MODEL_CATALOG,
     MODEL_ROUTING_PRESETS,
     normalize_model_routing_config,
@@ -633,8 +634,15 @@ def get_user_detail(
     daily_usage_list: List[UserModelDailyUsageOut] = []
     seen_models: set[str] = set()
     if row_out.model_routing_config and row_out.model_routing_config.enabled:
-        for entry in row_out.model_routing_config.models:
+        combined_entries = (
+            list(row_out.model_routing_config.models)
+            + list(row_out.model_routing_config.copilot_text_models)
+            + list(row_out.model_routing_config.copilot_voice_models)
+        )
+        for entry in combined_entries:
             mk = entry.model.strip().lower()
+            if mk in seen_models:
+                continue
             seen_models.add(mk)
             w = usage_windows.get(mk, {"rpd_used": 0, "tpm_used": 0})
             daily_usage_list.append(
@@ -1524,9 +1532,10 @@ def delete_admin_api_key(
 # =========================================================================
 @router.get("/model-catalog", response_model=ModelCatalogResponse)
 def get_admin_model_catalog() -> ModelCatalogResponse:
-    """Return curated Gemini models (with Free-Tier reference limits) and routing presets."""
+    """Return curated Gemini models (text & Live voice, with Free-Tier reference limits) and routing presets."""
     return ModelCatalogResponse(
         models=[ModelCatalogItemOut(**m) for m in GEMINI_MODEL_CATALOG],
+        live_models=[ModelCatalogItemOut(**m) for m in GEMINI_LIVE_MODEL_CATALOG],
         presets=[ModelRoutingPresetOut(**p) for p in MODEL_ROUTING_PRESETS],
         note=FREE_TIER_REFERENCE_NOTE,
     )

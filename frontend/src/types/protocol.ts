@@ -265,6 +265,61 @@ export interface InternalSourceDocument {
   created_at: string;
 }
 
+export interface SectionVersionEntry {
+  version_id: string;
+  created_at: string;
+  source: string;
+  note: string;
+  content_markdown: string;
+  cited_ref_ids: string[];
+  word_count: number;
+}
+
+export interface SupervisorDirectiveItem {
+  directive_id: string;
+  text: string;
+  source: string;
+  active: boolean;
+  created_at: string;
+}
+
+export interface CopilotProposal {
+  section_id: string;
+  proposed_markdown: string;
+  summary: string;
+  applied: boolean;
+}
+
+export interface CopilotMessage {
+  message_id: string;
+  role: "user" | "assistant" | string;
+  content: string;
+  intent: string;
+  model_used: string;
+  active_module: string;
+  active_section_id?: string | null;
+  proposal?: CopilotProposal | null;
+  suggested_directive?: string | null;
+  restore_version_id?: string | null;
+  target_module?: string | null;
+  created_at: string;
+}
+
+export interface CopilotStatusResponse {
+  text_models: string[];
+  voice_models: string[];
+  directives_count: number;
+  messages: CopilotMessage[];
+}
+
+export interface CopilotChatResponse {
+  assistant_message: CopilotMessage;
+  project: ProtocolProject;
+  model_used: string;
+  active_text_models: string[];
+  active_voice_models: string[];
+}
+
 export interface SectionState {
   section_id: string;
   status: StepStatus;
@@ -275,6 +330,7 @@ export interface SectionState {
   custom_tables?: SectionTable[];
   custom_diagrams?: SectionDiagram[];
   internal_library?: InternalLibraryEntry[];
+  versions?: SectionVersionEntry[];
   suppress_structured_table?: boolean;
   user_notes: string;
   updated_at: string;
@@ -341,6 +397,8 @@ export interface ProtocolProject {
   budget: BudgetItem[];
   annexes_config: AnnexesConfig;
   formatting: FormattingRules;
+  supervisor_directives?: SupervisorDirectiveItem[];
+  copilot_messages?: CopilotMessage[];
   created_at: string;
   updated_at: string;
 }

@@ -4,6 +4,8 @@ import {
   ArrowDown,
   ArrowUp,
   Cpu,
+  MessageSquare,
+  Mic,
   Plus,
   Sparkles,
   Trash2,
@@ -90,6 +92,48 @@ const FALLBACK_CATALOG: ModelCatalogResponse = {
       },
     },
   ],
+  live_models: [
+    {
+      id: "gemini-3.8-live",
+      label: "Gemini 3.8 Live (Audio & Vidéo temps réel)",
+      tier: "vip",
+      in_use: true,
+      free_tier_rpm: 5,
+      free_tier_tpm: 250000,
+      free_tier_rpd: 50,
+      description: "Recommandé pour le micro de l'Assistant Smart Research.",
+    },
+    {
+      id: "gemini-3.8-live-extended-thinking",
+      label: "Gemini 3.8 Live Extended Thinking",
+      tier: "vip",
+      in_use: false,
+      free_tier_rpm: 5,
+      free_tier_tpm: 250000,
+      free_tier_rpd: 25,
+      description: "Mode vocal avec réflexion approfondie.",
+    },
+    {
+      id: "gemini-2.5-flash-native-audio-latest",
+      label: "Gemini 2.5 Flash Native Audio",
+      tier: "standard",
+      in_use: false,
+      free_tier_rpm: 10,
+      free_tier_tpm: 250000,
+      free_tier_rpd: 50,
+      description: "Relais audio natif faible latence.",
+    },
+    {
+      id: "gemini-3.1-flash-live-preview",
+      label: "Gemini 3.1 Flash Live Preview",
+      tier: "lite",
+      in_use: false,
+      free_tier_rpm: 10,
+      free_tier_tpm: 250000,
+      free_tier_rpd: 50,
+      description: "Option légère pour le mode vocal temps réel.",
+    },
+  ],
   note: "Plafonds de référence Free Tier Gemini : 20 RPD · 250 000 TPM par modèle (vérifiez sur aistudio.google.com/rate-limit).",
 };
 
@@ -101,12 +145,18 @@ export function ModelRoutingEditor({
   compact = false,
 }: ModelRoutingEditorProps) {
   const [selectedToAdd, setSelectedToAdd] = useState("");
+  const [selectedCopilotTextToAdd, setSelectedCopilotTextToAdd] = useState("");
+  const [selectedCopilotVoiceToAdd, setSelectedCopilotVoiceToAdd] = useState("");
   const effectiveCatalog = catalog && catalog.models.length > 0 ? catalog : FALLBACK_CATALOG;
   const modelsCatalog = effectiveCatalog.models;
+  const liveModelsCatalog =
+    effectiveCatalog.live_models && effectiveCatalog.live_models.length > 0
+      ? effectiveCatalog.live_models
+      : FALLBACK_CATALOG.live_models ?? [];
   const presets = effectiveCatalog.presets;
 
   const catalogById = new Map<string, ModelCatalogItemOut>(
-    modelsCatalog.map((m) => [m.id.toLowerCase(), m])
+    [...modelsCatalog, ...liveModelsCatalog].map((m) => [m.id.toLowerCase(), m])
   );
   const usageByModel = new Map<string, UserModelDailyUsageOut>(
     (dailyUsage ?? []).map((u) => [u.model.toLowerCase(), u])
@@ -115,13 +165,32 @@ export function ModelRoutingEditor({
   const usedIds = new Set(value.models.map((m) => m.model.toLowerCase()));
   const availableToAdd = modelsCatalog.filter((m) => !usedIds.has(m.id.toLowerCase()));
 
+  const copilotTextModels = value.copilot_text_models ?? [];
+  const copilotVoiceModels = value.copilot_voice_models ?? [];
+  const usedCopilotTextIds = new Set(copilotTextModels.map((m) => m.model.toLowerCase()));
+  const usedCopilotVoiceIds = new Set(copilotVoiceModels.map((m) => m.model.toLowerCase()));
+  const availableCopilotTextToAdd = modelsCatalog.filter(
+    (m) => !usedCopilotTextIds.has(m.id.toLowerCase())
+  );
+  const availableCopilotVoiceToAdd = liveModelsCatalog.filter(
+    (m) => !usedCopilotVoiceIds.has(m.id.toLowerCase())
+  );
+
   function setEnabled(enabled: boolean) {
     if (!enabled) {
-      onChange({ enabled: false, models: value.models });
+      onChange({
+        ...value,
+        enabled: false,
+        models: value.models,
+      });
       return;
     }
-    if (value.models.length > 0) {
-      onChange({ enabled: true, models: value.models });
+    if (
+      value.models.length > 0 ||
+      copilotTextModels.length > 0 ||
+      copilotVoiceModels.length > 0
+    ) {
+      onChange({ ...value, enabled: true, models: value.models });
       return;
     }
     // Seed with the exact current production models so enabling custom mode never disrupts service
@@ -130,11 +199,12 @@ export function ModelRoutingEditor({
       { model: "gemini-3.1-flash-lite", max_rpd: 20, max_tpm: 250000 },
       { model: "gemini-3.5-flash", max_rpd: 20, max_tpm: 250000 },
     ];
-    onChange({ enabled: true, models: starter });
+    onChange({ ...value, enabled: true, models: starter });
   }
 
   function applyPreset(presetConfig: UserModelRoutingConfig) {
     onChange({
+      ...value,
       enabled: true,
       models: presetConfig.models.map((m) => ({ ...m })),
     });
@@ -170,10 +240,67 @@ export function ModelRoutingEditor({
       max_tpm: meta ? meta.free_tier_tpm : 250000,
     };
     onChange({
+      ...value,
       enabled: true,
       models: [...value.models, next],
     });
     setSelectedToAdd("");
+  }
+
+  function updateCopilotChain(
+    field: "copilot_text_models" | "copilot_voice_models",
+    nextList: ModelRoutingEntry[]
+  ) {
+    onChange({
+      ...value,
+      enabled: true,
+      [field]: nextList,
+    });
+  }
+
+  function addCopilotModel(
+    field: "copilot_text_models" | "copilot_voice_models",
+    modelId: string
+  ) {
+    if (!modelId) return;
+    const meta = catalogById.get(modelId.toLowerCase());
+    const current = field === "copilot_text_models" ? copilotTextModels : copilotVoiceModels;
+    const entry: ModelRoutingEntry = {
+      model: modelId,
+      max_rpd: meta ? meta.free_tier_rpd : 20,
+      max_tpm: meta ? meta.free_tier_tpm : 250000,
+    };
+    updateCopilotChain(field, [...current, entry]);
+    if (field === "copilot_text_models") {
+      setSelectedCopilotTextToAdd("");
+    } else {
+      setSelectedCopilotVoiceToAdd("");
+    }
+  }
+
+  function moveCopilotEntry(
+    field: "copilot_text_models" | "copilot_voice_models",
+    idx: number,
+    delta: -1 | 1
+  ) {
+    const current = field === "copilot_text_models" ? copilotTextModels : copilotVoiceModels;
+    const target = idx + delta;
+    if (target < 0 || target >= current.length) return;
+    const next = [...current];
+    const [moved] = next.splice(idx, 1);
+    next.splice(target, 0, moved);
+    updateCopilotChain(field, next);
+  }
+
+  function removeCopilotEntry(
+    field: "copilot_text_models" | "copilot_voice_models",
+    idx: number
+  ) {
+    const current = field === "copilot_text_models" ? copilotTextModels : copilotVoiceModels;
+    updateCopilotChain(
+      field,
+      current.filter((_, i) => i !== idx)
+    );
   }
 
   return (
@@ -438,6 +565,180 @@ export function ModelRoutingEditor({
               </button>
             </div>
           )}
+
+          {/* Assistant Smart Research: Text & Voice Live overrides */}
+          <div className="space-y-2.5 rounded-lg border border-sky-200 bg-white/80 p-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-1">
+              <div className="text-[11px] font-bold text-sky-900">
+                Assistant Smart Research — Gestion Texte & Micro Live
+              </div>
+              <span className="text-[10px] text-slate-500">
+                Optionnel (sinon hérite de la chaîne principale)
+              </span>
+            </div>
+
+            {/* Text & Tools chain */}
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                <MessageSquare className="h-3 w-3 text-sky-600" />
+                <span>Modèles Texte & Outils</span>
+              </div>
+              {copilotTextModels.length === 0 ? (
+                <div className="text-[11px] italic text-slate-500">
+                  Par défaut : hérite de la chaîne texte ci-dessus (ou{" "}
+                  <code>gemini-3.8-flash</code>).
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {copilotTextModels.map((entry, idx) => (
+                    <div
+                      key={`ct-${entry.model}`}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-200 bg-slate-50 px-2 py-1"
+                    >
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span className="font-bold text-sky-800">{idx + 1}.</span>
+                        <span className="font-mono font-semibold text-slate-900">
+                          {entry.model}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          disabled={idx === 0}
+                          onClick={() => moveCopilotEntry("copilot_text_models", idx, -1)}
+                          className="rounded border border-slate-200 bg-white p-0.5 text-slate-600 disabled:opacity-30"
+                        >
+                          <ArrowUp className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={idx === copilotTextModels.length - 1}
+                          onClick={() => moveCopilotEntry("copilot_text_models", idx, 1)}
+                          className="rounded border border-slate-200 bg-white p-0.5 text-slate-600 disabled:opacity-30"
+                        >
+                          <ArrowDown className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeCopilotEntry("copilot_text_models", idx)}
+                          className="rounded border border-rose-200 bg-white p-0.5 text-rose-600"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {availableCopilotTextToAdd.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={selectedCopilotTextToAdd}
+                    onChange={(e) => setSelectedCopilotTextToAdd(e.target.value)}
+                    className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                  >
+                    <option value="">+ Choisir un modèle texte pour l'assistant...</option>
+                    {availableCopilotTextToAdd.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label} ({m.id})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!selectedCopilotTextToAdd}
+                    onClick={() =>
+                      addCopilotModel("copilot_text_models", selectedCopilotTextToAdd)
+                    }
+                    className="rounded bg-sky-600 px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-40"
+                  >
+                    Ajouter
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Voice / Live Micro chain */}
+            <div className="space-y-1.5 border-t border-slate-200 pt-2">
+              <div className="flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-slate-600">
+                <Mic className="h-3 w-3 text-emerald-600" />
+                <span>Modèles Micro / Voix Live (feuille de route)</span>
+              </div>
+              {copilotVoiceModels.length === 0 ? (
+                <div className="text-[11px] italic text-slate-500">
+                  Par défaut : <code>gemini-3.8-live</code> →{" "}
+                  <code>gemini-2.5-flash-native-audio-latest</code>.
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {copilotVoiceModels.map((entry, idx) => (
+                    <div
+                      key={`cv-${entry.model}`}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded border border-emerald-200 bg-emerald-50/40 px-2 py-1"
+                    >
+                      <div className="flex items-center gap-1.5 text-[11px]">
+                        <span className="font-bold text-emerald-800">{idx + 1}.</span>
+                        <span className="font-mono font-semibold text-slate-900">
+                          {entry.model}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          disabled={idx === 0}
+                          onClick={() => moveCopilotEntry("copilot_voice_models", idx, -1)}
+                          className="rounded border border-slate-200 bg-white p-0.5 text-slate-600 disabled:opacity-30"
+                        >
+                          <ArrowUp className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={idx === copilotVoiceModels.length - 1}
+                          onClick={() => moveCopilotEntry("copilot_voice_models", idx, 1)}
+                          className="rounded border border-slate-200 bg-white p-0.5 text-slate-600 disabled:opacity-30"
+                        >
+                          <ArrowDown className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeCopilotEntry("copilot_voice_models", idx)}
+                          className="rounded border border-rose-200 bg-white p-0.5 text-rose-600"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {availableCopilotVoiceToAdd.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={selectedCopilotVoiceToAdd}
+                    onChange={(e) => setSelectedCopilotVoiceToAdd(e.target.value)}
+                    className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                  >
+                    <option value="">+ Choisir un modèle micro Live (bidi)...</option>
+                    {availableCopilotVoiceToAdd.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label} ({m.id})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!selectedCopilotVoiceToAdd}
+                    onClick={() =>
+                      addCopilotModel("copilot_voice_models", selectedCopilotVoiceToAdd)
+                    }
+                    className="rounded bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-40"
+                  >
+                    Ajouter
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
 
           {effectiveCatalog.note && (
             <p className="text-[10px] leading-relaxed text-slate-500">{effectiveCatalog.note}</p>

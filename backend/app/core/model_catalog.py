@@ -105,6 +105,54 @@ GEMINI_MODEL_CATALOG_BY_ID: Dict[str, Dict[str, Any]] = {
     item["id"]: item for item in GEMINI_MODEL_CATALOG
 }
 
+# Dedicated Live API (bidiGenerateContent) models for real-time voice/micro & video mode
+GEMINI_LIVE_MODEL_CATALOG: List[Dict[str, Any]] = [
+    {
+        "id": "gemini-3.8-live",
+        "label": "Gemini 3.8 Live (Audio & Vidéo temps réel)",
+        "tier": "vip",
+        "in_use": True,
+        "free_tier_rpm": 5,
+        "free_tier_tpm": 250_000,
+        "free_tier_rpd": 50,
+        "description": "Recommandé pour le micro de l'Assistant Smart Research : voix fluide, rapide et compréhension contextuelle avancée.",
+    },
+    {
+        "id": "gemini-3.8-live-extended-thinking",
+        "label": "Gemini 3.8 Live Extended Thinking",
+        "tier": "vip",
+        "in_use": False,
+        "free_tier_rpm": 5,
+        "free_tier_tpm": 250_000,
+        "free_tier_rpd": 25,
+        "description": "Mode vocal avec réflexion approfondie — utile pour les débats méthodologiques complexes (latence légèrement supérieure).",
+    },
+    {
+        "id": "gemini-2.5-flash-native-audio-latest",
+        "label": "Gemini 2.5 Flash Native Audio",
+        "tier": "standard",
+        "in_use": False,
+        "free_tier_rpm": 10,
+        "free_tier_tpm": 250_000,
+        "free_tier_rpd": 50,
+        "description": "Relais audio natif très stable à faible latence.",
+    },
+    {
+        "id": "gemini-3.1-flash-live-preview",
+        "label": "Gemini 3.1 Flash Live Preview",
+        "tier": "lite",
+        "in_use": False,
+        "free_tier_rpm": 10,
+        "free_tier_tpm": 250_000,
+        "free_tier_rpd": 50,
+        "description": "Option légère pour le mode vocal temps réel.",
+    },
+]
+
+GEMINI_LIVE_MODEL_CATALOG_BY_ID: Dict[str, Dict[str, Any]] = {
+    item["id"]: item for item in GEMINI_LIVE_MODEL_CATALOG
+}
+
 MODEL_ROUTING_PRESETS: List[Dict[str, Any]] = [
     {
         "id": "vip_38_10rpd",
@@ -174,23 +222,9 @@ FREE_TIER_REFERENCE_NOTE = (
 )
 
 
-def normalize_model_routing_config(raw: Any) -> Optional[Dict[str, Any]]:
-    """Validate and normalize a per-user model routing config.
-
-    Returns None when disabled or empty (meaning: use system default chain).
-    """
-    if raw is None:
-        return None
-    if hasattr(raw, "model_dump"):
-        raw = raw.model_dump()
-    if not isinstance(raw, dict):
-        return None
-    if not bool(raw.get("enabled")):
-        return None
-
-    raw_models = raw.get("models")
+def _clean_model_entries(raw_models: Any) -> List[Dict[str, Any]]:
     if not isinstance(raw_models, list) or not raw_models:
-        return None
+        return []
 
     cleaned: List[Dict[str, Any]] = []
     seen: set[str] = set()
@@ -230,10 +264,36 @@ def normalize_model_routing_config(raw: Any) -> Optional[Dict[str, Any]]:
                 "max_tpm": max_tpm,
             }
         )
+    return cleaned
 
-    if not cleaned:
+
+def normalize_model_routing_config(raw: Any) -> Optional[Dict[str, Any]]:
+    """Validate and normalize a per-user model routing config (main + optional Assistant text/voice chains).
+
+    Returns None when disabled or all chains are empty (meaning: use system default chain).
+    """
+    if raw is None:
         return None
-    return {
+    if hasattr(raw, "model_dump"):
+        raw = raw.model_dump()
+    if not isinstance(raw, dict):
+        return None
+    if not bool(raw.get("enabled")):
+        return None
+
+    cleaned = _clean_model_entries(raw.get("models"))
+    copilot_text = _clean_model_entries(raw.get("copilot_text_models"))
+    copilot_voice = _clean_model_entries(raw.get("copilot_voice_models"))
+
+    if not cleaned and not copilot_text and not copilot_voice:
+        return None
+
+    out: Dict[str, Any] = {
         "enabled": True,
         "models": cleaned,
     }
+    if copilot_text:
+        out["copilot_text_models"] = copilot_text
+    if copilot_voice:
+        out["copilot_voice_models"] = copilot_voice
+    return out
