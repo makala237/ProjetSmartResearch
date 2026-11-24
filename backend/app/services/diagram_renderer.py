@@ -25,12 +25,12 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.schemas.protocol import DiagramConnection, DiagramNode, FormattingRules, SectionDiagram
 
-# Typography constants calibrated for >= 11-12 pt legibility on A4 and crisp web SVG.
-DIAGRAM_MIN_BODY_FONT_PX = 14
-DIAGRAM_TITLE_FONT_PX = 15
-DIAGRAM_LABEL_FONT_PX = 13
-DIAGRAM_LINE_H_BODY_PX = 19
-DIAGRAM_LINE_H_TITLE_PX = 20
+# Typography constants calibrated for >= 12 pt legibility on A4 and crisp web SVG.
+DIAGRAM_MIN_BODY_FONT_PX = 16
+DIAGRAM_TITLE_FONT_PX = 17
+DIAGRAM_LABEL_FONT_PX = 14
+DIAGRAM_LINE_H_BODY_PX = 21
+DIAGRAM_LINE_H_TITLE_PX = 22
 DIAGRAM_MAX_CANVAS_W_PX = 760
 DIAGRAM_RENDER_SCALE = 2
 PT_TO_CM = 2.54 / 72.0
@@ -309,7 +309,7 @@ def _node_palette(
     if effective_layout == "horizontal_flow":
         if has_custom_non_default:
             dark = _sanitize_dark_color(custom)
-            return {
+            pal = {
                 "fill": _tint_hex(dark, 0.93),
                 "stroke": dark,
                 "header_fill": dark,
@@ -317,13 +317,18 @@ def _node_palette(
                 "body_fg": "#1E293B",
                 "accent": dark,
             }
-        # Progressive 3-4 stage conceptual palette (distinct, harmonious, academic)
-        stage_cycle = ["stage_gap", "stage_study", "stage_fmsb", "stage_goal"]
-        if total_nodes == 3:
-            stage_cycle = ["stage_gap", "stage_study", "stage_fmsb"]
-        elif total_nodes == 2:
-            stage_cycle = ["stage_study", "stage_fmsb"]
-        return _ROLE_PALETTES[stage_cycle[idx % len(stage_cycle)]]
+        else:
+            # Progressive 3-4 stage conceptual palette (distinct, harmonious, academic)
+            stage_cycle = ["stage_gap", "stage_study", "stage_fmsb", "stage_goal"]
+            if total_nodes == 3:
+                stage_cycle = ["stage_gap", "stage_study", "stage_fmsb"]
+            elif total_nodes == 2:
+                stage_cycle = ["stage_study", "stage_fmsb"]
+            pal = dict(_ROLE_PALETTES[stage_cycle[idx % len(stage_cycle)]])
+        # Headerless shapes (circle/oval/pill/diamond) draw title directly on light fill -> MUST use dark text!
+        if node.shape in ("circle", "oval", "pill", "diamond"):
+            pal["title_fg"] = pal["stroke"]
+        return pal
 
     if effective_layout == "decision_flowchart":
         if node.shape in ("pill", "oval") or (is_root and not node.items) or (is_leaf and not node.items and total_nodes >= 3):
@@ -444,12 +449,26 @@ def _measure_node(
     return {"w": w, "h": h, "header_h": header_h, "shape": shape, "t_lines": t_lines, "b_lines": b_lines}
 
 
-def _estimate_pill_size(label: str) -> Tuple[int, int]:
-    txt = (label or "").strip()
+def _wrap_pill_lines(label: str) -> List[str]:
+    txt = re.sub(r"\s+", " ", (label or "").strip())
     if not txt:
+        return []
+    if len(txt) <= 18:
+        return [txt]
+    lines = textwrap.wrap(txt, width=16, break_long_words=False)
+    if len(lines) <= 2:
+        return lines
+    return [lines[0], " ".join(lines[1:])]
+
+
+def _estimate_pill_size(label: str) -> Tuple[int, int]:
+    lines = _wrap_pill_lines(label)
+    if not lines:
         return 0, 0
-    w = max(44, min(170, int(len(txt) * 7.6) + 20))
-    return w, 24
+    max_len = max(len(ln) for ln in lines)
+    w = max(52, int(max_len * 8.4) + 24)
+    h = 26 if len(lines) == 1 else 42
+    return w, h
 
 
 def _topological_layers(
@@ -653,7 +672,7 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
         has_back_edge = len(back_edges) > 0
         left_loop_gutter = 64 if has_back_edge else 0
         gap_x = 42
-        gap_y = 54
+        gap_y = 66 if effective_layout == "decision_flowchart" else 56
 
         # In decision_flowchart, pull side exclusion/exception nodes onto the SAME row as their parent diamond!
         side_nodes_by_parent: Dict[str, str] = {}
@@ -671,7 +690,7 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
 
         max_cols = max((len(ly) for ly in filtered_layers), default=1)
         if effective_layout == "decision_flowchart" and max_cols == 1:
-            base_w = 270
+            base_w = 340
         elif max_cols == 1:
             base_w = 340
         elif max_cols == 2:
@@ -771,7 +790,8 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
 
     # ── ROUTE ORTHOGONAL EDGES + INLINE LABEL PILLS ──────────────────────────
     edges_out: List[Dict[str, Any]] = []
-    min_box_x = min((b["x"] for b in boxes.values()), default=24)
+    skip_bridge_slot = 0
+    max_box_bottom = max((b["y"] + b["h"] for b in boxes.values()), default=160)
 
     for c_idx, conn in enumerate(conns):
         if conn.from_id not in boxes or conn.to_id not in boxes:
@@ -806,11 +826,36 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
 
         # 3. Same horizontal band (left-to-right or right-to-left)
         elif abs(cy1 - cy2) <= max(b1["h"], b2["h"]) * 0.45:
-            if cx2 >= cx1:
+            lo_x = min(b1["x"] + b1["w"], b2["x"] + b2["w"])
+            hi_x = max(b1["x"], b2["x"])
+            # Detect if any intermediate box sits between b1 and b2 on this horizontal band
+            blocks_between = any(
+                oid not in (conn.from_id, conn.to_id)
+                and ob["x"] < hi_x
+                and (ob["x"] + ob["w"]) > lo_x
+                and ob["y"] <= max(cy1, cy2)
+                and (ob["y"] + ob["h"]) >= min(cy1, cy2)
+                for oid, ob in boxes.items()
+            )
+            if blocks_between:
+                # Route cleanly UNDER the boxes as an orthogonal U-bridge so nothing ever overlaps!
+                _, pill_h = _estimate_pill_size(label)
+                bridge_y = float(max_box_bottom) + 34.0 + skip_bridge_slot * (max(36, pill_h + 14))
+                skip_bridge_slot += 1
+                pts = [
+                    (cx1, float(b1["y"] + b1["h"])),
+                    (cx1, bridge_y),
+                    (cx2, bridge_y),
+                    (cx2, float(b2["y"] + b2["h"]) + 2.0),
+                ]
+                lbl_pos = ((cx1 + cx2) / 2.0, bridge_y)
+                canvas_h = max(canvas_h, int(math.ceil(bridge_y + max(18, pill_h / 2.0) + 18)))
+            elif cx2 >= cx1:
                 pts = [(float(b1["x"] + b1["w"]), cy1), (float(b2["x"]) - 2.0, cy2)]
+                lbl_pos = ((pts[0][0] + pts[-1][0]) / 2.0, (pts[0][1] + pts[-1][1]) / 2.0)
             else:
                 pts = [(float(b1["x"]), cy1), (float(b2["x"] + b2["w"]) + 2.0, cy2)]
-            lbl_pos = ((pts[0][0] + pts[-1][0]) / 2.0, (pts[0][1] + pts[-1][1]) / 2.0)
+                lbl_pos = ((pts[0][0] + pts[-1][0]) / 2.0, (pts[0][1] + pts[-1][1]) / 2.0)
 
         # 4. Top-to-bottom vertical or branching orthogonal elbow
         else:
@@ -1062,17 +1107,21 @@ def render_diagram_svg(diagram: SectionDiagram) -> str:
         lbl = edge["label"]
         if not lbl:
             continue
+        pill_lines = _wrap_pill_lines(lbl)
         lx, ly = edge["label_pos"]
         pw, ph = _estimate_pill_size(lbl)
         ec = edge["color"]
         parts.append(
             f'<rect x="{lx - pw / 2.0:.1f}" y="{ly - ph / 2.0:.1f}" width="{pw}" height="{ph}" '
-            f'rx="11" ry="11" fill="#FFFFFF" stroke="{ec}" stroke-width="1.4" />'
+            f'rx="12" ry="12" fill="#FFFFFF" stroke="{ec}" stroke-width="1.5" />'
         )
-        parts.append(
-            f'<text x="{lx:.1f}" y="{ly + 4.5:.1f}" text-anchor="middle" '
-            f'font-size="{DIAGRAM_LABEL_FONT_PX}" font-weight="700" fill="{ec}">{escape(lbl)}</text>'
-        )
+        line_h = 16.0
+        start_y = ly - ((len(pill_lines) - 1) * line_h) / 2.0 + 4.5
+        for pl_idx, pl_txt in enumerate(pill_lines):
+            parts.append(
+                f'<text x="{lx:.1f}" y="{start_y + pl_idx * line_h:.1f}" text-anchor="middle" '
+                f'font-size="{DIAGRAM_LABEL_FONT_PX}" font-weight="700" fill="{ec}">{escape(pl_txt)}</text>'
+            )
 
     parts.append("</svg>")
     return "\n".join(parts)
@@ -1225,18 +1274,22 @@ def render_diagram_png(diagram: SectionDiagram, output_path: Path) -> Path:
         lbl = edge["label"]
         if not lbl:
             continue
+        pill_lines = _wrap_pill_lines(lbl)
         lx, ly = edge["label_pos"][0] * scale, edge["label_pos"][1] * scale
         pw, ph = _estimate_pill_size(lbl)
         pws, phs = pw * scale, ph * scale
         ec = edge["color"]
         draw.rounded_rectangle(
             [lx - pws / 2.0, ly - phs / 2.0, lx + pws / 2.0, ly + phs / 2.0],
-            radius=11 * scale,
+            radius=12 * scale,
             fill="#FFFFFF",
             outline=ec,
-            width=max(2, int(round(1.4 * scale))),
+            width=max(2, int(round(1.5 * scale))),
         )
-        draw.text((lx, ly), lbl, fill=ec, font=font_label, anchor="mm")
+        line_h = 16.0 * scale
+        start_y = ly - ((len(pill_lines) - 1) * line_h) / 2.0
+        for pl_idx, pl_txt in enumerate(pill_lines):
+            draw.text((lx, start_y + pl_idx * line_h), pl_txt, fill=ec, font=font_label, anchor="mm")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     img.save(str(output_path), format="PNG")
