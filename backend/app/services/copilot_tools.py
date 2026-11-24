@@ -371,3 +371,178 @@ RÉFÉRENCES DISPONIBLES (n'invente aucun numéro hors liste) :
         "summary": summary,
         "model_used": model_used,
     }
+
+
+def apply_surgical_text_patches(
+    original_markdown: str,
+    patches: List[Any],
+) -> Dict[str, Any]:
+    """Deterministically replace ONLY targeted passages, keeping the rest byte-for-byte intact."""
+    result = original_markdown or ""
+    applied_patches: List[Dict[str, str]] = []
+    unmatched_patches: List[Dict[str, str]] = []
+
+    for raw in patches or []:
+        if hasattr(raw, "model_dump"):
+            raw = raw.model_dump()
+        if not isinstance(raw, dict):
+            continue
+        target = str(raw.get("target_text") or "")
+        replacement = str(raw.get("replacement_text") or "")
+        reason = str(raw.get("reason") or "").strip()
+        if not target.strip():
+            continue
+
+        idx = result.find(target)
+        if idx >= 0:
+            result = result[:idx] + replacement + result[idx + len(target):]
+            applied_patches.append(
+                {
+                    "target_text": target,
+                    "replacement_text": replacement,
+                    "reason": reason,
+                }
+            )
+            continue
+
+        # Fallback: whitespace-tolerant single occurrence match
+        parts = [p for p in re.split(r"\s+", target.strip()) if p]
+        if parts:
+            pattern = r"\s+".join(re.escape(p) for p in parts)
+            m = re.search(pattern, result)
+            if m is not None:
+                matched_exact = result[m.start():m.end()]
+                result = result[:m.start()] + replacement + result[m.end():]
+                applied_patches.append(
+                    {
+                        "target_text": matched_exact,
+                        "replacement_text": replacement,
+                        "reason": reason,
+                    }
+                )
+                continue
+
+        unmatched_patches.append(
+            {
+                "target_text": target,
+                "replacement_text": replacement,
+                "reason": reason,
+            }
+        )
+
+    return {
+        "patched_markdown": result,
+        "applied_patches": applied_patches,
+        "unmatched_patches": unmatched_patches,
+        "applied_count": len(applied_patches),
+    }
+
+
+class SurgicalPatchItem(BaseModel):
+    target_text: str = Field(
+        ...,
+        description="Exact substring copied verbatim from the original section text to replace or update.",
+    )
+    replacement_text: str = Field(
+        ...,
+        description="Updated passage replacing ONLY target_text (or empty string to delete target_text).",
+    )
+    reason: str = Field(
+        default="",
+        description="Brief reason why this specific passage was modified.",
+    )
+
+
+class SurgicalPatchOutput(BaseModel):
+    patches: List[SurgicalPatchItem] = Field(
+        default_factory=list,
+        description="Minimal list of exact target->replacement edits touching ONLY requested lines/sentences.",
+    )
+    summary: str = Field(
+        ...,
+        description="Short explanation of the targeted changes.",
+    )
+
+
+def tool_patch_section_text(
+    project: ProtocolProject,
+    section_id: str,
+    instruction: str,
+) -> Dict[str, Any]:
+    """Generate surgical targeted replacements leaving all surrounding lines strictly untouched."""
+    if section_id not in project.sections:
+        raise ValueError(f"Section introuvable : {section_id}")
+
+    from app.services.copilot_service import format_supervisor_directives_block
+
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    original_md = project.sections[section_id].content_markdown or ""
+    directives_block = format_supervisor_directives_block(project)
+
+    refs_ctx = "\n".join(
+        f"[{r.order_index}] {r.vancouver_citation}"
+        for r in (project.references or [])[:15]
+        if r.order_index
+    )
+
+    patch_prompt = f"""
+Tu es un éditeur scientifique chirurgical (FMSB / CAMES).
+RÈGLE ABSOLUE : NE RÉÉCRIS PAS toute la section ! Identifie UNIQUEMENT la ou les phrases/lignes exactes concernées par la demande et fournis une liste minimale d'opérations `patches`.
+Tout le reste du texte original restera 100 % identique au caractère près.
+
+CONTRAT STRICT POUR CHAQUE PATCH :
+- `target_text` DOIT être copié MOT POUR MOT (caractère pour caractère) depuis le TEXTE ORIGINAL ci-dessous.
+- Si l'utilisateur demande d'ajouter une précision après une phrase, copie cette phrase exacte dans `target_text` et écris `<phrase exacte> <ajout>` dans `replacement_text`.
+- Si l'utilisateur demande de supprimer un passage, mets ce passage exact dans `target_text` et `""` dans `replacement_text`.
+- N'invente jamais de chiffres ou de références `[n]` hors liste.
+
+LANGUE ATTENDUE : {"English" if lang == "en" else "Français"}.
+DEMANDE CIBLÉE : {(instruction or '').strip()}
+
+{directives_block if directives_block else ''}
+
+TEXTE ORIGINAL DE LA SECTION :
+{original_md or '(Section vide)'}
+
+RÉFÉRENCES DISPONIBLES :
+{refs_ctx or '(Aucune)'}
+"""
+
+    model_used = ""
+    raw_patches: List[Dict[str, Any]] = []
+    summary = ""
+    try:
+        res = gemini_router.generate_structured(
+            role="copilot_text",
+            contents=patch_prompt,
+            schema=SurgicalPatchOutput,
+            temperature=0.15,
+        )
+        dto: SurgicalPatchOutput = res["data"]
+        model_used = str(res.get("model_used") or "")
+        summary = (dto.summary or "").strip()
+        raw_patches = [p.model_dump() for p in (dto.patches or [])]
+    except Exception as exc:
+        summary = (
+            f"Impossible de générer les correctifs ciblés ({exc})."
+            if lang != "en"
+            else f"Could not generate targeted patches ({exc})."
+        )
+
+    applied = apply_surgical_text_patches(original_md, raw_patches)
+    if not summary:
+        summary = (
+            f"{applied['applied_count']} modification(s) ciblée(s) préparée(s) ; le reste de la section est intact."
+            if lang != "en"
+            else f"{applied['applied_count']} targeted edit(s) prepared; the rest of the section stays untouched."
+        )
+
+    return {
+        "tool": "patch_section_text",
+        "section_id": section_id,
+        "patches": applied["applied_patches"],
+        "unmatched_count": len(applied["unmatched_patches"]),
+        "proposed_markdown": applied["patched_markdown"],
+        "summary": summary,
+        "model_used": model_used,
+    }

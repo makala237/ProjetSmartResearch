@@ -22,8 +22,12 @@ from app.services.copilot_live import build_live_system_instruction
 from app.services.copilot_service import CopilotTurnOutput, run_copilot_chat
 from app.services.copilot_tools import (
     CompareMergeOutput,
+    SurgicalPatchItem,
+    SurgicalPatchOutput,
+    apply_surgical_text_patches,
     tool_draft_compare_and_merge,
     tool_inspect_internal_library,
+    tool_patch_section_text,
     tool_run_section_audit,
     tool_search_protocol_versions,
 )
@@ -213,6 +217,112 @@ class TestAssistantSmartResearchPhase3(unittest.TestCase):
         self.assertIn("service de pédiatrie du CHUY", instr)
         self.assertNotIn("Ancienne consigne désactivée", instr)
         self.assertIn("paludisme grave", instr.lower())
+
+    def test_apply_surgical_text_patches_preserves_rest_byte_for_byte(self) -> None:
+        original = (
+            "Paragraphe 1 (définition exacte à conserver telle quelle : PAS >= 140 mmHg).\n\n"
+            "Paragraphe 2 contient un chiffre temporaire de 10 % qui doit être corrigé.\n\n"
+            "Paragraphe 3 (références finales [1] intactes à la virgule près)."
+        )
+        patches = [
+            {
+                "target_text": "chiffre temporaire de 10 %",
+                "replacement_text": "taux validé de 14,2 % [1]",
+                "reason": "Mise à jour du taux d'incidence CHUY.",
+            },
+            # Also verify whitespace-tolerant single occurrence matching
+            {
+                "target_text": "qui   doit   être corrigé.",
+                "replacement_text": "confirmé par l'audit.",
+                "reason": "Précision de style.",
+            },
+        ]
+        res = apply_surgical_text_patches(original, patches)
+        self.assertEqual(res["applied_count"], 2)
+        self.assertEqual(res["unmatched_patches"], [])
+        patched = res["patched_markdown"]
+        # Surrounding paragraphs stay strictly byte-for-byte identical
+        self.assertTrue(
+            patched.startswith(
+                "Paragraphe 1 (définition exacte à conserver telle quelle : PAS >= 140 mmHg).\n\n"
+            )
+        )
+        self.assertTrue(
+            patched.endswith(
+                "Paragraphe 3 (références finales [1] intactes à la virgule près)."
+            )
+        )
+        self.assertIn("taux validé de 14,2 % [1] confirmé par l'audit.", patched)
+
+    def test_tool_patch_section_text_and_copilot_orchestration(self) -> None:
+        project = _make_rich_project()
+        original = (
+            "L'HTA est définie selon l'OMS avec précision [1].\n"
+            "La collecte aura lieu en 2023 à Douala."
+        )
+        project.sections["intro_contexte"].content_markdown = original
+
+        fake_patch = {
+            "data": SurgicalPatchOutput(
+                patches=[
+                    SurgicalPatchItem(
+                        target_text="en 2023 à Douala",
+                        replacement_text="en 2025 au CHUY de Yaoundé",
+                        reason="Alignement sur les directives du directeur de thèse.",
+                    )
+                ],
+                summary="Seule la phrase sur la période et le site a été mise à jour.",
+            ),
+            "model_used": "gemini-3.8-flash",
+        }
+        fake_turn = {
+            "data": CopilotTurnOutput(
+                intent="propose_edit",
+                reply="Voici un correctif chirurgical ciblé.",
+                tool_call="patch_section_text",
+                tool_query="Remplacer 2023 Douala par 2025 au CHUY de Yaoundé sans toucher le reste",
+            ),
+            "model_used": "gemini-3.8-flash",
+        }
+
+        def _dispatch_generate_structured(*args, **kwargs):
+            schema = kwargs.get("schema")
+            if schema is SurgicalPatchOutput:
+                return fake_patch
+            return fake_turn
+
+        with patch(
+            "app.services.gemini_client.gemini_router.generate_structured",
+            side_effect=_dispatch_generate_structured,
+        ):
+            patch_res = tool_patch_section_text(
+                project,
+                section_id="intro_contexte",
+                instruction="Mettre 2025 au CHUY",
+            )
+            self.assertEqual(len(patch_res["patches"]), 1)
+            self.assertEqual(
+                patch_res["proposed_markdown"],
+                "L'HTA est définie selon l'OMS avec précision [1].\n"
+                "La collecte aura lieu en 2025 au CHUY de Yaoundé.",
+            )
+            # Live section untouched
+            self.assertEqual(project.sections["intro_contexte"].content_markdown, original)
+
+            chat_res = run_copilot_chat(
+                project,
+                message="Corrige uniquement Douala 2023 -> Yaoundé CHUY 2025 sans toucher la définition OMS.",
+                active_module="module1",
+                active_section_id="intro_contexte",
+                mode="auto",
+            )
+
+        msg = chat_res["assistant_message"]
+        self.assertEqual(msg.tools_used, ["patch_section_text"])
+        self.assertIsNotNone(msg.proposal)
+        self.assertEqual(len(msg.proposal.patches), 1)
+        self.assertEqual(msg.proposal.patches[0].target_text, "en 2023 à Douala")
+        self.assertEqual(project.sections["intro_contexte"].content_markdown, original)
 
 
 if __name__ == "__main__":

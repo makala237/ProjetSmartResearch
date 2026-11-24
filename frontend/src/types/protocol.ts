@@ -283,10 +283,17 @@ export interface SupervisorDirectiveItem {
   created_at: string;
 }
 
+export interface TextPatchOperation {
+  target_text: string;
+  replacement_text: string;
+  reason: string;
+}
+
 export interface CopilotProposal {
   section_id: string;
   proposed_markdown: string;
   summary: string;
+  patches?: TextPatchOperation[];
   applied: boolean;
 }
 

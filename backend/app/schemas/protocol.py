@@ -391,10 +391,17 @@ class SupervisorDirectiveItem(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class TextPatchOperation(BaseModel):
+    target_text: str
+    replacement_text: str
+    reason: str = ""
+
+
 class CopilotProposal(BaseModel):
     section_id: str
     proposed_markdown: str
     summary: str = ""
+    patches: List[TextPatchOperation] = Field(default_factory=list)
     applied: bool = False
 
 

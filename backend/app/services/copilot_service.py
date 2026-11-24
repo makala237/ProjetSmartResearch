@@ -11,6 +11,7 @@ from app.schemas.protocol import (
     ProtocolProject,
     SectionState,
     SectionVersionEntry,
+    TextPatchOperation,
 )
 from app.services.gemini_client import gemini_router
 from app.services.rich_formatter import markdown_to_clean_html
@@ -129,11 +130,11 @@ class CopilotTurnOutput(BaseModel):
     )
     tool_call: str = Field(
         default="none",
-        description="Optional internal tool to execute: none | inspect_internal_library | draft_compare_and_merge | run_section_audit | search_protocol_versions",
+        description="Optional internal tool to execute: none | inspect_internal_library | draft_compare_and_merge | patch_section_text | run_section_audit | search_protocol_versions",
     )
     tool_query: str = Field(
         default="",
-        description="Optional search query or drafting instruction for tool_call.",
+        description="Optional search query or drafting/patching instruction for tool_call.",
     )
 
 
@@ -146,6 +147,7 @@ _VALID_TOOLS = frozenset(
         "none",
         "inspect_internal_library",
         "draft_compare_and_merge",
+        "patch_section_text",
         "run_section_audit",
         "search_protocol_versions",
     }
@@ -269,10 +271,11 @@ MISSION & GARDE-FOUS NON DESTRUCTIFS :
 
 OUTILS INTERNES ORCHESTRABLES (`tool_call`) :
 - `none` : réponse directe suffisante avec le contexte ci-dessous.
+- `patch_section_text` : **ÉDITION CHIRURGICALE PRÉFÉRÉE** dès que l'étudiant demande de modifier, corriger, préciser, remplacer ou supprimer une phrase, une ligne ou un passage précis sans altérer le reste de la section (retourne uniquement des remplacements ciblés ; tout le reste reste intact au caractère près).
 - `inspect_internal_library` : recherche approfondie dans la bibliothèque interne multi-sections, les documents importés et la bibliographie complète (utilise `tool_query`).
 - `run_section_audit` : exécute l'audit déterministe CAMES/FMSB (volume de mots, citations, alertes de cohérence) sur la section active sans la modifier.
 - `search_protocol_versions` : fouille toutes les versions archivées de la section active pour retrouver un passage ou terme précis (utilise `tool_query`).
-- `draft_compare_and_merge` : lance le rédacteur scientifique en arrière-plan sur une copie isolée, compare sa nouvelle génération avec le texte actuel, garde le meilleur des deux et retourne une proposition fusionnée sans écraser la section (uniquement pour une demande de rédaction/amélioration/comparaison, jamais pour une simple question).
+- `draft_compare_and_merge` : lance le rédacteur scientifique en arrière-plan sur une copie isolée, compare sa nouvelle génération avec le texte actuel, garde le meilleur des deux et retourne une proposition fusionnée sans écraser la section (uniquement pour une réécriture/comparaison globale, jamais pour une simple question).
 
 CONTEXTE DU PROJET :
 - Titre : {project.cover.title or project.name}
@@ -330,6 +333,7 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
     reply_text = (dto.reply or "").strip()
     proposal_markdown = (dto.proposed_markdown or "").strip()
     edit_summary = (dto.edit_summary or "").strip()
+    proposal_patches: List[TextPatchOperation] = []
     restore_vid: Optional[str] = None
     tools_used: List[str] = []
 
@@ -337,7 +341,7 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
     tool_q = (getattr(dto, "tool_query", "") or "").strip() or clean_msg
     if tool_name not in _VALID_TOOLS:
         tool_name = "none"
-    if mode == "question" and tool_name == "draft_compare_and_merge":
+    if mode == "question" and tool_name in ("draft_compare_and_merge", "patch_section_text"):
         tool_name = "none"
 
     if tool_name != "none":
@@ -345,6 +349,7 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
             from app.services.copilot_tools import (
                 tool_draft_compare_and_merge,
                 tool_inspect_internal_library,
+                tool_patch_section_text,
                 tool_run_section_audit,
                 tool_search_protocol_versions,
             )
@@ -405,6 +410,26 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
                         ).strip()
 
             elif (
+                tool_name == "patch_section_text"
+                and active_section_id
+                and active_section_id in project.sections
+            ):
+                t_res = tool_patch_section_text(
+                    project, section_id=active_section_id, instruction=tool_q
+                )
+                tools_used.append("patch_section_text")
+                raw_patches = t_res.get("patches") or []
+                if raw_patches:
+                    proposal_patches = [TextPatchOperation(**p) for p in raw_patches]
+                    proposal_markdown = str(t_res.get("proposed_markdown") or "").strip()
+                    edit_summary = str(t_res.get("summary") or edit_summary).strip()
+                    intent = "propose_edit"
+                    if t_res.get("model_used"):
+                        model_used = str(t_res["model_used"])
+                    if edit_summary and edit_summary not in reply_text:
+                        reply_text = f"{reply_text}\n\n{edit_summary}".strip()
+
+            elif (
                 tool_name == "draft_compare_and_merge"
                 and active_section_id
                 and active_section_id in project.sections
@@ -429,12 +454,13 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
         intent == "propose_edit"
         and active_section_id
         and active_section_id in project.sections
-        and proposal_markdown
+        and (proposal_markdown or proposal_patches)
     ):
         proposal_obj = CopilotProposal(
             section_id=active_section_id,
             proposed_markdown=proposal_markdown,
             summary=edit_summary,
+            patches=proposal_patches,
             applied=False,
         )
     elif intent == "propose_edit":

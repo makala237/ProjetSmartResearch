@@ -195,6 +195,7 @@ export function AssistantSmartResearchWidget({
         section_id: msg.proposal.section_id,
         proposed_markdown: msg.proposal.proposed_markdown,
         message_id: msg.message_id,
+        patches: msg.proposal.patches,
       });
       onProjectUpdate(updated);
     } catch (err) {
@@ -589,6 +590,8 @@ export function AssistantSmartResearchWidget({
                         return lang === "en" ? "Internal Library" : "Bibliothèque interne";
                       if (tName === "draft_compare_and_merge")
                         return lang === "en" ? "Compare & Merge" : "Comparaison & Fusion";
+                      if (tName === "patch_section_text")
+                        return lang === "en" ? "Surgical Patch" : "Édition chirurgicale";
                       if (tName === "run_section_audit")
                         return lang === "en" ? "CAMES Audit" : "Audit CAMES";
                       if (tName === "search_protocol_versions")
@@ -623,52 +626,98 @@ export function AssistantSmartResearchWidget({
                           {msg.content}
                         </div>
 
-                        {/* Non-destructive Edit Proposal card */}
-                        {!isUser && proposal && !proposalDismissed && (
-                          <div className="mt-1.5 w-[94%] rounded-xl border border-amber-200 bg-amber-50/70 p-2.5 text-[11px]">
-                            <div className="font-bold text-amber-900">
-                              {lang === "en"
-                                ? "Proposed revision (preview)"
-                                : "Proposition d'amélioration (aperçu)"}
-                            </div>
-                            {proposal.summary && (
-                              <p className="mt-0.5 text-slate-700">{proposal.summary}</p>
-                            )}
-                            <div className="mt-1.5 max-h-28 overflow-y-auto rounded border border-amber-200/80 bg-white p-2 font-serif text-[11px] leading-snug text-slate-800">
-                              {proposal.proposed_markdown}
-                            </div>
-                            {proposal.applied ? (
-                              <div className="mt-2 inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
-                                {lang === "en"
-                                  ? "Applied (previous version saved)"
-                                  : "Appliqué (version précédente sauvegardée)"}
+                        {/* Non-destructive Edit Proposal card (supports surgical diff & full preview) */}
+                        {!isUser && proposal && !proposalDismissed && (() => {
+                          const hasPatches = Boolean(proposal.patches && proposal.patches.length > 0);
+                          return (
+                            <div className="mt-1.5 w-[94%] rounded-xl border border-amber-200 bg-amber-50/70 p-2.5 text-[11px]">
+                              <div className="flex flex-wrap items-center justify-between gap-1">
+                                <div className="font-bold text-amber-900">
+                                  {hasPatches
+                                    ? lang === "en"
+                                      ? "Targeted surgical patch (preview)"
+                                      : "Correctif chirurgical ciblé (aperçu)"
+                                    : lang === "en"
+                                    ? "Proposed revision (preview)"
+                                    : "Proposition d'amélioration (aperçu)"}
+                                </div>
+                                {hasPatches && (
+                                  <span className="rounded-full bg-emerald-100 px-1.5 py-0.5 text-[9px] font-bold text-emerald-800">
+                                    {lang === "en"
+                                      ? "Rest untouched"
+                                      : "Reste de la section garanti intact"}
+                                  </span>
+                                )}
                               </div>
-                            ) : (
-                              <div className="mt-2 flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  disabled={busyAction}
-                                  onClick={() => handleApplyProposal(msg)}
-                                  className="rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
-                                >
-                                  {lang === "en" ? "Apply to section" : "Appliquer dans la section"}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setDismissedMsgIds((prev) => ({
-                                      ...prev,
-                                      [msg.message_id]: true,
-                                    }))
-                                  }
-                                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
-                                >
-                                  {lang === "en" ? "Dismiss" : "Ignorer"}
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        )}
+                              {proposal.summary && (
+                                <p className="mt-0.5 text-slate-700">{proposal.summary}</p>
+                              )}
+                              {hasPatches ? (
+                                <div className="mt-1.5 max-h-40 space-y-2 overflow-y-auto rounded border border-amber-200/80 bg-white p-2 text-[11px]">
+                                  {proposal.patches!.map((patch, pidx) => (
+                                    <div
+                                      key={pidx}
+                                      className="border-b border-slate-100 pb-1.5 last:border-b-0 last:pb-0"
+                                    >
+                                      {patch.reason && (
+                                        <div className="mb-1 text-[10px] italic text-slate-500">
+                                          {patch.reason}
+                                        </div>
+                                      )}
+                                      <div className="rounded bg-rose-50 px-1.5 py-0.5 text-rose-800 line-through">
+                                        {patch.target_text}
+                                      </div>
+                                      <div className="mt-0.5 rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-900">
+                                        {patch.replacement_text ||
+                                          (lang === "en" ? "(deleted)" : "(supprimé)")}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="mt-1.5 max-h-28 overflow-y-auto rounded border border-amber-200/80 bg-white p-2 font-serif text-[11px] leading-snug text-slate-800">
+                                  {proposal.proposed_markdown}
+                                </div>
+                              )}
+                              {proposal.applied ? (
+                                <div className="mt-2 inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                                  {lang === "en"
+                                    ? "Applied (previous version saved)"
+                                    : "Appliqué (version précédente sauvegardée)"}
+                                </div>
+                              ) : (
+                                <div className="mt-2 flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    disabled={busyAction}
+                                    onClick={() => handleApplyProposal(msg)}
+                                    className="rounded-lg bg-emerald-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-40"
+                                  >
+                                    {hasPatches
+                                      ? lang === "en"
+                                        ? "Apply surgical patch"
+                                        : "Appliquer ce correctif ciblé"
+                                      : lang === "en"
+                                      ? "Apply to section"
+                                      : "Appliquer dans la section"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setDismissedMsgIds((prev) => ({
+                                        ...prev,
+                                        [msg.message_id]: true,
+                                      }))
+                                    }
+                                    className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                                  >
+                                    {lang === "en" ? "Dismiss" : "Ignorer"}
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {/* Supervisor Directive detection */}
                         {!isUser && msg.suggested_directive && (

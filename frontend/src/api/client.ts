@@ -61,6 +61,7 @@ import type {
   SegmentReport,
   StepStatus,
   SyncStructuredReport,
+  TextPatchOperation,
   TimelineGrid,
   VariableItem,
 } from "../types/protocol";
@@ -1370,6 +1371,7 @@ export const api = {
       section_id: string;
       proposed_markdown: string;
       message_id?: string;
+      patches?: TextPatchOperation[];
     }
   ) =>
     request<ProtocolProject>(

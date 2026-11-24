@@ -70,7 +70,10 @@ from app.services.copilot_service import (
     run_copilot_chat,
     snapshot_section_version,
 )
-from app.services.copilot_tools import tool_draft_compare_and_merge
+from app.services.copilot_tools import (
+    apply_surgical_text_patches,
+    tool_draft_compare_and_merge,
+)
 from app.services.gemini_client import gemini_router
 from app.schemas.protocol import (
     CoverMetadata,
@@ -2978,6 +2981,7 @@ class CopilotApplyProposalRequest(BaseModel):
     section_id: str
     proposed_markdown: str
     message_id: Optional[str] = None
+    patches: Optional[List[Dict[str, Any]]] = None
 
 
 @app.get("/api/projects/{project_id}/sections/{section_id}/versions")
@@ -3182,7 +3186,8 @@ def apply_copilot_proposal_endpoint(
     if sec is None:
         raise HTTPException(status_code=404, detail="Section introuvable.")
     clean_md = (payload.proposed_markdown or "").strip()
-    if not clean_md:
+    patches_list = list(payload.patches or [])
+    if not clean_md and not patches_list:
         raise HTTPException(status_code=400, detail="La proposition ne peut pas être vide.")
 
     snapshot_section_version(
@@ -3190,8 +3195,14 @@ def apply_copilot_proposal_endpoint(
         source="copilot",
         note="Avant application proposition Assistant Smart Research",
     )
-    sec.content_markdown = clean_md
-    sec.content_html = markdown_to_clean_html(clean_md)
+    final_md = clean_md
+    if patches_list:
+        patch_res = apply_surgical_text_patches(sec.content_markdown or "", patches_list)
+        if patch_res["applied_count"] > 0:
+            final_md = patch_res["patched_markdown"]
+
+    sec.content_markdown = final_md
+    sec.content_html = markdown_to_clean_html(final_md)
     now = datetime.now(timezone.utc)
     sec.updated_at = now
     if payload.message_id:
