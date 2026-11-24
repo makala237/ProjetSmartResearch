@@ -219,9 +219,13 @@ app.add_middleware(
 
 @app.middleware("http")
 async def _cleanup_request_contextvars(request: Request, call_next):
+    from app.core.request_lang import reset_request_lang, set_request_lang
+
+    set_request_lang(request.headers.get("accept-language"))
     try:
         return await call_next(request)
     finally:
+        reset_request_lang()
         reset_ai_routing_policy()
         reset_pipeline_context()
 
@@ -1854,13 +1858,17 @@ async def import_existing_protocol(
 ) -> Dict[str, object]:
     project = get_authorized_project(project_id, current_user)
     if project.owner_user_id and project.owner_user_id != current_user.id:
+        from app.core.request_lang import bi
+
         raise HTTPException(
             status_code=403,
             detail={
                 "code": "CROSS_USER_IMPORT_BLOCKED",
-                "message": (
+                "message": bi(
                     "Par sécurité, l'importation sur le protocole d'un autre utilisateur est bloquée "
-                    "afin d'éviter d'écraser son travail. Créez votre propre protocole dans le Studio."
+                    "afin d'éviter d'écraser son travail. Créez votre propre protocole dans le Studio.",
+                    "For safety, importing a document onto another user's protocol is blocked "
+                    "to prevent overwriting their work. Create your own protocol in the Studio.",
                 ),
             },
         )

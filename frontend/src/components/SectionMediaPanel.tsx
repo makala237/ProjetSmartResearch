@@ -242,11 +242,13 @@ export function SectionMediaPanel({
       return [
         {
           table_id: "__structured_variables__",
-          title: "Liste opérationnelle des variables d'étude",
+          title: isEn ? "Operational list of study variables" : "Liste opérationnelle des variables d'étude",
           colsCount: 5,
           rowsCount: project.variables.length,
           anchor_hint: "",
-          headers: ["Variable", "Rôle", "Définition", "Échelle", "Outil"],
+          headers: isEn
+            ? ["Variable", "Role", "Definition", "Scale", "Tool"]
+            : ["Variable", "Rôle", "Définition", "Échelle", "Outil"],
           rows: project.variables.map((v) => [
             v.name,
             v.role,
@@ -265,17 +267,19 @@ export function SectionMediaPanel({
       return [
         {
           table_id: "__structured_synthesis__",
-          title: "Synthèse des études antérieures",
+          title: isEn ? "Synthesis of previous studies" : "Synthèse des études antérieures",
           colsCount: 5,
           rowsCount: project.literature_synthesis.length,
           anchor_hint: "",
-          headers: [
-            "Auteur(s), Pays (Année)",
-            "Devis",
-            "Population",
-            "Résultats principaux",
-            "Limites",
-          ],
+          headers: isEn
+            ? ["Author(s), Country (Year)", "Design", "Population", "Main results", "Limitations"]
+            : [
+                "Auteur(s), Pays (Année)",
+                "Devis",
+                "Population",
+                "Résultats principaux",
+                "Limites",
+              ],
           rows: project.literature_synthesis.map((s) => [
             s.authors_country_year,
             s.study_design,
@@ -295,11 +299,11 @@ export function SectionMediaPanel({
       return [
         {
           table_id: "__structured_timeline__",
-          title: "Chronogramme des activités",
+          title: isEn ? "Activity timeline" : "Chronogramme des activités",
           colsCount: periods.length + 1,
           rowsCount: project.timeline_grid.rows.length,
           anchor_hint: "",
-          headers: ["Activité", ...periods],
+          headers: [isEn ? "Activity" : "Activité", ...periods],
           rows: project.timeline_grid.rows.map((r) => [
             r.activity,
             ...periods.map((p) => (r.active_periods.includes(p) ? "■" : "")),
@@ -322,16 +326,18 @@ export function SectionMediaPanel({
       return [
         {
           table_id: "__structured_budget__",
-          title: "Budget prévisionnel de l'étude",
+          title: isEn ? "Estimated study budget" : "Budget prévisionnel de l'étude",
           colsCount: 4,
           rowsCount: budgetRows.length,
           anchor_hint: "",
-          headers: [
-            "Désignation",
-            "Prix unitaire (FCFA)",
-            "Quantité",
-            "Prix total (FCFA)",
-          ],
+          headers: isEn
+            ? ["Item", "Unit price (FCFA)", "Quantity", "Total price (FCFA)"]
+            : [
+                "Désignation",
+                "Prix unitaire (FCFA)",
+                "Quantité",
+                "Prix total (FCFA)",
+              ],
           rows: budgetRows,
           isStructured: true,
         },
@@ -339,6 +345,7 @@ export function SectionMediaPanel({
     }
     return [];
   }, [
+    isEn,
     customTables,
     secState?.suppress_structured_table,
     sectionId,
@@ -495,7 +502,9 @@ export function SectionMediaPanel({
   async function handleSuggestDiagram() {
     if (!dgTitle.trim()) {
       onError(
-        "Indiquez d'abord un titre pour le schéma (ex: Modèle conceptuel)."
+        isEn
+          ? "Please enter a diagram title first (e.g. Conceptual framework)."
+          : "Indiquez d'abord un titre pour le schéma (ex: Modèle conceptuel)."
       );
       return;
     }
@@ -525,7 +534,11 @@ export function SectionMediaPanel({
 
   async function handleSaveDiagram() {
     if (!dgTitle.trim() || dgNodes.length === 0) {
-      onError("Ajoutez un titre et au moins un bloc au schéma.");
+      onError(
+        isEn
+          ? "Add a title and at least one block to the diagram."
+          : "Ajoutez un titre et au moins un bloc au schéma."
+      );
       return;
     }
     setBusySaveDg(true);
@@ -558,7 +571,9 @@ export function SectionMediaPanel({
   async function handleSuggestTable() {
     if (!tblTitle.trim()) {
       onError(
-        "Indiquez d'abord un titre de tableau pour que l'IA puisse le proposer."
+        isEn
+          ? "Please enter a table title first so AI can propose its structure."
+          : "Indiquez d'abord un titre de tableau pour que l'IA puisse le proposer."
       );
       return;
     }
@@ -587,7 +602,7 @@ export function SectionMediaPanel({
 
   async function handleSaveTable() {
     if (!tblTitle.trim()) {
-      onError("Veuillez saisir un titre pour le tableau.");
+      onError(isEn ? "Please enter a table title." : "Veuillez saisir un titre pour le tableau.");
       return;
     }
     setBusySaveTable(true);
@@ -615,7 +630,7 @@ export function SectionMediaPanel({
 
   async function handleUpdateExistingTable(tableId: string) {
     if (!editTblTitle.trim()) {
-      onError("Le nom du tableau ne peut pas être vide.");
+      onError(isEn ? "Table title cannot be empty." : "Le nom du tableau ne peut pas être vide.");
       return;
     }
     setBusyUpdateTable(true);
@@ -643,7 +658,11 @@ export function SectionMediaPanel({
 
   async function handleUploadFigure() {
     if (!figFile) {
-      onError("Sélectionnez d'abord un fichier image (.png, .jpg, .jpeg).");
+      onError(
+        isEn
+          ? "Select an image file first (.png, .jpg, .jpeg)."
+          : "Sélectionnez d'abord un fichier image (.png, .jpg, .jpeg)."
+      );
       return;
     }
     setBusyUploadFig(true);
@@ -671,7 +690,7 @@ export function SectionMediaPanel({
 
   async function handleUpdateExistingImage(assetId: string) {
     if (!editImgTitle.trim()) {
-      onError("Le nom de la figure ne peut pas être vide.");
+      onError(isEn ? "Figure title cannot be empty." : "Le nom de la figure ne peut pas être vide.");
       return;
     }
     setBusyUpdateImage(true);
@@ -693,7 +712,7 @@ export function SectionMediaPanel({
 
   async function handleUpdateExistingDiagram(diagramId: string) {
     if (!editDgTitle.trim()) {
-      onError("Le nom du schéma ne peut pas être vide.");
+      onError(isEn ? "Diagram title cannot be empty." : "Le nom du schéma ne peut pas être vide.");
       return;
     }
     setBusyUpdateDiagram(true);

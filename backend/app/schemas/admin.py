@@ -58,6 +58,8 @@ class AdminCreateUserRequest(BaseModel):
     initial_protocol_title: Optional[str] = None
     study_type: str = "Étude transversale analytique"
     cover: Optional[CoverMetadata] = None
+    gemini_api_key_id: Optional[str] = None
+    model_routing_config: Optional["UserModelRoutingConfig"] = None
 
 
 class AdminUpdateUserRequest(BaseModel):
@@ -66,6 +68,8 @@ class AdminUpdateUserRequest(BaseModel):
     phone: Optional[str] = None
     role: Optional[str] = None
     is_active: Optional[bool] = None
+    gemini_api_key_id: Optional[str] = None
+    model_routing_config: Optional["UserModelRoutingConfig"] = None
 
 
 class AdminCreateUserResponse(BaseModel):
@@ -141,6 +145,8 @@ class UsageEventOut(BaseModel):
     action: str
     model_used: str = ""
     credits_cost: int = 0
+    tokens_used: int = 0
+    api_key_id: str = "default"
     status: str = "ok"
     ip_address: str = ""
     created_at: datetime
@@ -180,6 +186,9 @@ class AdminStudentStatsRow(BaseModel):
     entitlements: Dict[str, ModuleEntitlementOut] = Field(default_factory=dict)
     ai_quota: AIQuotaOut = Field(default_factory=AIQuotaOut)
     status_summary: str = "none"  # admin | active | expiring_soon | expired | disabled | none
+    gemini_api_key_id: Optional[str] = None
+    gemini_api_key_name: str = ""
+    model_routing_config: Optional["UserModelRoutingConfig"] = None
 
 
 class AdminUserDetailOut(BaseModel):
@@ -189,6 +198,7 @@ class AdminUserDetailOut(BaseModel):
     recent_audit_logs: List[AdminAuditLogOut] = Field(default_factory=list)
     project_cover: Optional[CoverMetadata] = None
     project_study_type: Optional[str] = None
+    model_daily_usage: List["UserModelDailyUsageOut"] = Field(default_factory=list)
 
 
 class AdminDashboardStatsOut(BaseModel):
@@ -207,3 +217,93 @@ class AdminDashboardStatsOut(BaseModel):
     month_ai_credits_used: int = 0
     recent_grants: List[AdminGrantRecordOut] = Field(default_factory=list)
     expiring_soon_list: List[AdminStudentStatsRow] = Field(default_factory=list)
+
+
+class GeminiApiKeyCreateRequest(BaseModel):
+    name: str = Field(..., min_length=2, max_length=128)
+    owner_label: str = Field("", max_length=128)
+    api_key: str = Field(..., min_length=10, max_length=512)
+    is_active: bool = True
+
+
+class GeminiApiKeyUpdateRequest(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=128)
+    owner_label: Optional[str] = Field(None, max_length=128)
+    api_key: Optional[str] = Field(None, min_length=10, max_length=512)
+    is_active: Optional[bool] = None
+
+
+class GeminiApiKeyUserUsageOut(BaseModel):
+    user_id: str
+    full_name: str
+    email: str
+    role: str = "student"
+    is_assigned: bool = True
+    calls_total: int = 0
+    tokens_total: int = 0
+    credits_total: int = 0
+    calls_today: int = 0
+    tokens_today: int = 0
+    last_used_at: Optional[datetime] = None
+
+
+class GeminiApiKeyStatsOut(BaseModel):
+    id: str
+    name: str
+    owner_label: str = ""
+    masked_key: str = ""
+    is_default: bool = False
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    assigned_users_count: int = 0
+    total_calls: int = 0
+    total_tokens: int = 0
+    total_credits: int = 0
+    calls_today: int = 0
+    tokens_today: int = 0
+    last_used_at: Optional[datetime] = None
+    users: List[GeminiApiKeyUserUsageOut] = Field(default_factory=list)
+
+
+class ModelRoutingEntry(BaseModel):
+    model: str = Field(..., min_length=2, max_length=128)
+    max_rpd: Optional[int] = Field(None, ge=0, le=100_000)
+    max_tpm: Optional[int] = Field(None, ge=0, le=50_000_000)
+
+
+class UserModelRoutingConfig(BaseModel):
+    enabled: bool = False
+    models: List[ModelRoutingEntry] = Field(default_factory=list)
+
+
+class ModelCatalogItemOut(BaseModel):
+    id: str
+    label: str
+    tier: str = "standard"  # vip | standard | lite
+    in_use: bool = False
+    free_tier_rpm: int = 10
+    free_tier_tpm: int = 250_000
+    free_tier_rpd: int = 250
+    description: str = ""
+
+
+class ModelRoutingPresetOut(BaseModel):
+    id: str
+    label: str
+    description: str = ""
+    config: UserModelRoutingConfig
+
+
+class ModelCatalogResponse(BaseModel):
+    models: List[ModelCatalogItemOut] = Field(default_factory=list)
+    presets: List[ModelRoutingPresetOut] = Field(default_factory=list)
+    note: str = ""
+
+
+class UserModelDailyUsageOut(BaseModel):
+    model: str
+    rpd_used: int = 0
+    tpm_used: int = 0
+    max_rpd: Optional[int] = None
+    max_tpm: Optional[int] = None

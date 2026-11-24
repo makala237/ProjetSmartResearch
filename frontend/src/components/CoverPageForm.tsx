@@ -9,6 +9,7 @@ import {
   Upload,
 } from "lucide-react";
 import { api, withAuthToken } from "../api/client";
+import { useLanguage } from "../i18n/LanguageContext";
 import type {
   CoverMetadata,
   ProtocolProject,
@@ -165,6 +166,8 @@ export function CoverPageForm({
   coDirDraft: controlledCoDirDraft,
   onCoDirDraftChange,
 }: CoverPageFormProps) {
+  const { lang } = useLanguage();
+  const isEn = lang === "en";
   const [internalCoDirDraft, setInternalCoDirDraft] =
     useState<SupervisorInfo>(emptySupervisor);
   const coDirDraft = controlledCoDirDraft ?? internalCoDirDraft;
@@ -239,7 +242,11 @@ export function CoverPageForm({
       });
     } catch (err: unknown) {
       onError?.(
-        err instanceof Error ? err.message : "Échec de l'import du logo."
+        err instanceof Error
+          ? err.message
+          : isEn
+          ? "Failed to upload logo."
+          : "Échec de l'import du logo."
       );
     } finally {
       setUploadingLogoSlot(null);
@@ -272,6 +279,8 @@ export function CoverPageForm({
       onError?.(
         err instanceof Error
           ? err.message
+          : isEn
+          ? "Failed to delete logo."
           : "Échec de la suppression du logo."
       );
     } finally {
@@ -309,9 +318,13 @@ export function CoverPageForm({
           <Lock className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
           <div>
             <span className="font-bold">
-              Page de garde définie et verrouillée par l&apos;administrateur — Consultation uniquement.
+              {isEn
+                ? "Cover page defined and locked by the administrator — View only."
+                : "Page de garde définie et verrouillée par l'administrateur — Consultation uniquement."}
             </span>{" "}
-            Toute rectification (titre, institution, logos, impétrant ou jury) doit être effectuée depuis le Portail Administrateur.
+            {isEn
+              ? "Any update (title, institution, logos, candidate or committee) must be made from the Admin Portal."
+              : "Toute rectification (titre, institution, logos, impétrant ou jury) doit être effectuée depuis le Portail Administrateur."}
           </div>
         </div>
       )}
@@ -320,12 +333,14 @@ export function CoverPageForm({
         <div className="md:col-span-2">
           <label className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-600">
             <span>
-              Titre complet du protocole (encadré 18 à 24 pt)
+              {isEn
+                ? "Full protocol title (18–24 pt framed box)"
+                : "Titre complet du protocole (encadré 18 à 24 pt)"}
               {titleRequired ? " *" : ""}
             </span>
             {readOnly && (
               <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800">
-                <Lock className="h-2.5 w-2.5" /> Verrouillé (Admin uniquement)
+                <Lock className="h-2.5 w-2.5" /> {isEn ? "Locked (Admin only)" : "Verrouillé (Admin uniquement)"}
               </span>
             )}
           </label>
@@ -334,7 +349,11 @@ export function CoverPageForm({
             required={titleRequired}
             disabled={readOnly}
             value={value.title}
-            placeholder="Ex : Facteurs associés à l'hypertension artérielle à Yaoundé"
+            placeholder={
+              isEn
+                ? "e.g. Factors associated with arterial hypertension in Yaoundé"
+                : "Ex : Facteurs associés à l'hypertension artérielle à Yaoundé"
+            }
             onChange={(e) => onChange({ ...value, title: e.target.value })}
             className={inputCls}
           />
@@ -342,7 +361,7 @@ export function CoverPageForm({
 
         <div>
           <label className="block text-xs font-medium text-slate-600">
-            Diplôme visé
+            {isEn ? "Target degree" : "Diplôme visé"}
           </label>
           <input
             type="text"
@@ -357,7 +376,7 @@ export function CoverPageForm({
 
         <div>
           <label className="block text-xs font-medium text-slate-600">
-            Année académique
+            {isEn ? "Academic year" : "Année académique"}
           </label>
           <input
             type="text"
@@ -374,18 +393,20 @@ export function CoverPageForm({
         <div className="md:col-span-2 space-y-3 rounded-xl border border-indigo-200 bg-indigo-50/40 p-3.5">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="text-xs font-bold text-indigo-950">
-              En-tête institutionnel bilingue (CAMES — FR / EN) &amp; Logos
+              {isEn
+                ? "Bilingual institutional header (CAMES — FR / EN) & Logos"
+                : "En-tête institutionnel bilingue (CAMES — FR / EN) & Logos"}
             </span>
           </div>
 
           {/* Étage 3 : Université */}
           <div className="grid grid-cols-1 gap-2.5 rounded-lg border border-white/80 bg-white/80 p-2.5 sm:grid-cols-2">
             <div className="sm:col-span-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              Étage 3 — Université
+              {isEn ? "Tier 3 — University" : "Étage 3 — Université"}
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600">
-                Université (FR)
+                {isEn ? "University (FR)" : "Université (FR)"}
               </label>
               <input
                 type="text"
@@ -419,20 +440,28 @@ export function CoverPageForm({
           <div className="grid grid-cols-1 gap-2.5 rounded-lg border border-dashed border-slate-300 bg-white/60 p-2.5 sm:grid-cols-2">
             <div className="sm:col-span-2 flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                Étage intermédiaire (facultatif) — Coordonnées Université
+                {isEn
+                  ? "Optional middle tier — University contact details"
+                  : "Étage intermédiaire (facultatif) — Coordonnées Université"}
               </span>
               <span className="text-[10px] text-slate-500">
-                N&apos;apparaît entre l&apos;université et la faculté que s&apos;il est rempli
+                {isEn
+                  ? "Only appears between university and faculty if filled"
+                  : "N'apparaît entre l'université et la faculté que s'il est rempli"}
               </span>
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600">
-                Boîte postale Université (B.P.)
+                {isEn ? "University P.O. Box" : "Boîte postale Université (B.P.)"}
               </label>
               <input
                 type="text"
                 disabled={readOnly}
-                placeholder="Ex : 337 Yaoundé (laisser vide pour masquer)"
+                placeholder={
+                  isEn
+                    ? "e.g. 337 Yaoundé (leave empty to hide)"
+                    : "Ex : 337 Yaoundé (laisser vide pour masquer)"
+                }
                 value={value.university_po_box ?? ""}
                 onChange={(e) =>
                   onChange({ ...value, university_po_box: e.target.value })
@@ -442,12 +471,16 @@ export function CoverPageForm({
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600">
-                Adresse e-mail Université
+                {isEn ? "University e-mail address" : "Adresse e-mail Université"}
               </label>
               <input
                 type="text"
                 disabled={readOnly}
-                placeholder="Ex : rectorat@uy1.uninet.cm (facultatif)"
+                placeholder={
+                  isEn
+                    ? "e.g. rectorat@uy1.uninet.cm (optional)"
+                    : "Ex : rectorat@uy1.uninet.cm (facultatif)"
+                }
                 value={value.university_email ?? ""}
                 onChange={(e) =>
                   onChange({ ...value, university_email: e.target.value })
@@ -473,11 +506,11 @@ export function CoverPageForm({
           {/* Étage 4 : Faculté / École */}
           <div className="grid grid-cols-1 gap-2.5 rounded-lg border border-white/80 bg-white/80 p-2.5 sm:grid-cols-2">
             <div className="sm:col-span-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              Étage 4 — Faculté / École / Institut
+              {isEn ? "Tier 4 — Faculty / School / Institute" : "Étage 4 — Faculté / École / Institut"}
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600">
-                Faculté / École (FR)
+                {isEn ? "Faculty / School (FR)" : "Faculté / École (FR)"}
               </label>
               <input
                 type="text"
@@ -510,11 +543,11 @@ export function CoverPageForm({
           {/* Étage 5 : Département */}
           <div className="grid grid-cols-1 gap-2.5 rounded-lg border border-white/80 bg-white/80 p-2.5 sm:grid-cols-2">
             <div className="sm:col-span-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-              Étage 5 — Département académique
+              {isEn ? "Tier 5 — Academic department" : "Étage 5 — Département académique"}
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600">
-                Département (FR)
+                {isEn ? "Department (FR)" : "Département (FR)"}
               </label>
               <input
                 type="text"
@@ -546,20 +579,28 @@ export function CoverPageForm({
           <div className="grid grid-cols-1 gap-2.5 rounded-lg border border-dashed border-slate-300 bg-white/60 p-2.5 sm:grid-cols-2">
             <div className="sm:col-span-2 flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-                Étage après département (facultatif) — Coordonnées Faculté
+                {isEn
+                  ? "Optional post-department tier — Faculty contact details"
+                  : "Étage après département (facultatif) — Coordonnées Faculté"}
               </span>
               <span className="text-[10px] text-slate-500">
-                N&apos;apparaît après le département que s&apos;il est rempli
+                {isEn
+                  ? "Only appears after the department if filled"
+                  : "N'apparaît après le département que s'il est rempli"}
               </span>
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600">
-                Boîte postale Faculté (B.P.)
+                {isEn ? "Faculty P.O. Box" : "Boîte postale Faculté (B.P.)"}
               </label>
               <input
                 type="text"
                 disabled={readOnly}
-                placeholder="Ex : 1364 Yaoundé (laisser vide pour masquer)"
+                placeholder={
+                  isEn
+                    ? "e.g. 1364 Yaoundé (leave empty to hide)"
+                    : "Ex : 1364 Yaoundé (laisser vide pour masquer)"
+                }
                 value={value.faculty_po_box ?? ""}
                 onChange={(e) =>
                   onChange({ ...value, faculty_po_box: e.target.value })
@@ -569,12 +610,16 @@ export function CoverPageForm({
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-600">
-                Adresse e-mail Faculté
+                {isEn ? "Faculty e-mail address" : "Adresse e-mail Faculté"}
               </label>
               <input
                 type="text"
                 disabled={readOnly}
-                placeholder="Ex : decanat@fmsb-uy1.cm (facultatif)"
+                placeholder={
+                  isEn
+                    ? "e.g. decanat@fmsb-uy1.cm (optional)"
+                    : "Ex : decanat@fmsb-uy1.cm (facultatif)"
+                }
                 value={value.faculty_email ?? ""}
                 onChange={(e) =>
                   onChange({ ...value, faculty_email: e.target.value })
@@ -600,25 +645,33 @@ export function CoverPageForm({
           {/* Logos centraux : 1 ou 2 logos empilés */}
           <div className="grid grid-cols-1 gap-3 rounded-lg border border-white/80 bg-white/90 p-3 sm:grid-cols-2">
             <div className="sm:col-span-2 text-[11px] font-semibold uppercase tracking-wide text-slate-600">
-              Emblèmes centraux (1 logo au centre, ou Logo Université au-dessus + Logo Faculté en dessous)
+              {isEn
+                ? "Central emblems (1 centered logo, or University logo above + Faculty logo below)"
+                : "Emblèmes centraux (1 logo au centre, ou Logo Université au-dessus + Logo Faculté en dessous)"}
             </div>
 
             {/* Logo 1 : Université mère */}
             <div className="flex items-center gap-3 rounded-lg border border-slate-200 bg-slate-50/70 p-2.5">
               <img
                 src={uniPreviewSrc}
-                alt="Logo Université"
+                alt={isEn ? "University Logo" : "Logo Université"}
                 className="h-14 w-12 shrink-0 rounded border border-slate-200 bg-white object-contain p-0.5"
               />
               <div className="min-w-0 flex-1 space-y-1.5">
                 <div className="text-xs font-semibold text-slate-800">
-                  Logo 1 — Université mère (haut)
+                  {isEn ? "Logo 1 — Parent University (top)" : "Logo 1 — Université mère (haut)"}
                 </div>
                 {!readOnly && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <label className="inline-flex cursor-pointer items-center gap-1 rounded bg-indigo-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-indigo-700">
                       <Upload className="h-3 w-3" />
-                      {uploadingLogoSlot === "university" ? "Envoi…" : "Changer"}
+                      {uploadingLogoSlot === "university"
+                        ? isEn
+                          ? "Uploading…"
+                          : "Envoi…"
+                        : isEn
+                        ? "Change"
+                        : "Changer"}
                       <input
                         type="file"
                         accept="image/png,image/jpeg,image/webp"
@@ -638,7 +691,7 @@ export function CoverPageForm({
                         onClick={() => void handleCoverLogoDelete("university")}
                         className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
                       >
-                        Par défaut
+                        {isEn ? "Default" : "Par défaut"}
                       </button>
                     )}
                   </div>
@@ -651,7 +704,7 @@ export function CoverPageForm({
               {facPreviewSrc ? (
                 <img
                   src={facPreviewSrc}
-                  alt="Logo Faculté"
+                  alt={isEn ? "Faculty Logo" : "Logo Faculté"}
                   className="h-14 w-12 shrink-0 rounded border border-slate-200 bg-white object-contain p-0.5"
                 />
               ) : (
@@ -661,16 +714,24 @@ export function CoverPageForm({
               )}
               <div className="min-w-0 flex-1 space-y-1.5">
                 <div className="text-xs font-semibold text-slate-800">
-                  Logo 2 — Faculté (facultatif, en dessous)
+                  {isEn
+                    ? "Logo 2 — Faculty (optional, below)"
+                    : "Logo 2 — Faculté (facultatif, en dessous)"}
                 </div>
                 {!readOnly && (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <label className="inline-flex cursor-pointer items-center gap-1 rounded bg-slate-800 px-2 py-1 text-[11px] font-semibold text-white hover:bg-slate-900">
                       <Upload className="h-3 w-3" />
                       {uploadingLogoSlot === "faculty"
-                        ? "Envoi…"
+                        ? isEn
+                          ? "Uploading…"
+                          : "Envoi…"
                         : facPreviewSrc
-                        ? "Remplacer"
+                        ? isEn
+                          ? "Replace"
+                          : "Remplacer"
+                        : isEn
+                        ? "Add 2nd logo"
                         : "Ajouter 2ᵉ logo"}
                       <input
                         type="file"
@@ -692,7 +753,7 @@ export function CoverPageForm({
                         className="inline-flex items-center gap-1 rounded border border-rose-200 bg-rose-50 px-2 py-1 text-[11px] font-medium text-rose-700 hover:bg-rose-100"
                       >
                         <Trash2 className="h-3 w-3" />
-                        Retirer
+                        {isEn ? "Remove" : "Retirer"}
                       </button>
                     )}
                   </div>
@@ -705,7 +766,7 @@ export function CoverPageForm({
         {/* Identité étudiant sur la page de garde */}
         <div>
           <label className="block text-xs font-medium text-slate-600">
-            Noms &amp; Prénoms de l&apos;étudiant(e)
+            {isEn ? "Student full name" : "Noms & Prénoms de l'étudiant(e)"}
           </label>
           <input
             type="text"
@@ -718,7 +779,7 @@ export function CoverPageForm({
 
         <div>
           <label className="block text-xs font-medium text-slate-600">
-            Matricule
+            {isEn ? "Registration number" : "Matricule"}
           </label>
           <input
             type="text"
@@ -731,13 +792,17 @@ export function CoverPageForm({
 
         <div>
           <label className="block text-xs font-medium text-slate-600">
-            Niveau / Qualité académique
+            {isEn ? "Academic level / standing" : "Niveau / Qualité académique"}
           </label>
           <input
             type="text"
             disabled={readOnly}
             value={value.student_level}
-            placeholder="Ex : Étudiant(e) en 6ème année de médecine générale"
+            placeholder={
+              isEn
+                ? "e.g. 6th-year General Medicine student"
+                : "Ex : Étudiant(e) en 6ème année de médecine générale"
+            }
             onChange={(e) =>
               onChange({ ...value, student_level: e.target.value })
             }
@@ -748,7 +813,7 @@ export function CoverPageForm({
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <label className="block text-xs font-medium text-slate-600">
-              Téléphone étudiant
+              {isEn ? "Student phone" : "Téléphone étudiant"}
             </label>
             <input
               type="text"
@@ -763,13 +828,13 @@ export function CoverPageForm({
           </div>
           <div>
             <label className="block text-xs font-medium text-slate-600">
-              E-mail étudiant
+              {isEn ? "Student e-mail" : "E-mail étudiant"}
             </label>
             <input
               type="text"
               disabled={readOnly}
               value={value.student_email}
-              placeholder="etudiant@fmsb.cm"
+              placeholder="student@fmsb.cm"
               onChange={(e) =>
                 onChange({ ...value, student_email: e.target.value })
               }
@@ -781,12 +846,12 @@ export function CoverPageForm({
         {/* Directeur de mémoire */}
         <div className="md:col-span-2 rounded-lg border border-slate-200 bg-slate-50/70 p-3.5">
           <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-700">
-            Directeur de mémoire
+            {isEn ? "Thesis Supervisor" : "Directeur de mémoire"}
           </div>
           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
             <div>
               <label className="block text-[11px] font-medium text-slate-600">
-                Nom (Times New Roman 14, gras)
+                {isEn ? "Name (Times New Roman 14, bold)" : "Nom (Times New Roman 14, gras)"}
               </label>
               <input
                 type="text"
@@ -809,12 +874,12 @@ export function CoverPageForm({
             </div>
             <div>
               <label className="block text-[11px] font-medium text-slate-600">
-                Grade (Times New Roman 12)
+                {isEn ? "Academic rank (Times New Roman 12)" : "Grade (Times New Roman 12)"}
               </label>
               <input
                 type="text"
                 disabled={readOnly}
-                placeholder="Ex : Professeure Titulaire"
+                placeholder={isEn ? "e.g. Full Professor" : "Ex : Professeure Titulaire"}
                 value={value.director_info?.rank ?? ""}
                 onChange={(e) => {
                   const nextDir = {
@@ -832,12 +897,12 @@ export function CoverPageForm({
             </div>
             <div>
               <label className="block text-[11px] font-medium text-slate-600">
-                Spécialité (Times New Roman 12)
+                {isEn ? "Specialty (Times New Roman 12)" : "Spécialité (Times New Roman 12)"}
               </label>
               <input
                 type="text"
                 disabled={readOnly}
-                placeholder="Ex : Anthropologie médicale"
+                placeholder={isEn ? "e.g. Medical Anthropology" : "Ex : Anthropologie médicale"}
                 value={value.director_info?.specialty ?? ""}
                 onChange={(e) => {
                   const nextDir = {
@@ -860,10 +925,12 @@ export function CoverPageForm({
         <div className="md:col-span-2 rounded-lg border border-slate-200 bg-slate-50/70 p-3.5">
           <div className="mb-2 flex items-center justify-between">
             <span className="text-xs font-bold uppercase tracking-wide text-slate-700">
-              Co-directeur(s) ({(value.co_directors_info ?? []).length})
+              {isEn ? "Co-supervisor(s)" : "Co-directeur(s)"} ({(value.co_directors_info ?? []).length})
             </span>
             <span className="text-[11px] text-slate-500">
-              Nom en 14 pt gras · Grade et Spécialité en 12 pt
+              {isEn
+                ? "Name in 14 pt bold · Rank & Specialty in 12 pt"
+                : "Nom en 14 pt gras · Grade et Spécialité en 12 pt"}
             </span>
           </div>
 
@@ -900,7 +967,7 @@ export function CoverPageForm({
                             .filter(Boolean),
                         });
                       }}
-                      title="Retirer ce co-directeur"
+                      title={isEn ? "Remove co-supervisor" : "Retirer ce co-directeur"}
                       className="rounded p-1 text-rose-600 hover:bg-rose-50"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
@@ -912,7 +979,7 @@ export function CoverPageForm({
           ) : (
             readOnly && (
               <div className="text-xs text-slate-500">
-                Aucun co-directeur renseigné.
+                {isEn ? "No co-supervisor specified." : "Aucun co-directeur renseigné."}
               </div>
             )
           )}
@@ -922,7 +989,7 @@ export function CoverPageForm({
               <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
                 <div>
                   <label className="block text-[11px] font-medium text-slate-600">
-                    Nom du Co-directeur
+                    {isEn ? "Co-supervisor name" : "Nom du Co-directeur"}
                   </label>
                   <input
                     type="text"
@@ -936,11 +1003,11 @@ export function CoverPageForm({
                 </div>
                 <div>
                   <label className="block text-[11px] font-medium text-slate-600">
-                    Grade
+                    {isEn ? "Academic rank" : "Grade"}
                   </label>
                   <input
                     type="text"
-                    placeholder="Ex : Chargée de cours"
+                    placeholder={isEn ? "e.g. Senior Lecturer" : "Ex : Chargée de cours"}
                     value={coDirDraft.rank}
                     onChange={(e) =>
                       setCoDirDraft({ ...coDirDraft, rank: e.target.value })
@@ -950,11 +1017,11 @@ export function CoverPageForm({
                 </div>
                 <div>
                   <label className="block text-[11px] font-medium text-slate-600">
-                    Spécialité
+                    {isEn ? "Specialty" : "Spécialité"}
                   </label>
                   <input
                     type="text"
-                    placeholder="Ex : Chirurgie Pédiatrique"
+                    placeholder={isEn ? "e.g. Pediatric Surgery" : "Ex : Chirurgie Pédiatrique"}
                     value={coDirDraft.specialty}
                     onChange={(e) =>
                       setCoDirDraft({
@@ -997,7 +1064,7 @@ export function CoverPageForm({
                   className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-300 bg-white px-3 py-1.5 text-xs font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-40"
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  Ajouter un co-directeur
+                  {isEn ? "Add co-supervisor" : "Ajouter un co-directeur"}
                 </button>
               </div>
             </>
@@ -1012,7 +1079,9 @@ export function CoverPageForm({
             className="flex w-full items-center justify-between px-3.5 py-2.5 text-left text-xs font-semibold text-slate-700 hover:bg-slate-100/70"
           >
             <span>
-              Informations complémentaires (période d&apos;étude, hôpitaux d&apos;accueil, comités d&apos;éthique)
+              {isEn
+                ? "Additional details (study period, host hospitals, ethics committees)"
+                : "Informations complémentaires (période d'étude, hôpitaux d'accueil, comités d'éthique)"}
             </span>
             {showAdvanced ? (
               <ChevronUp className="h-4 w-4 text-slate-500" />
@@ -1025,12 +1094,16 @@ export function CoverPageForm({
             <div className="grid grid-cols-1 gap-3 border-t border-slate-200 p-3.5 sm:grid-cols-2">
               <div className="sm:col-span-2">
                 <label className="block text-xs font-medium text-slate-600">
-                  Période d&apos;étude prévue
+                  {isEn ? "Planned study period" : "Période d'étude prévue"}
                 </label>
                 <input
                   type="text"
                   disabled={readOnly}
-                  placeholder="Ex : 1er Janvier 2026 au 31 Décembre 2026"
+                  placeholder={
+                    isEn
+                      ? "e.g. January 1, 2026 to December 31, 2026"
+                      : "Ex : 1er Janvier 2026 au 31 Décembre 2026"
+                  }
                   value={value.study_period_label ?? ""}
                   onChange={(e) =>
                     onChange({ ...value, study_period_label: e.target.value })
@@ -1041,12 +1114,16 @@ export function CoverPageForm({
 
               <div>
                 <label className="block text-xs font-medium text-slate-600">
-                  Établissement(s) / Hôpital(aux) d&apos;accueil (1 par ligne)
+                  {isEn
+                    ? "Host institution(s) / Hospital(s) (1 per line)"
+                    : "Établissement(s) / Hôpital(aux) d'accueil (1 par ligne)"}
                 </label>
                 <textarea
                   rows={3}
                   disabled={readOnly}
-                  placeholder="Ex : Hôpital Central de Yaoundé"
+                  placeholder={
+                    isEn ? "e.g. Yaoundé Central Hospital" : "Ex : Hôpital Central de Yaoundé"
+                  }
                   value={(value.host_institutions ?? []).join("\n")}
                   onChange={(e) =>
                     onChange({
@@ -1063,12 +1140,18 @@ export function CoverPageForm({
 
               <div>
                 <label className="block text-xs font-medium text-slate-600">
-                  Comité(s) d&apos;éthique sollicité(s) (1 par ligne)
+                  {isEn
+                    ? "Ethics committee(s) solicited (1 per line)"
+                    : "Comité(s) d'éthique sollicité(s) (1 par ligne)"}
                 </label>
                 <textarea
                   rows={3}
                   disabled={readOnly}
-                  placeholder="Comité Institutionnel d'Éthique et de la Recherche de la FMSB (CIER-FMSB)"
+                  placeholder={
+                    isEn
+                      ? "Institutional Ethics and Research Committee of FMBS (CIER-FMSB)"
+                      : "Comité Institutionnel d'Éthique et de la Recherche de la FMSB (CIER-FMSB)"
+                  }
                   value={(value.ethics_committees ?? []).join("\n")}
                   onChange={(e) =>
                     onChange({

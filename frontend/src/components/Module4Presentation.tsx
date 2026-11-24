@@ -859,7 +859,7 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
               setSelectedSlideIndex((i) => Math.max(1, i - 1));
             }}
             className="flex min-h-[42px] min-w-[42px] items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 disabled:opacity-40"
-            title="Diapositive précédente"
+            title={lang === "en" ? "Previous slide" : "Diapositive précédente"}
           >
             <ChevronLeft className="h-4 w-4" />
           </button>
@@ -1331,14 +1331,18 @@ export function Module4Presentation({ project, onError }: Module4PresentationPro
                                       handleUpdateElement(el.id, e.target.value)
                                     }
                                     onBlur={flushPendingSave}
-                                    title="Modifier l'étape et sa période (format Période : Activité)"
+                                    title={
+                                      lang === "en"
+                                        ? "Edit step and period (format: Period: Activity)"
+                                        : "Modifier l'étape et sa période (format Période : Activité)"
+                                    }
                                     className="w-full resize-none border-none bg-transparent px-1 text-center text-[8.5px] sm:text-[9.5px] font-bold leading-tight text-[#002060] focus:bg-white/90 focus:outline-none rounded-full"
                                   />
                                   <button
                                     type="button"
                                     onClick={() => handleRemoveElement(el.id)}
                                     className="absolute -right-2 -top-1.5 hidden rounded-full bg-white p-0.5 text-slate-400 shadow-sm hover:text-rose-600 group-hover:flex"
-                                    title="Supprimer cette étape"
+                                    title={lang === "en" ? "Delete this step" : "Supprimer cette étape"}
                                   >
                                     <Trash2 className="h-3 w-3" />
                                   </button>

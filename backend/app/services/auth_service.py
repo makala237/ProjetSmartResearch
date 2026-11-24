@@ -6,6 +6,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 import jwt
 
+from app.core.request_lang import bi
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -31,6 +32,8 @@ def create_user_account(
     phone: str = "",
     must_change_password: bool = True,
     created_by_admin_id: Optional[str] = None,
+    gemini_api_key_id: Optional[str] = None,
+    model_routing_config: Optional[Dict[str, Any]] = None,
 ) -> UserRecord:
     """Create a user account with Argon2id hash and initial AI quota record."""
     store = as_store(db)
@@ -43,6 +46,8 @@ def create_user_account(
         phone=phone,
         must_change_password=must_change_password,
         created_by_admin_id=created_by_admin_id,
+        gemini_api_key_id=gemini_api_key_id,
+        model_routing_config=model_routing_config,
     )
 
 
@@ -64,9 +69,11 @@ def authenticate_and_login(
                 status_code=401,
                 detail={
                     "code": "AMBIGUOUS_USERNAME",
-                    "message": (
+                    "message": bi(
                         "Plusieurs comptes portent ce nom. "
-                        "Veuillez vous connecter avec votre nom d'utilisateur ou e-mail."
+                        "Veuillez vous connecter avec votre nom d'utilisateur ou e-mail.",
+                        "Multiple accounts share this name. "
+                        "Please sign in using your username or e-mail.",
                     ),
                 },
             )
@@ -77,7 +84,10 @@ def authenticate_and_login(
             status_code=401,
             detail={
                 "code": "INVALID_CREDENTIALS",
-                "message": "Identifiant ou mot de passe incorrect.",
+                "message": bi(
+                    "Identifiant ou mot de passe incorrect.",
+                    "Incorrect username or password.",
+                ),
             },
         )
     if not user.is_active:
@@ -85,7 +95,10 @@ def authenticate_and_login(
             status_code=403,
             detail={
                 "code": "ACCOUNT_DISABLED",
-                "message": "Votre compte est désactivé. Contactez l'administrateur.",
+                "message": bi(
+                    "Votre compte est désactivé. Contactez l'administrateur.",
+                    "Your account has been disabled. Please contact the administrator.",
+                ),
             },
         )
 
@@ -115,18 +128,27 @@ def verify_session_token(
     except jwt.ExpiredSignatureError as exc:
         raise HTTPException(
             status_code=401,
-            detail={"code": "TOKEN_EXPIRED", "message": "Session expirée. Veuillez vous reconnecter."},
+            detail={
+                "code": "TOKEN_EXPIRED",
+                "message": bi("Session expirée. Veuillez vous reconnecter.", "Session expired. Please sign in again."),
+            },
         ) from exc
     except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=401,
-            detail={"code": "INVALID_TOKEN", "message": "Jeton d'authentification invalide."},
+            detail={
+                "code": "INVALID_TOKEN",
+                "message": bi("Jeton d'authentification invalide.", "Invalid authentication token."),
+            },
         ) from exc
 
     if payload.get("type") != expected_type:
         raise HTTPException(
             status_code=401,
-            detail={"code": "INVALID_TOKEN_TYPE", "message": "Type de jeton invalide."},
+            detail={
+                "code": "INVALID_TOKEN_TYPE",
+                "message": bi("Type de jeton invalide.", "Invalid token type."),
+            },
         )
 
     user_id = payload.get("sub")
@@ -135,19 +157,28 @@ def verify_session_token(
     if user is None:
         raise HTTPException(
             status_code=401,
-            detail={"code": "USER_NOT_FOUND", "message": "Compte utilisateur introuvable."},
+            detail={
+                "code": "USER_NOT_FOUND",
+                "message": bi("Compte utilisateur introuvable.", "User account not found."),
+            },
         )
     if not user.is_active:
         raise HTTPException(
             status_code=403,
-            detail={"code": "ACCOUNT_DISABLED", "message": "Compte désactivé par l'administrateur."},
+            detail={
+                "code": "ACCOUNT_DISABLED",
+                "message": bi("Compte désactivé par l'administrateur.", "Account disabled by the administrator."),
+            },
         )
     if not user.active_session_id or user.active_session_id != sid:
         raise HTTPException(
             status_code=401,
             detail={
                 "code": "SESSION_REVOKED",
-                "message": "Session révoquée ou ouverte sur un autre appareil. Veuillez vous reconnecter.",
+                "message": bi(
+                    "Session révoquée ou ouverte sur un autre appareil. Veuillez vous reconnecter.",
+                    "Session revoked or opened on another device. Please sign in again.",
+                ),
             },
         )
     return user
@@ -178,7 +209,7 @@ def change_user_password(
             status_code=400,
             detail={
                 "code": "INVALID_CURRENT_PASSWORD",
-                "message": "Le mot de passe actuel est incorrect.",
+                "message": bi("Le mot de passe actuel est incorrect.", "The current password is incorrect."),
             },
         )
     clean_new = new_password.strip()
@@ -187,7 +218,10 @@ def change_user_password(
             status_code=400,
             detail={
                 "code": "WEAK_PASSWORD",
-                "message": "Le nouveau mot de passe doit contenir au moins 8 caractères.",
+                "message": bi(
+                    "Le nouveau mot de passe doit contenir au moins 8 caractères.",
+                    "The new password must be at least 8 characters long.",
+                ),
             },
         )
 

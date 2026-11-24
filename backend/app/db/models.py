@@ -49,6 +49,20 @@ class UserORM(Base):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
+    gemini_api_key_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, default=None)
+    model_routing_config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON_VARIANT, nullable=True, default=None)
+
+
+class GeminiApiKeyORM(Base):
+    __tablename__ = "gemini_api_keys"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    owner_label: Mapped[str] = mapped_column(String(128), default="", nullable=False)
+    api_key: Mapped[str] = mapped_column(Text, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class LicensePlanORM(Base):
@@ -179,6 +193,7 @@ class UsageEventORM(Base):
     model_used: Mapped[str] = mapped_column(String(128), default="", nullable=False)
     credits_cost: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    api_key_id: Mapped[str] = mapped_column(String(64), default="default", nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default="ok", nullable=False)
     ip_address: Mapped[str] = mapped_column(String(64), default="", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True, nullable=False)

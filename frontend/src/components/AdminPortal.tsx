@@ -6,6 +6,7 @@ import {
   BarChart3,
   CheckCircle2,
   ClipboardCopy,
+  Cpu,
   CreditCard,
   Edit3,
   ExternalLink,
@@ -33,14 +34,18 @@ import {
   finalizeCoverMetadataPayload,
   withStructuredSupervisors,
 } from "./CoverPageForm";
+import { ModelRoutingEditor } from "./ModelRoutingEditor";
 import type { CoverMetadata, SupervisorInfo } from "../types/protocol";
 import type {
   AdminAuditLogOut,
   AdminDashboardStatsOut,
   AdminStudentStatsRow,
   AdminUserDetailOut,
+  GeminiApiKeyStatsOut,
   LicensePlanOut,
+  ModelCatalogResponse,
   UsageEventOut,
+  UserModelRoutingConfig,
 } from "../types/admin";
 
 interface AdminPortalProps {
@@ -49,7 +54,7 @@ interface AdminPortalProps {
   onOpenUserWorkspace?: (projectId: string, studentName: string) => void | Promise<void>;
 }
 
-type AdminTab = "dashboard" | "users" | "plans" | "stats";
+type AdminTab = "dashboard" | "users" | "plans" | "api_keys" | "stats";
 
 const MODULE_META: Array<{ key: string; short: string; label: string }> = [
   { key: "module1", short: "M1", label: "Rédaction" },
@@ -117,8 +122,25 @@ export function AdminPortal({
   const [dashboard, setDashboard] = useState<AdminDashboardStatsOut | null>(null);
   const [plans, setPlans] = useState<LicensePlanOut[]>([]);
   const [users, setUsers] = useState<AdminStudentStatsRow[]>([]);
+  const [apiKeys, setApiKeys] = useState<GeminiApiKeyStatsOut[]>([]);
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
   const [userDetail, setUserDetail] = useState<AdminUserDetailOut | null>(null);
+
+  // Named Gemini API Key form & expanded card state
+  const [newKeyName, setNewKeyName] = useState("");
+  const [newKeyOwner, setNewKeyOwner] = useState("");
+  const [newKeySecret, setNewKeySecret] = useState("");
+  const [expandedKeyId, setExpandedKeyId] = useState<string | null>("default");
+  const [newUserApiKeyId, setNewUserApiKeyId] = useState<string>("default");
+  const [modelCatalog, setModelCatalog] = useState<ModelCatalogResponse | null>(null);
+  const [newUserModelRouting, setNewUserModelRouting] = useState<UserModelRoutingConfig>({
+    enabled: false,
+    models: [],
+  });
+  const [drawerModelRouting, setDrawerModelRouting] = useState<UserModelRoutingConfig>({
+    enabled: false,
+    models: [],
+  });
 
   // User list filters
   const [userSearch, setUserSearch] = useState("");
@@ -195,7 +217,7 @@ export function AdminPortal({
   const loadAllCore = useCallback(async () => {
     setError(null);
     try {
-      const [dashRes, plansRes, usersRes] = await Promise.all([
+      const [dashRes, plansRes, usersRes, keysRes, catalogRes] = await Promise.all([
         api.adminGetDashboard(),
         api.adminListPlans(true),
         api.adminListUsers({
@@ -203,10 +225,14 @@ export function AdminPortal({
           search: userSearch || undefined,
           status: statusFilter || undefined,
         }),
+        api.adminListApiKeys().catch(() => [] as GeminiApiKeyStatsOut[]),
+        api.adminGetModelCatalog().catch(() => null),
       ]);
       setDashboard(dashRes);
       setPlans(plansRes);
       setUsers(usersRes);
+      setApiKeys(keysRes);
+      if (catalogRes) setModelCatalog(catalogRes);
       if (!newPlanId && plansRes.some((p) => p.is_active)) {
         const firstActive = plansRes.find((p) => p.is_active);
         if (firstActive) {
@@ -227,6 +253,14 @@ export function AdminPortal({
     try {
       const det = await api.adminGetUserDetail(uid);
       setUserDetail(det);
+      setDrawerModelRouting(
+        det.user.model_routing_config && det.user.model_routing_config.enabled
+          ? {
+              enabled: true,
+              models: det.user.model_routing_config.models.map((m) => ({ ...m })),
+            }
+          : { enabled: false, models: [] }
+      );
       if (det.project_cover) {
         setEditCover(withStructuredSupervisors(det.project_cover));
       } else {
@@ -293,6 +327,104 @@ export function AdminPortal({
     setBusy(false);
   }
 
+  async function handleCreateApiKey(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newKeyName.trim() || !newKeySecret.trim()) return;
+    setBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const created = await api.adminCreateApiKey({
+        name: newKeyName.trim(),
+        owner_label: newKeyOwner.trim(),
+        api_key: newKeySecret.trim(),
+        is_active: true,
+      });
+      setNewKeyName("");
+      setNewKeyOwner("");
+      setNewKeySecret("");
+      setExpandedKeyId(created.id);
+      setNotice(`Clé API « ${created.name} » ajoutée au pool.`);
+      await loadAllCore();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleToggleApiKey(k: GeminiApiKeyStatsOut) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.adminUpdateApiKey(k.id, { is_active: !k.is_active });
+      setNotice(`Clé « ${k.name} » ${!k.is_active ? "activée" : "désactivée (repli sur défaut)"}.`);
+      await loadAllCore();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteApiKey(k: GeminiApiKeyStatsOut) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.adminDeleteApiKey(k.id);
+      setNotice(`Clé « ${k.name} » supprimée (utilisateurs replacés sur la clé par défaut).`);
+      await loadAllCore();
+      if (selectedUserId) await loadUserDetail(selectedUserId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleAssignUserApiKey(userId: string, keyId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.adminUpdateUser(userId, { gemini_api_key_id: keyId || "default" });
+      const keyLabel = apiKeys.find((k) => k.id === keyId)?.name || "Clé système par défaut";
+      setNotice(`Clé API routée vers « ${keyLabel} ».`);
+      await loadAllCore();
+      if (selectedUserId === userId) {
+        await loadUserDetail(userId);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleSaveUserModelRouting(userId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const payloadCfg: UserModelRoutingConfig =
+        drawerModelRouting.enabled && drawerModelRouting.models.length > 0
+          ? drawerModelRouting
+          : { enabled: false, models: [] };
+      await api.adminUpdateUser(userId, { model_routing_config: payloadCfg });
+      setNotice(
+        payloadCfg.enabled
+          ? `Chaîne personnalisée enregistrée (${payloadCfg.models.length} modèle(s) : ${payloadCfg.models[0].model} en primaire).`
+          : "Chaîne de modèles réinitialisée sur la configuration système par défaut."
+      );
+      await loadAllCore();
+      if (selectedUserId === userId) {
+        await loadUserDetail(userId);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   function copyCredentials(email: string, pw: string) {
     const txt = `Smart Research\nIdentifiant : ${email}\nMot de passe temporaire : ${pw}`;
     navigator.clipboard?.writeText(txt).then(() => {
@@ -340,6 +472,11 @@ export function AdminPortal({
         initial_protocol_title: isStudent
           ? finalCover?.title.trim() || undefined
           : undefined,
+        gemini_api_key_id: newUserApiKeyId && newUserApiKeyId !== "default" ? newUserApiKeyId : "default",
+        model_routing_config:
+          newUserModelRouting.enabled && newUserModelRouting.models.length > 0
+            ? newUserModelRouting
+            : undefined,
       });
 
       if (isStudent && res.created_project_id) {
@@ -373,6 +510,7 @@ export function AdminPortal({
       setShowCreateUser(false);
       setNewEmail("");
       setNewFullName("");
+      setNewUserModelRouting({ enabled: false, models: [] });
       setNewMatricule("");
       setNewPhone("");
       setNewPaymentRef("");
@@ -679,6 +817,7 @@ export function AdminPortal({
             { id: "dashboard", label: "Tableau de bord KPI", icon: Activity },
             { id: "users", label: "Utilisateurs & Licences", icon: Users },
             { id: "plans", label: "Plans & Tarifs", icon: CreditCard },
+            { id: "api_keys", label: `Clés API Gemini (${apiKeys.length})`, icon: KeyRound },
             { id: "stats", label: "Statistiques Étudiants & Journaux", icon: BarChart3 },
           ] as const
         ).map((t) => {
@@ -1158,6 +1297,42 @@ export function AdminPortal({
                   />
                 </div>
 
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-600">
+                    Clé API Gemini assignée
+                  </label>
+                  <select
+                    value={newUserApiKeyId}
+                    onChange={(e) => setNewUserApiKeyId(e.target.value)}
+                    className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
+                  >
+                    {apiKeys.length === 0 ? (
+                      <option value="default">Clé système par défaut (GEMINI_API_KEY)</option>
+                    ) : (
+                      apiKeys
+                        .filter((k) => k.is_default || k.is_active)
+                        .map((k) => (
+                          <option key={k.id} value={k.id}>
+                            {k.name} {k.owner_label ? `(${k.owner_label})` : ""} · {k.masked_key}
+                          </option>
+                        ))
+                    )}
+                  </select>
+                </div>
+
+                <div className="sm:col-span-2 rounded-xl border border-slate-200 bg-slate-50/70 p-3">
+                  <div className="mb-2 flex items-center gap-1.5 text-[11px] font-bold text-slate-800">
+                    <Cpu className="h-3.5 w-3.5 text-indigo-600" />
+                    Modèles Gemini & ordre de priorité (Primaire → Secondaire → Backups)
+                  </div>
+                  <ModelRoutingEditor
+                    catalog={modelCatalog}
+                    value={newUserModelRouting}
+                    onChange={setNewUserModelRouting}
+                    compact
+                  />
+                </div>
+
                 {newRole === "student" && (
                   <>
                     <div>
@@ -1562,6 +1737,69 @@ export function AdminPortal({
                         );
                       })}
                     </div>
+                  </div>
+
+                  {/* Per-User Gemini API Key Switcher */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-indigo-200 bg-indigo-50/50 px-3.5 py-2.5 text-xs">
+                    <div className="flex items-center gap-2">
+                      <KeyRound className="h-4 w-4 text-indigo-700" />
+                      <div>
+                        <span className="font-bold text-indigo-950">Clé API Gemini routée :</span>{" "}
+                        <span className="text-indigo-800">
+                          {userDetail.user.gemini_api_key_name || "Clé système par défaut"}
+                        </span>
+                      </div>
+                    </div>
+                    <select
+                      aria-label="Clé API Gemini assignée à cet utilisateur"
+                      disabled={busy}
+                      value={userDetail.user.gemini_api_key_id || "default"}
+                      onChange={(e) => handleAssignUserApiKey(userDetail.user.id, e.target.value)}
+                      className="rounded-lg border border-indigo-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-800 shadow-2xs"
+                    >
+                      {apiKeys.length === 0 ? (
+                        <option value="default">Clé système par défaut (GEMINI_API_KEY)</option>
+                      ) : (
+                        apiKeys.map((k) => (
+                          <option key={k.id} value={k.id} disabled={!k.is_default && !k.is_active}>
+                            {k.name} {k.owner_label ? `— ${k.owner_label}` : ""} ({k.masked_key})
+                            {!k.is_active && !k.is_default ? " [Inactive]" : ""}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </div>
+
+                  {/* Per-User Ordered Gemini Model Chain & RPD/TPM Limits */}
+                  <div className="rounded-xl border border-slate-200 bg-white p-3.5 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="h-4 w-4 text-indigo-700" />
+                        <div>
+                          <div className="text-xs font-bold text-slate-900">
+                            Chaîne de modèles Gemini & plafonds RPD / TPM
+                          </div>
+                          <div className="text-[11px] text-slate-500">
+                            Ordre Primaire → Secondaire → Backups avec bascule automatique sur dépassement RPD/TPM ou erreur.
+                          </div>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => handleSaveUserModelRouting(userDetail.user.id)}
+                        className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                      >
+                        <CheckCircle2 className="h-3.5 w-3.5" />
+                        Enregistrer la chaîne
+                      </button>
+                    </div>
+                    <ModelRoutingEditor
+                      catalog={modelCatalog}
+                      value={drawerModelRouting}
+                      onChange={setDrawerModelRouting}
+                      dailyUsage={userDetail.model_daily_usage}
+                    />
                   </div>
 
                   {/* Grant Plan + AI Quota Recharge */}
@@ -2150,6 +2388,267 @@ export function AdminPortal({
                 ))}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ==================== TAB 5: NAMED GEMINI API KEYS ==================== */}
+      {tab === "api_keys" && (
+        <div className="space-y-5">
+          {/* Add New Named Gemini API Key */}
+          <form
+            onSubmit={handleCreateApiKey}
+            className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs"
+          >
+            <div className="flex items-center gap-2 text-sm font-bold text-slate-900">
+              <KeyRound className="h-4 w-4 text-[#004A8F]" />
+              Ajouter une clé API Gemini nommée au pool
+            </div>
+            <p className="mt-1 text-xs text-slate-500">
+              Par défaut, tous les utilisateurs existants restent routés sur la clé système (<code>GEMINI_API_KEY</code>) sans aucune interruption de service.
+              Ajoutez des clés nommées pour répartir le trafic par groupe/utilisateur et suivre leur consommation individuellement.
+            </p>
+            <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600">
+                  Nom de la clé *
+                </label>
+                <input
+                  type="text"
+                  required
+                  minLength={2}
+                  value={newKeyName}
+                  onChange={(e) => setNewKeyName(e.target.value)}
+                  placeholder="Ex. Clé Promo FMSB 2026"
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-600">
+                  Propriétaire / Projet
+                </label>
+                <input
+                  type="text"
+                  value={newKeyOwner}
+                  onChange={(e) => setNewKeyOwner(e.target.value)}
+                  placeholder="Ex. Compte Dr. X / Projet B"
+                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                />
+              </div>
+              <div className="md:col-span-2">
+                <label className="block text-[11px] font-semibold text-slate-600">
+                  Clé API Gemini *
+                </label>
+                <div className="mt-1 flex gap-2">
+                  <input
+                    type="password"
+                    required
+                    minLength={10}
+                    value={newKeySecret}
+                    onChange={(e) => setNewKeySecret(e.target.value)}
+                    placeholder="AQ.Ab8... ou AIza..."
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs"
+                  />
+                  <button
+                    type="submit"
+                    disabled={busy || !newKeyName.trim() || !newKeySecret.trim()}
+                    className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-[#004A8F] px-4 py-2 text-xs font-semibold text-white hover:bg-[#003a70] disabled:opacity-50"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    Ajouter
+                  </button>
+                </div>
+              </div>
+            </div>
+          </form>
+
+          {/* Key Cards & Per-Key User Consumption Stats */}
+          <div className="space-y-4">
+            {apiKeys.map((k) => {
+              const isExpanded = expandedKeyId === k.id;
+              return (
+                <div
+                  key={k.id}
+                  className={`rounded-2xl border bg-white p-5 shadow-xs ${
+                    k.is_default
+                      ? "border-[#004A8F]/35"
+                      : k.is_active
+                      ? "border-slate-200"
+                      : "border-slate-200 bg-slate-50/60 opacity-80"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h4 className="text-sm font-bold text-slate-900">{k.name}</h4>
+                        {k.is_default && (
+                          <span className="rounded-full bg-sky-100 px-2 py-0.5 text-[10px] font-bold text-[#004A8F]">
+                            Par défaut
+                          </span>
+                        )}
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                            k.is_active
+                              ? "bg-emerald-100 text-emerald-800"
+                              : "bg-slate-200 text-slate-600"
+                          }`}
+                        >
+                          {k.is_active ? "Active" : "Désactivée"}
+                        </span>
+                        <span className="rounded bg-slate-100 px-2 py-0.5 font-mono text-[11px] text-slate-700">
+                          {k.masked_key}
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Propriétaire : <strong>{k.owner_label || "Non précisé"}</strong>
+                        {k.last_used_at ? ` · Dernière utilisation : ${fmtDateTime(k.last_used_at)}` : ""}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedKeyId(isExpanded ? null : k.id)}
+                        className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        {isExpanded
+                          ? "Masquer le détail utilisateurs"
+                          : `Voir les utilisateurs (${k.users.length})`}
+                      </button>
+                      {!k.is_default && (
+                        <>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => handleToggleApiKey(k)}
+                            className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+                          >
+                            {k.is_active ? "Désactiver" : "Activer"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => handleDeleteApiKey(k)}
+                            className="inline-flex items-center gap-1 rounded-lg border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-100"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                            Supprimer
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Per-key KPI bar */}
+                  <div className="mt-4 grid grid-cols-2 gap-2.5 sm:grid-cols-4">
+                    <div className="rounded-xl bg-slate-50 px-3 py-2">
+                      <div className="text-[11px] text-slate-500">Utilisateurs assignés</div>
+                      <div className="text-base font-bold text-slate-900">{k.assigned_users_count}</div>
+                    </div>
+                    <div className="rounded-xl bg-slate-50 px-3 py-2">
+                      <div className="text-[11px] text-slate-500">Requêtes IA (total / auj.)</div>
+                      <div className="text-base font-bold text-slate-900">
+                        {k.total_calls.toLocaleString("fr-FR")}{" "}
+                        <span className="text-xs font-semibold text-indigo-700">
+                          / {k.calls_today} auj.
+                        </span>
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-slate-50 px-3 py-2">
+                      <div className="text-[11px] text-slate-500">Tokens consommés (total / auj.)</div>
+                      <div className="text-base font-bold text-slate-900">
+                        {k.total_tokens.toLocaleString("fr-FR")}{" "}
+                        <span className="text-xs font-semibold text-emerald-700">
+                          / {k.tokens_today.toLocaleString("fr-FR")} auj.
+                        </span>
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-slate-50 px-3 py-2">
+                      <div className="text-[11px] text-slate-500">Crédits débités</div>
+                      <div className="text-base font-bold text-slate-900">
+                        {k.total_credits.toLocaleString("fr-FR")} cr
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Expandable per-user breakdown + quick key switcher */}
+                  {isExpanded && (
+                    <div className="mt-4 overflow-x-auto rounded-xl border border-slate-200">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-100 text-[11px] font-bold uppercase text-slate-600">
+                          <tr>
+                            <th className="px-3 py-2">Utilisateur</th>
+                            <th className="px-3 py-2">Statut</th>
+                            <th className="px-3 py-2 text-right">Appels (total / auj.)</th>
+                            <th className="px-3 py-2 text-right">Tokens (total / auj.)</th>
+                            <th className="px-3 py-2 text-right">Crédits</th>
+                            <th className="px-3 py-2">Changer de clé</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {k.users.length === 0 ? (
+                            <tr>
+                              <td colSpan={6} className="px-3 py-4 text-center text-slate-500">
+                                Aucun utilisateur assigné ni consommation enregistrée sur cette clé.
+                              </td>
+                            </tr>
+                          ) : (
+                            k.users.map((u) => (
+                              <tr key={u.user_id} className="hover:bg-slate-50/70">
+                                <td className="px-3 py-2">
+                                  <div className="font-semibold text-slate-900">{u.full_name}</div>
+                                  <div className="text-[11px] text-slate-500">{u.email}</div>
+                                </td>
+                                <td className="px-3 py-2">
+                                  <span
+                                    className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                                      u.is_assigned
+                                        ? "bg-emerald-100 text-emerald-800"
+                                        : "bg-slate-100 text-slate-600"
+                                    }`}
+                                  >
+                                    {u.is_assigned ? "Assigné" : "Historique"}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-right font-mono">
+                                  {u.calls_total} <span className="text-indigo-700">/ {u.calls_today}</span>
+                                </td>
+                                <td className="px-3 py-2 text-right font-mono">
+                                  {u.tokens_total.toLocaleString("fr-FR")}{" "}
+                                  <span className="text-emerald-700">
+                                    / {u.tokens_today.toLocaleString("fr-FR")}
+                                  </span>
+                                </td>
+                                <td className="px-3 py-2 text-right font-mono">{u.credits_total} cr</td>
+                                <td className="px-3 py-2">
+                                  <select
+                                    aria-label={`Changer la clé API de ${u.full_name}`}
+                                    disabled={busy}
+                                    value={u.is_assigned ? k.id : users.find((x) => x.id === u.user_id)?.gemini_api_key_id || "default"}
+                                    onChange={(e) => handleAssignUserApiKey(u.user_id, e.target.value)}
+                                    className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-800"
+                                  >
+                                    {apiKeys.map((opt) => (
+                                      <option
+                                        key={opt.id}
+                                        value={opt.id}
+                                        disabled={!opt.is_default && !opt.is_active}
+                                      >
+                                        {opt.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </td>
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

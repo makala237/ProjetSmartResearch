@@ -12,6 +12,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "../api/client";
+import { useLanguage } from "../i18n/LanguageContext";
 import type {
   AbbreviationItem,
   AnnexesConfig,
@@ -37,6 +38,8 @@ export function StructuredTablesEditor({
   onProjectUpdated,
   onError,
 }: StructuredTablesEditorProps) {
+  const { lang } = useLanguage();
+  const isEn = lang === "en";
   const [activeTab, setActiveTab] = useState<
     "abbreviations" | "variables" | "synthesis" | "timeline" | "budget" | "annexes" | "figures"
   >("variables");
@@ -97,6 +100,12 @@ export function StructuredTablesEditor({
     }
   }, [project.timeline_grid]);
 
+  useEffect(() => {
+    if (project.budget) {
+      setBudget(project.budget);
+    }
+  }, [project.budget]);
+
   async function handleSaveStructured(customPayload?: Record<string, any>) {
     setSaving(true);
     onError("");
@@ -129,10 +138,12 @@ export function StructuredTablesEditor({
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 pb-3">
         <div>
           <h3 className="text-base font-bold text-slate-900">
-            Tableaux & Annexes officiels FMSB
+            {isEn ? "Official FMSB Tables & Appendices" : "Tableaux & Annexes officiels FMSB"}
           </h3>
           <p className="text-xs text-slate-500">
-            Ces structures sont automatiquement compilées dans les styles officiels Word et PDF.
+            {isEn
+              ? "These structures are automatically compiled into official Word and PDF styles."
+              : "Ces structures sont automatiquement compilées dans les styles officiels Word et PDF."}
           </p>
         </div>
         <button
@@ -142,7 +153,13 @@ export function StructuredTablesEditor({
           className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
         >
           <CheckCircle2 className="h-4 w-4" />
-          {saving ? "Sauvegarde..." : "Enregistrer tous les tableaux"}
+          {saving
+            ? isEn
+              ? "Saving..."
+              : "Sauvegarde..."
+            : isEn
+            ? "Save all tables"
+            : "Enregistrer tous les tableaux"}
         </button>
       </div>
 
@@ -158,7 +175,7 @@ export function StructuredTablesEditor({
           }`}
         >
           <TableIcon className="h-3.5 w-3.5" />
-          1. Variables & Fiche de collecte ({variables.length})
+          {isEn ? `1. Variables & CRF (${variables.length})` : `1. Variables & Fiche de collecte (${variables.length})`}
         </button>
         <button
           type="button"
@@ -170,7 +187,7 @@ export function StructuredTablesEditor({
           }`}
         >
           <ListFilter className="h-3.5 w-3.5" />
-          2. Synthèse littérature ({synthesis.length})
+          {isEn ? `2. Literature synthesis (${synthesis.length})` : `2. Synthèse littérature (${synthesis.length})`}
         </button>
         <button
           type="button"
@@ -182,7 +199,7 @@ export function StructuredTablesEditor({
           }`}
         >
           <Calendar className="h-3.5 w-3.5" />
-          3. Chronogramme Gantt
+          {isEn ? "3. Gantt Timeline" : "3. Chronogramme Gantt"}
         </button>
         <button
           type="button"
@@ -194,7 +211,9 @@ export function StructuredTablesEditor({
           }`}
         >
           <DollarSign className="h-3.5 w-3.5" />
-          4. Budget prévisionnel ({grandTotalFCFA.toLocaleString("fr-FR")} FCFA)
+          {isEn
+            ? `4. Provisional Budget (${grandTotalFCFA.toLocaleString("en-US")} FCFA)`
+            : `4. Budget prévisionnel (${grandTotalFCFA.toLocaleString("fr-FR")} FCFA)`}
         </button>
         <button
           type="button"
@@ -206,7 +225,7 @@ export function StructuredTablesEditor({
           }`}
         >
           <FileText className="h-3.5 w-3.5" />
-          5. Abréviations ({abbreviations.length})
+          {isEn ? `5. Abbreviations (${abbreviations.length})` : `5. Abréviations (${abbreviations.length})`}
         </button>
         <button
           type="button"
@@ -218,7 +237,7 @@ export function StructuredTablesEditor({
           }`}
         >
           <FileCheck className="h-3.5 w-3.5 text-emerald-600" />
-          6. Pack Annexes FMSB (Notice, Éthique, etc.)
+          {isEn ? "6. Appendices Pack (Notice, Ethics, etc.)" : "6. Pack Annexes FMSB (Notice, Éthique, etc.)"}
         </button>
         <button
           type="button"
@@ -230,7 +249,7 @@ export function StructuredTablesEditor({
           }`}
         >
           <ImageIcon className="h-3.5 w-3.5" />
-          7. Figures & Images ({project.images.length})
+          {isEn ? `7. Figures & Images (${project.images.length})` : `7. Figures & Images (${project.images.length})`}
         </button>
       </div>
 
@@ -239,7 +258,15 @@ export function StructuredTablesEditor({
         <div className="mt-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-600">
-              Tableau inséré dans <strong>Chapitre III (Section III.3)</strong> et servant de base à l&apos;<strong>Annexe 3 : Fiche de collecte</strong>.
+              {isEn ? (
+                <>
+                  Table inserted in <strong>Chapter III (Section III.3)</strong> and used as the basis for <strong>Appendix 3: Data Collection Form</strong>.
+                </>
+              ) : (
+                <>
+                  Tableau inséré dans <strong>Chapitre III (Section III.3)</strong> et servant de base à l&apos;<strong>Annexe 3 : Fiche de collecte</strong>.
+                </>
+              )}
             </span>
             <button
               type="button"
@@ -247,19 +274,19 @@ export function StructuredTablesEditor({
                 setVariables([
                   ...variables,
                   {
-                    name: "Nouvelle variable",
-                    category: "Données cliniques",
+                    name: isEn ? "New variable" : "Nouvelle variable",
+                    category: isEn ? "Clinical data" : "Données cliniques",
                     role: "Indépendante",
                     definition: "",
                     measurement_scale: "Qualitative nominale",
-                    modalities: "[ ] Oui   [ ] Non",
-                    collection_tool: "Fiche de collecte",
+                    modalities: isEn ? "[ ] Yes   [ ] No" : "[ ] Oui   [ ] Non",
+                    collection_tool: isEn ? "Data collection form" : "Fiche de collecte",
                   },
                 ])
               }
               className="inline-flex items-center gap-1 rounded bg-slate-800 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-900"
             >
-              <Plus className="h-3 w-3" /> Ajouter une variable
+              <Plus className="h-3 w-3" /> {isEn ? "Add variable" : "Ajouter une variable"}
             </button>
           </div>
 
@@ -267,11 +294,11 @@ export function StructuredTablesEditor({
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
-                  <th className="p-2">Variable</th>
-                  <th className="p-2">Catégorie</th>
-                  <th className="p-2">Rôle</th>
-                  <th className="p-2">Échelle</th>
-                  <th className="p-2">Modalités / Valeurs</th>
+                  <th className="p-2">{isEn ? "Variable" : "Variable"}</th>
+                  <th className="p-2">{isEn ? "Category" : "Catégorie"}</th>
+                  <th className="p-2">{isEn ? "Role" : "Rôle"}</th>
+                  <th className="p-2">{isEn ? "Scale" : "Échelle"}</th>
+                  <th className="p-2">{isEn ? "Modalities / Values" : "Modalités / Valeurs"}</th>
                   <th className="p-2 w-10"></th>
                 </tr>
               </thead>
@@ -312,9 +339,9 @@ export function StructuredTablesEditor({
                         }}
                         className="w-full rounded border border-slate-300 px-2 py-1"
                       >
-                        <option value="Dépendante">Dépendante</option>
-                        <option value="Indépendante">Indépendante</option>
-                        <option value="Facteur de confusion">Facteur de confusion</option>
+                        <option value="Dépendante">{isEn ? "Dependent" : "Dépendante"}</option>
+                        <option value="Indépendante">{isEn ? "Independent" : "Indépendante"}</option>
+                        <option value="Facteur de confusion">{isEn ? "Confounder" : "Facteur de confusion"}</option>
                       </select>
                     </td>
                     <td className="p-1.5">
@@ -327,10 +354,10 @@ export function StructuredTablesEditor({
                         }}
                         className="w-full rounded border border-slate-300 px-2 py-1"
                       >
-                        <option value="Qualitative nominale">Qualitative nominale</option>
-                        <option value="Qualitative ordinale">Qualitative ordinale</option>
-                        <option value="Quantitative continue">Quantitative continue</option>
-                        <option value="Quantitative discrète">Quantitative discrète</option>
+                        <option value="Qualitative nominale">{isEn ? "Nominal qualitative" : "Qualitative nominale"}</option>
+                        <option value="Qualitative ordinale">{isEn ? "Ordinal qualitative" : "Qualitative ordinale"}</option>
+                        <option value="Quantitative continue">{isEn ? "Continuous quantitative" : "Quantitative continue"}</option>
+                        <option value="Quantitative discrète">{isEn ? "Discrete quantitative" : "Quantitative discrète"}</option>
                       </select>
                     </td>
                     <td className="p-1.5">
@@ -342,7 +369,7 @@ export function StructuredTablesEditor({
                           copy[i].modalities = e.target.value;
                           setVariables(copy);
                         }}
-                        placeholder="Ex: [ ] Oui [ ] Non"
+                        placeholder={isEn ? "e.g. [ ] Yes [ ] No" : "Ex: [ ] Oui [ ] Non"}
                         className="w-full rounded border border-slate-300 px-2 py-1"
                       />
                     </td>
@@ -368,7 +395,11 @@ export function StructuredTablesEditor({
         <div className="mt-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-600">
-              Tableau de synthèse des études antérieures inséré en fin de <strong>Chapitre II (Section II.2)</strong>.
+              {isEn ? (
+                <>Summary table of previous studies inserted at the end of <strong>Chapter II (Section II.2)</strong>.</>
+              ) : (
+                <>Tableau de synthèse des études antérieures inséré en fin de <strong>Chapitre II (Section II.2)</strong>.</>
+              )}
             </span>
             <button
               type="button"
@@ -376,17 +407,17 @@ export function StructuredTablesEditor({
                 setSynthesis([
                   ...synthesis,
                   {
-                    authors_country_year: "Auteur et al., Cameroun (2024)",
-                    study_design: "Transversale",
-                    population: "N=150 adultes",
-                    main_results: "Prévalence 32.5%, âge moyen 45 ans",
-                    limits: "Mono-centrique",
+                    authors_country_year: isEn ? "Author et al., Cameroon (2024)" : "Auteur et al., Cameroun (2024)",
+                    study_design: isEn ? "Cross-sectional" : "Transversale",
+                    population: isEn ? "N=150 adults" : "N=150 adultes",
+                    main_results: isEn ? "Prevalence 32.5%, mean age 45 years" : "Prévalence 32.5%, âge moyen 45 ans",
+                    limits: isEn ? "Single-center" : "Mono-centrique",
                   },
                 ])
               }
               className="inline-flex items-center gap-1 rounded bg-slate-800 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-900"
             >
-              <Plus className="h-3 w-3" /> Ajouter une étude
+              <Plus className="h-3 w-3" /> {isEn ? "Add study" : "Ajouter une étude"}
             </button>
           </div>
 
@@ -394,11 +425,11 @@ export function StructuredTablesEditor({
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
-                  <th className="p-2">Auteur(s), Pays (Année)</th>
-                  <th className="p-2">Devis</th>
-                  <th className="p-2">Population</th>
-                  <th className="p-2">Résultats principaux</th>
-                  <th className="p-2">Limites</th>
+                  <th className="p-2">{isEn ? "Author(s), Country (Year)" : "Auteur(s), Pays (Année)"}</th>
+                  <th className="p-2">{isEn ? "Design" : "Devis"}</th>
+                  <th className="p-2">{isEn ? "Population" : "Population"}</th>
+                  <th className="p-2">{isEn ? "Main results" : "Résultats principaux"}</th>
+                  <th className="p-2">{isEn ? "Limitations" : "Limites"}</th>
                   <th className="p-2 w-10"></th>
                 </tr>
               </thead>
@@ -486,7 +517,11 @@ export function StructuredTablesEditor({
       {activeTab === "timeline" && (
         <div className="mt-4 space-y-3">
           <span className="text-xs text-slate-600">
-            Matrice de Gantt insérée dans <strong>Chapitre III (Section III.9)</strong>. Modifiez les dates, les activités et cochez les périodes actives.
+            {isEn ? (
+              <>Gantt matrix inserted in <strong>Chapter III (Section III.9)</strong>. Edit dates, activities, and check active periods.</>
+            ) : (
+              <>Matrice de Gantt insérée dans <strong>Chapitre III (Section III.9)</strong>. Modifiez les dates, les activités et cochez les périodes actives.</>
+            )}
           </span>
           <TimelineGridEditor
             timelineGrid={timelineGrid}
@@ -501,19 +536,29 @@ export function StructuredTablesEditor({
         <div className="mt-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-600">
-              Budget chiffré inséré dans <strong>Chapitre III (Section III.10)</strong> avec calcul automatique du total.
+              {isEn ? (
+                <>Itemized budget inserted in <strong>Chapter III (Section III.10)</strong> with automatic total calculation.</>
+              ) : (
+                <>Budget chiffré inséré dans <strong>Chapitre III (Section III.10)</strong> avec calcul automatique du total.</>
+              )}
             </span>
             <button
               type="button"
               onClick={() =>
                 setBudget([
                   ...budget,
-                  { category: "Logistique", designation: "Nouvelle ligne de dépense", quantity: 1, unit_cost_fcfa: 10000, total_fcfa: 10000 },
+                  {
+                    category: isEn ? "Logistics" : "Logistique",
+                    designation: isEn ? "New budget line" : "Nouvelle ligne de dépense",
+                    quantity: 1,
+                    unit_cost_fcfa: 10000,
+                    total_fcfa: 10000,
+                  },
                 ])
               }
               className="inline-flex items-center gap-1 rounded bg-slate-800 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-900"
             >
-              <Plus className="h-3 w-3" /> Ajouter une ligne
+              <Plus className="h-3 w-3" /> {isEn ? "Add line" : "Ajouter une ligne"}
             </button>
           </div>
 
@@ -521,11 +566,11 @@ export function StructuredTablesEditor({
             <table className="w-full text-left text-xs">
               <thead className="bg-[#6C2826] text-white">
                 <tr>
-                  <th className="p-2">Désignation</th>
-                  <th className="p-2">Catégorie</th>
-                  <th className="p-2 w-24">Prix unitaire (FCFA)</th>
-                  <th className="p-2 w-20">Quantité</th>
-                  <th className="p-2 w-28">Total (FCFA)</th>
+                  <th className="p-2">{isEn ? "Item / Description" : "Désignation"}</th>
+                  <th className="p-2">{isEn ? "Category" : "Catégorie"}</th>
+                  <th className="p-2 w-24">{isEn ? "Unit price (FCFA)" : "Prix unitaire (FCFA)"}</th>
+                  <th className="p-2 w-20">{isEn ? "Quantity" : "Quantité"}</th>
+                  <th className="p-2 w-28">{isEn ? "Total (FCFA)" : "Total (FCFA)"}</th>
                   <th className="p-2 w-10"></th>
                 </tr>
               </thead>
@@ -603,10 +648,10 @@ export function StructuredTablesEditor({
               <tfoot className="bg-slate-100 font-bold text-slate-900">
                 <tr>
                   <td colSpan={4} className="p-2 text-right">
-                    TOTAL GÉNÉRAL :
+                    {isEn ? "GRAND TOTAL:" : "TOTAL GÉNÉRAL :"}
                   </td>
                   <td colSpan={2} className="p-2 text-[#6C2826]">
-                    {grandTotalFCFA.toLocaleString("fr-FR")} FCFA
+                    {grandTotalFCFA.toLocaleString(isEn ? "en-US" : "fr-FR")} FCFA
                   </td>
                 </tr>
               </tfoot>
@@ -620,19 +665,28 @@ export function StructuredTablesEditor({
         <div className="mt-4 space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-600">
-              Liste des sigles insérée dans les <strong>Pages liminaires</strong>.
+              {isEn ? (
+                <>List of acronyms inserted in the <strong>Preliminary Pages</strong>.</>
+              ) : (
+                <>Liste des sigles insérée dans les <strong>Pages liminaires</strong>.</>
+              )}
             </span>
             <button
               type="button"
               onClick={() =>
                 setAbbreviations([
                   ...abbreviations,
-                  { acronym: "FMSB", full_form: "Faculté de Médecine et des Sciences Biomédicales" },
+                  {
+                    acronym: isEn ? "FMBS" : "FMSB",
+                    full_form: isEn
+                      ? "Faculty of Medicine and Biomedical Sciences"
+                      : "Faculté de Médecine et des Sciences Biomédicales",
+                  },
                 ])
               }
               className="inline-flex items-center gap-1 rounded bg-slate-800 px-2.5 py-1 text-xs font-medium text-white hover:bg-slate-900"
             >
-              <Plus className="h-3 w-3" /> Ajouter un sigle
+              <Plus className="h-3 w-3" /> {isEn ? "Add acronym" : "Ajouter un sigle"}
             </button>
           </div>
 
@@ -640,8 +694,8 @@ export function StructuredTablesEditor({
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-100 text-slate-700">
                 <tr>
-                  <th className="p-2 w-32">Sigle / Acronyme</th>
-                  <th className="p-2">Signification complète</th>
+                  <th className="p-2 w-32">{isEn ? "Acronym" : "Sigle / Acronyme"}</th>
+                  <th className="p-2">{isEn ? "Full meaning" : "Signification complète"}</th>
                   <th className="p-2 w-10"></th>
                 </tr>
               </thead>
@@ -693,9 +747,12 @@ export function StructuredTablesEditor({
       {activeTab === "annexes" && (
         <div className="mt-4 space-y-4">
           <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 p-3 text-xs text-emerald-950">
-            <strong>Générateur d'Annexes administratives & éthiques :</strong> Les fiches et lettres officielles sont
-            automatiquement pré-remplies avec le titre, le nom, le matricule, les structures d'accueil et le directeur
-            définis dans la page de garde.
+            <strong>
+              {isEn ? "Administrative & Ethics Appendices Generator:" : "Générateur d'Annexes administratives & éthiques :"}
+            </strong>{" "}
+            {isEn
+              ? "Official forms and letters are automatically pre-filled with the title, student name, registration number, host institutions, and supervisor defined on the cover page."
+              : "Les fiches et lettres officielles sont automatiquement pré-remplies avec le titre, le nom, le matricule, les structures d'accueil et le directeur définis dans la page de garde."}
           </div>
 
           <div className="grid grid-cols-1 gap-2 text-xs text-slate-800 md:grid-cols-2">
@@ -707,7 +764,11 @@ export function StructuredTablesEditor({
                   setAnnexesConfig({ ...annexesConfig, include_info_notice: e.target.checked })
                 }
               />
-              <span>Annexe 1 : Notice d&apos;information du participant</span>
+              <span>
+                {isEn
+                  ? "Appendix 1: Participant Information Notice"
+                  : "Annexe 1 : Notice d'information du participant"}
+              </span>
             </label>
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
               <input
@@ -717,7 +778,11 @@ export function StructuredTablesEditor({
                   setAnnexesConfig({ ...annexesConfig, include_consent_form: e.target.checked })
                 }
               />
-              <span>Annexe 2 : Formulaire de consentement éclairé</span>
+              <span>
+                {isEn
+                  ? "Appendix 2: Informed Consent Form"
+                  : "Annexe 2 : Formulaire de consentement éclairé"}
+              </span>
             </label>
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
               <input
@@ -727,7 +792,11 @@ export function StructuredTablesEditor({
                   setAnnexesConfig({ ...annexesConfig, include_data_collection_form: e.target.checked })
                 }
               />
-              <span>Annexe 3 : Fiche de collecte (générée depuis les variables / CRF)</span>
+              <span>
+                {isEn
+                  ? "Appendix 3: Data Collection Form (generated from variables / CRF)"
+                  : "Annexe 3 : Fiche de collecte (générée depuis les variables / CRF)"}
+              </span>
             </label>
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
               <input
@@ -737,7 +806,11 @@ export function StructuredTablesEditor({
                   setAnnexesConfig({ ...annexesConfig, include_research_auth_requests: e.target.checked })
                 }
               />
-              <span>Annexe 4 : Demandes d&apos;autorisation de recherche (Faculté &amp; sites d&apos;accueil)</span>
+              <span>
+                {isEn
+                  ? "Appendix 4: Research Authorization Requests (Faculty & host sites)"
+                  : "Annexe 4 : Demandes d'autorisation de recherche (Faculté & sites d'accueil)"}
+              </span>
             </label>
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
               <input
@@ -747,7 +820,11 @@ export function StructuredTablesEditor({
                   setAnnexesConfig({ ...annexesConfig, include_ethics_clearance_request: e.target.checked })
                 }
               />
-              <span>Annexe 5 : Demande de clairance éthique (Comité d&apos;éthique de votre Faculté / Université)</span>
+              <span>
+                {isEn
+                  ? "Appendix 5: Ethical Clearance Request (Faculty / University Ethics Committee)"
+                  : "Annexe 5 : Demande de clairance éthique (Comité d'éthique de votre Faculté / Université)"}
+              </span>
             </label>
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2">
               <input
@@ -757,7 +834,11 @@ export function StructuredTablesEditor({
                   setAnnexesConfig({ ...annexesConfig, include_confidentiality_declaration: e.target.checked })
                 }
               />
-              <span>Annexe 6 : Déclaration de confidentialité (Déclaration d&apos;Helsinki)</span>
+              <span>
+                {isEn
+                  ? "Appendix 6: Confidentiality Declaration (Declaration of Helsinki)"
+                  : "Annexe 6 : Déclaration de confidentialité (Déclaration d'Helsinki)"}
+              </span>
             </label>
             <label className="flex items-center gap-2 rounded border border-slate-200 p-2 md:col-span-2">
               <input
@@ -767,13 +848,19 @@ export function StructuredTablesEditor({
                   setAnnexesConfig({ ...annexesConfig, include_commitment_letter: e.target.checked })
                 }
               />
-              <span>Annexe 7 : Lettre d&apos;engagement de rétro-information</span>
+              <span>
+                {isEn
+                  ? "Appendix 7: Feedback & Commitment Letter"
+                  : "Annexe 7 : Lettre d'engagement de rétro-information"}
+              </span>
             </label>
           </div>
 
           <div>
             <label className="block text-xs font-semibold text-slate-700">
-              But résumé de l'étude (inséré dans les lettres officielles)
+              {isEn
+                ? "Short study goal (inserted into official letters)"
+                : "But résumé de l'étude (inséré dans les lettres officielles)"}
             </label>
             <textarea
               rows={2}
@@ -781,7 +868,11 @@ export function StructuredTablesEditor({
               onChange={(e) =>
                 setAnnexesConfig({ ...annexesConfig, study_goal_short: e.target.value })
               }
-              placeholder="Ex: Évaluer l'impact et les facteurs de risque chez les patients admis..."
+              placeholder={
+                isEn
+                  ? "e.g. Evaluate the impact and risk factors among admitted patients..."
+                  : "Ex: Évaluer l'impact et les facteurs de risque chez les patients admis..."
+              }
               className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-xs focus:border-indigo-500 focus:outline-none"
             />
           </div>
@@ -793,7 +884,7 @@ export function StructuredTablesEditor({
         <div className="mt-4 space-y-4">
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3.5 space-y-2.5">
             <div className="text-xs font-bold text-slate-800">
-              Importer une nouvelle figure dans le protocole
+              {isEn ? "Import a new figure into the protocol" : "Importer une nouvelle figure dans le protocole"}
             </div>
             <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
               <input
@@ -849,14 +940,14 @@ export function StructuredTablesEditor({
                 type="text"
                 value={figUploadTitle}
                 onChange={(e) => setFigUploadTitle(e.target.value)}
-                placeholder="Titre de la figure"
+                placeholder={isEn ? "Figure title" : "Titre de la figure"}
                 className="rounded border border-slate-300 px-2.5 py-1.5 text-xs"
               />
               <input
                 type="text"
                 value={figUploadCaption}
                 onChange={(e) => setFigUploadCaption(e.target.value)}
-                placeholder="Légende / source (optionnelle)"
+                placeholder={isEn ? "Caption / source (optional)" : "Légende / source (optionnelle)"}
                 className="rounded border border-slate-300 px-2.5 py-1.5 text-xs"
               />
             </div>
@@ -887,13 +978,15 @@ export function StructuredTablesEditor({
               }}
               className="rounded bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
             >
-              Importer & inclure la figure
+              {isEn ? "Upload & include figure" : "Importer & inclure la figure"}
             </button>
           </div>
 
           {project.images.length === 0 ? (
             <div className="rounded-lg border border-dashed border-slate-300 p-6 text-center text-xs text-slate-500">
-              Aucune figure enregistrée. Ajoutez-en une ci-dessus ou directement dans une section du Module 1.
+              {isEn
+                ? "No figures saved yet. Upload one above or directly inside a section in Module 1."
+                : "Aucune figure enregistrée. Ajoutez-en une ci-dessus ou directement dans une section du Module 1."}
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -916,7 +1009,7 @@ export function StructuredTablesEditor({
                         Section : {canvas?.find((s) => s.id === img.target_section_id)?.title || img.target_section_id}
                       </div>
                       <div className="mt-0.5 text-[11px] text-slate-600">
-                        {img.caption || "Sans légende"}
+                        {img.caption || (isEn ? "No caption" : "Sans légende")}
                       </div>
                     </div>
                   </div>
@@ -937,7 +1030,13 @@ export function StructuredTablesEditor({
                           : "bg-slate-100 text-slate-600"
                       }`}
                     >
-                      {img.approved ? "Incluse dans Word" : "Exclue"}
+                      {img.approved
+                        ? isEn
+                          ? "Included in Word"
+                          : "Incluse dans Word"
+                        : isEn
+                        ? "Excluded"
+                        : "Exclue"}
                     </button>
                     <button
                       type="button"
@@ -949,7 +1048,7 @@ export function StructuredTablesEditor({
                         onProjectUpdated(updated);
                       }}
                       className="rounded px-2 py-1 text-rose-600 hover:bg-rose-50"
-                      title="Supprimer"
+                      title={isEn ? "Delete" : "Supprimer"}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>

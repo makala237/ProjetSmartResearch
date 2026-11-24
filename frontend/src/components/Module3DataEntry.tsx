@@ -1197,7 +1197,11 @@ export function Module3DataEntry({
                     type="text"
                     value={investigatorName}
                     onChange={(e) => setInvestigatorName(e.target.value)}
-                    placeholder="Nom et matricule de l'enquêteur"
+                    placeholder={
+                      lang === "en"
+                        ? "Investigator name and ID"
+                        : "Nom et matricule de l'enquêteur"
+                    }
                     className="mt-1 min-h-[44px] w-full rounded-lg border border-slate-300 px-3 py-2 text-base focus:border-[#6C2826] focus:outline-none sm:text-xs"
                   />
                 </div>
@@ -1459,7 +1463,7 @@ export function Module3DataEntry({
                                       [`${field.field_id}__sub`]: e.target.value,
                                     }))
                                   }
-                                  placeholder="Préciser..."
+                                  placeholder={lang === "en" ? "Specify..." : "Préciser..."}
                                   className="min-h-[40px] min-w-[140px] flex-1 rounded border border-slate-200 bg-white px-2.5 py-1.5 text-base focus:border-[#6C2826] focus:outline-none sm:text-xs"
                                 />
                               </div>
@@ -1483,7 +1487,11 @@ export function Module3DataEntry({
                 rows={2}
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                placeholder="Observations particulières lors de la collecte de cette fiche..."
+                placeholder={
+                  lang === "en"
+                    ? "Special observations during data collection for this record..."
+                    : "Observations particulières lors de la collecte de cette fiche..."
+                }
                 className="mt-1.5 w-full rounded-lg border border-slate-300 p-3 text-base focus:border-[#6C2826] focus:outline-none sm:p-2.5 sm:text-xs"
               />
               <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
@@ -1696,7 +1704,7 @@ export function Module3DataEntry({
                           sub_field_label: e.target.value,
                         })
                       }
-                      placeholder="Ex. Si oui, préciser"
+                      placeholder={lang === "en" ? "e.g. If yes, specify" : "Ex. Si oui, préciser"}
                       className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs"
                     />
                   </div>

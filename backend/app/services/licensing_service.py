@@ -4,6 +4,7 @@ from typing import Any, Dict, Optional, Tuple
 from fastapi import HTTPException
 
 from app.core.config import get_settings
+from app.core.request_lang import bi, get_request_lang
 from app.core.security import ensure_utc
 from app.db.datastore import (
     UserAIQuotaRecord,
@@ -14,6 +15,7 @@ from app.db.datastore import (
 from app.db.models import utcnow
 from app.services.gemini_client import (
     consume_request_tokens_used,
+    get_ai_routing_policy,
     reset_request_tokens_used,
     set_ai_routing_policy,
 )
@@ -25,6 +27,13 @@ MODULE_LABELS: Dict[str, str] = {
     "module2": "Module 2 (Édition Word / PDF)",
     "module3": "Module 3 (Masque de Saisie Patients)",
     "module4": "Module 4 (Diaporama PowerPoint)",
+}
+
+MODULE_LABELS_EN: Dict[str, str] = {
+    "module1": "Module 1 (Drafting & Research)",
+    "module2": "Module 2 (Word / PDF Editing)",
+    "module3": "Module 3 (Patient Data Entry Mask)",
+    "module4": "Module 4 (PowerPoint Presentation)",
 }
 
 AI_ACTION_COSTS: Dict[str, int] = {
@@ -85,7 +94,10 @@ def assert_any_module_active(db: Any, user: Any) -> None:
         status_code=403,
         detail={
             "code": "NO_ACTIVE_LICENSE",
-            "message": "Aucune licence active n'est associée à votre compte. Contactez l'administrateur.",
+            "message": bi(
+                "Aucune licence active n'est associée à votre compte. Contactez l'administrateur.",
+                "No active license is associated with your account. Please contact the administrator.",
+            ),
         },
     )
 
@@ -101,17 +113,20 @@ def assert_module_write_allowed(db: Any, user: Any, module_key: str) -> None:
     if active:
         return
 
-    label = MODULE_LABELS.get(module_key, module_key)
+    label = (MODULE_LABELS_EN if get_request_lang() == "en" else MODULE_LABELS).get(module_key, module_key)
     raise HTTPException(
         status_code=403,
         detail={
             "code": "MODULE_EXPIRED",
             "module_key": module_key,
             "expires_at": exp.isoformat() if exp else None,
-            "message": (
+            "message": bi(
                 f"Votre accès en écriture au {label} a expiré. "
                 "Vous restez en lecture seule avec téléchargement autorisé. "
-                "Contactez l'administrateur pour renouveler."
+                "Contactez l'administrateur pour renouveler.",
+                f"Your write access to {label} has expired. "
+                "You remain in read-only mode with downloads allowed. "
+                "Please contact the administrator to renew.",
             ),
         },
     )
@@ -180,9 +195,11 @@ def assert_ai_quota_available(
                         "code": "AI_RATE_LIMIT_RPM",
                         "limit_rpm": max_rpm,
                         "used_rpm": used_rpm,
-                        "message": (
+                        "message": bi(
                             f"Limite de fréquence atteinte ({used_rpm}/{max_rpm} requêtes IA par minute). "
-                            "Veuillez patienter quelques secondes avant de relancer."
+                            "Veuillez patienter quelques secondes avant de relancer.",
+                            f"Rate limit reached ({used_rpm}/{max_rpm} AI requests per minute). "
+                            "Please wait a few seconds before retrying.",
                         ),
                     },
                 )
@@ -193,9 +210,11 @@ def assert_ai_quota_available(
                         "code": "AI_RATE_LIMIT_RPD",
                         "limit_rpd": max_rpd,
                         "used_rpd": used_rpd,
-                        "message": (
+                        "message": bi(
                             f"Plafond journalier atteint ({used_rpd}/{max_rpd} requêtes IA aujourd'hui). "
-                            "Votre quota journalier sera réinitialisé demain."
+                            "Votre quota journalier sera réinitialisé demain.",
+                            f"Daily request cap reached ({used_rpd}/{max_rpd} AI requests today). "
+                            "Your daily quota will reset tomorrow.",
                         ),
                     },
                 )
@@ -208,9 +227,11 @@ def assert_ai_quota_available(
                         "code": "AI_RATE_LIMIT_TPM",
                         "limit_tpm": max_tpm,
                         "used_tpm": used_tokens_min,
-                        "message": (
+                        "message": bi(
                             f"Limite de débit atteinte ({used_tokens_min}/{max_tpm} tokens IA par minute). "
-                            "Veuillez patienter quelques secondes avant de relancer."
+                            "Veuillez patienter quelques secondes avant de relancer.",
+                            f"Token throughput limit reached ({used_tokens_min}/{max_tpm} AI tokens per minute). "
+                            "Please wait a few seconds before retrying.",
                         ),
                     },
                 )
@@ -223,9 +244,11 @@ def assert_ai_quota_available(
                         "code": "AI_RATE_LIMIT_TOKENS_DAY",
                         "limit_tokens_day": max_tokens_day,
                         "used_tokens_today": used_tokens_today,
-                        "message": (
+                        "message": bi(
                             f"Plafond journalier de tokens atteint ({used_tokens_today}/{max_tokens_day} tokens consommés aujourd'hui). "
-                            "Votre quota journalier sera réinitialisé demain."
+                            "Votre quota journalier sera réinitialisé demain.",
+                            f"Daily token cap reached ({used_tokens_today}/{max_tokens_day} tokens used today). "
+                            "Your daily quota will reset tomorrow.",
                         ),
                     },
                 )
@@ -241,22 +264,133 @@ def assert_ai_quota_available(
                     "code": "AI_QUOTA_EXCEEDED",
                     "credits_required": cost,
                     "credits_remaining": remaining,
-                    "message": (
+                    "message": bi(
                         f"Crédits IA insuffisants ({remaining} restant(s), {cost} requis). "
-                        "Contactez l'administrateur pour recharger votre quota."
+                        "Contactez l'administrateur pour recharger votre quota.",
+                        f"Insufficient AI credits ({remaining} remaining, {cost} required). "
+                        "Please contact the administrator to recharge your quota.",
                     ),
                 },
             )
 
-    # 3. Apply reasoning policy and daily Gemini 3.8 limit for all users (including admin)
+    # 3. Apply reasoning policy, daily cap, per-user Gemini API key, and custom model chain routing
     daily_38 = get_student_daily_38_usage(store, user)
+    eff_key_id, eff_raw_key = resolve_user_gemini_api_key(store, user)
+    custom_chain = resolve_user_model_chain(store, user)
+    if custom_chain["enabled"] and not custom_chain["eligible_models"]:
+        only_tpm = any(item.get("reason") == "tpm_cap" for item in custom_chain["skipped"])
+        if only_tpm:
+            raise HTTPException(
+                status_code=429,
+                detail={
+                    "code": "AI_MODEL_CHAIN_TPM_EXHAUSTED",
+                    "skipped": custom_chain["skipped"],
+                    "message": bi(
+                        "Limite de débit (TPM) momentanément atteinte sur tous les modèles configurés pour votre compte. "
+                        "Veuillez patienter quelques secondes avant de relancer.",
+                        "Token-per-minute (TPM) limit temporarily reached on all models configured for your account. "
+                        "Please wait a few seconds before retrying.",
+                    ),
+                },
+            )
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "AI_MODEL_CHAIN_RPD_EXHAUSTED",
+                "skipped": custom_chain["skipped"],
+                "message": bi(
+                    "Plafond journalier (RPD) atteint sur tous les modèles IA configurés pour votre compte aujourd'hui. "
+                    "Vos quotas journaliers seront réinitialisés demain.",
+                    "Daily request cap (RPD) reached on all AI models configured for your account today. "
+                    "Your daily quotas will reset tomorrow.",
+                ),
+            },
+        )
     set_ai_routing_policy(
         prefer_fallback_35=daily_38["fallback_active"],
         reason="student_daily_38_cap" if daily_38["fallback_active"] else "",
         user_id=user.id,
         daily_status=daily_38,
+        api_key=eff_raw_key,
+        api_key_id=eff_key_id,
+        custom_model_chain=custom_chain["eligible_models"],
+        custom_chain_enabled=custom_chain["enabled"],
+        custom_chain_skipped=custom_chain["skipped"],
     )
     return max(0, cost)
+
+
+def resolve_user_model_chain(store: Any, user: Any) -> Dict[str, Any]:
+    """Evaluate a user's custom ordered model chain against today's RPD and rolling 60s TPM caps."""
+    from app.core.model_catalog import normalize_model_routing_config
+
+    cfg = normalize_model_routing_config(getattr(user, "model_routing_config", None))
+    if not cfg:
+        return {
+            "enabled": False,
+            "eligible_models": [],
+            "skipped": [],
+            "usage_by_model": {},
+        }
+
+    now = utcnow()
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    minute_ago = now - timedelta(seconds=60)
+    usage_by_model = store.get_user_model_usage_windows(user.id, day_start, minute_ago)
+
+    eligible: List[str] = []
+    skipped: List[Dict[str, Any]] = []
+    for entry in cfg["models"]:
+        model_id = str(entry["model"]).strip()
+        max_rpd = entry.get("max_rpd")
+        max_tpm = entry.get("max_tpm")
+        used = usage_by_model.get(model_id.lower(), {"rpd_used": 0, "tpm_used": 0})
+        rpd_used = int(used.get("rpd_used", 0))
+        tpm_used = int(used.get("tpm_used", 0))
+
+        if max_rpd is not None and rpd_used >= max_rpd:
+            skipped.append(
+                {
+                    "model": model_id,
+                    "reason": "rpd_cap",
+                    "rpd_used": rpd_used,
+                    "max_rpd": max_rpd,
+                }
+            )
+            continue
+        if max_tpm is not None and tpm_used >= max_tpm:
+            skipped.append(
+                {
+                    "model": model_id,
+                    "reason": "tpm_cap",
+                    "tpm_used": tpm_used,
+                    "max_tpm": max_tpm,
+                }
+            )
+            continue
+        eligible.append(model_id)
+
+    return {
+        "enabled": True,
+        "eligible_models": eligible,
+        "skipped": skipped,
+        "usage_by_model": usage_by_model,
+    }
+
+
+def resolve_user_gemini_api_key(store: Any, user: Any) -> Tuple[str, str]:
+    """Resolve (api_key_id, raw_api_key) for a user, safely falling back to system GEMINI_API_KEY."""
+    settings = get_settings()
+    default_key = (settings.gemini_api_key or "").strip()
+    assigned_id = (getattr(user, "gemini_api_key_id", None) or "").strip()
+    if assigned_id and assigned_id != "default":
+        try:
+            rec = store.get_gemini_api_key(assigned_id)
+            if rec is not None and rec.is_active and (rec.api_key or "").strip():
+                return rec.id, rec.api_key.strip()
+        except Exception:
+            pass
+    return "default", default_key
 
 
 def record_usage_and_debit(
@@ -279,6 +413,11 @@ def record_usage_and_debit(
     if effective_cost > 0 and user.role != "admin" and status == "ok":
         store.debit_quota_atomic(user.id, effective_cost, now)
 
+    policy = get_ai_routing_policy()
+    api_key_id = str(policy.get("api_key_id") or "").strip()
+    if not api_key_id:
+        api_key_id, _ = resolve_user_gemini_api_key(store, user)
+
     store.create_usage_event(
         user_id=user.id,
         project_id=project_id,
@@ -287,6 +426,7 @@ def record_usage_and_debit(
         model_used=(model_used or "")[:128],
         credits_cost=effective_cost if (status == "ok") else 0,
         tokens_used=effective_tokens if (status == "ok") else 0,
+        api_key_id=api_key_id or "default",
         status=status[:32],
         ip_address=(ip_address or "")[:64],
         created_at=now,

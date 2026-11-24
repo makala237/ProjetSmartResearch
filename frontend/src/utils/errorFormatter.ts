@@ -45,10 +45,10 @@ const TECHNICAL_PATTERNS: RegExp[] = [
 ];
 
 const POLITE_WARNING_PATTERNS: RegExp[] = [
-  /Limite de fréquence|Limite de débit|AI_RATE_LIMIT|requêtes IA par minute|tokens IA par minute/i,
-  /Plafond journalier|quota IA|Crédits IA insuffisants|tokens IA/i,
-  /Votre accès en écriture|Aucune licence active|MODULE_EXPIRED|NO_ACTIVE_LICENSE/i,
-  /session a expiré|reconnecter|mot de passe|identifiants|invalide/i,
+  /Limite de fréquence|Limite de débit|AI_RATE_LIMIT|requêtes IA par minute|tokens IA par minute|Rate limit reached|Token throughput limit/i,
+  /Plafond journalier|quota IA|Crédits IA insuffisants|tokens IA|Daily request cap|Daily token cap|Insufficient AI credits/i,
+  /Votre accès en écriture|Aucune licence active|MODULE_EXPIRED|NO_ACTIVE_LICENSE|write access.*expired|No active license/i,
+  /session a expiré|reconnecter|mot de passe|identifiants|invalide|Session expired|Session revoked|Incorrect username|password/i,
   /ne dispose pas encore de contenu source|sélectionnez|requis/i,
 ];
 

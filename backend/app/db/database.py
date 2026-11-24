@@ -205,11 +205,23 @@ def _ensure_schema_columns(eng) -> None:
             if "daily_38_limit" not in cols:
                 with eng.begin() as conn:
                     conn.execute(text("ALTER TABLE user_ai_quotas ADD COLUMN daily_38_limit INTEGER"))
+        if "users" in insp.get_table_names():
+            u_cols = {c["name"] for c in insp.get_columns("users")}
+            if "gemini_api_key_id" not in u_cols:
+                with eng.begin() as conn:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN gemini_api_key_id VARCHAR(64)"))
+            if "model_routing_config" not in u_cols:
+                col_type = "JSONB" if eng.dialect.name == "postgresql" else "JSON"
+                with eng.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN model_routing_config {col_type}"))
         if "usage_events" in insp.get_table_names():
             ev_cols = {c["name"] for c in insp.get_columns("usage_events")}
             if "tokens_used" not in ev_cols:
                 with eng.begin() as conn:
                     conn.execute(text("ALTER TABLE usage_events ADD COLUMN tokens_used INTEGER NOT NULL DEFAULT 0"))
+            if "api_key_id" not in ev_cols:
+                with eng.begin() as conn:
+                    conn.execute(text("ALTER TABLE usage_events ADD COLUMN api_key_id VARCHAR(64) NOT NULL DEFAULT 'default'"))
     except Exception as exc:
         logger.warning("Schema column check failed: %s", exc)
 

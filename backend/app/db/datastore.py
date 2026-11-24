@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.security import ensure_utc
 from app.db.models import (
     AdminAuditLogORM,
+    GeminiApiKeyORM,
     LicensePlanORM,
     PresentationORM,
     ProjectORM,
@@ -95,6 +96,19 @@ class UserRecord:
     last_login_ip: Optional[str]
     created_at: datetime
     created_by_admin_id: Optional[str]
+    gemini_api_key_id: Optional[str] = None
+    model_routing_config: Optional[Dict[str, Any]] = None
+
+
+@dataclass
+class GeminiApiKeyRecord:
+    id: str
+    name: str
+    owner_label: str
+    api_key: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass
@@ -183,6 +197,7 @@ class UsageEventRecord:
     ip_address: str
     created_at: datetime
     tokens_used: int = 0
+    api_key_id: str = "default"
 
 
 @dataclass
@@ -259,6 +274,8 @@ class BaseDataStore(ABC):
         must_change_password: bool = True,
         created_by_admin_id: Optional[str] = None,
         initial_credits: Optional[int] = None,
+        gemini_api_key_id: Optional[str] = None,
+        model_routing_config: Optional[Dict[str, Any]] = None,
     ) -> UserRecord: ...
 
     @abstractmethod
@@ -434,6 +451,14 @@ class BaseDataStore(ABC):
     ) -> Tuple[int, int]: ...
 
     @abstractmethod
+    def get_user_model_usage_windows(
+        self,
+        user_id: str,
+        day_start: datetime,
+        minute_ago: datetime,
+    ) -> Dict[str, Dict[str, int]]: ...
+
+    @abstractmethod
     def aggregate_ok_events_by_users(
         self,
         user_ids: List[str],
@@ -536,6 +561,20 @@ def _orm_to_user(row: UserORM) -> UserRecord:
         last_login_ip=row.last_login_ip,
         created_at=_to_utc(row.created_at) or utcnow(),
         created_by_admin_id=row.created_by_admin_id,
+        gemini_api_key_id=getattr(row, "gemini_api_key_id", None),
+        model_routing_config=getattr(row, "model_routing_config", None),
+    )
+
+
+def _orm_to_api_key(row: GeminiApiKeyORM) -> GeminiApiKeyRecord:
+    return GeminiApiKeyRecord(
+        id=row.id,
+        name=row.name,
+        owner_label=row.owner_label or "",
+        api_key=row.api_key or "",
+        is_active=bool(row.is_active),
+        created_at=_to_utc(row.created_at) or utcnow(),
+        updated_at=_to_utc(row.updated_at) or utcnow(),
     )
 
 
@@ -618,6 +657,7 @@ def _orm_to_event(row: UsageEventORM) -> UsageEventRecord:
         model_used=row.model_used or "",
         credits_cost=int(row.credits_cost or 0),
         tokens_used=int(getattr(row, "tokens_used", 0) or 0),
+        api_key_id=str(getattr(row, "api_key_id", "default") or "default"),
         status=row.status or "ok",
         ip_address=row.ip_address or "",
         created_at=_to_utc(row.created_at) or utcnow(),
@@ -740,6 +780,8 @@ class SQLDataStore(BaseDataStore):
         must_change_password: bool = True,
         created_by_admin_id: Optional[str] = None,
         initial_credits: Optional[int] = None,
+        gemini_api_key_id: Optional[str] = None,
+        model_routing_config: Optional[Dict[str, Any]] = None,
     ) -> UserRecord:
         norm_email = email.strip().lower()
         existing = self.db.query(UserORM).filter(UserORM.email == norm_email).first()
@@ -748,6 +790,9 @@ class SQLDataStore(BaseDataStore):
 
         resolved_role = role if role in ("admin", "student") else "student"
         credits = initial_credits if initial_credits is not None else (100000 if resolved_role == "admin" else 0)
+        norm_key_id = (gemini_api_key_id or "").strip() or None
+        if norm_key_id == "default":
+            norm_key_id = None
         row = UserORM(
             email=norm_email,
             full_name=full_name.strip(),
@@ -758,6 +803,8 @@ class SQLDataStore(BaseDataStore):
             is_active=True,
             must_change_password=must_change_password,
             created_by_admin_id=created_by_admin_id,
+            gemini_api_key_id=norm_key_id,
+            model_routing_config=model_routing_config,
         )
         self.db.add(row)
         self.db.flush()
@@ -1107,6 +1154,7 @@ class SQLDataStore(BaseDataStore):
         model_used: str = "",
         credits_cost: int = 0,
         tokens_used: int = 0,
+        api_key_id: str = "default",
         status: str = "ok",
         ip_address: str = "",
         created_at: Optional[datetime] = None,
@@ -1119,6 +1167,7 @@ class SQLDataStore(BaseDataStore):
             model_used=(model_used or "")[:128],
             credits_cost=max(0, int(credits_cost)),
             tokens_used=max(0, int(tokens_used)),
+            api_key_id=((api_key_id or "default").strip() or "default")[:64],
             status=(status or "ok")[:32],
             ip_address=(ip_address or "")[:64],
             created_at=created_at or utcnow(),
@@ -1212,6 +1261,40 @@ class SQLDataStore(BaseDataStore):
             if ts >= minute_ago:
                 rpm_count += 1
         return rpm_count, rpd_count
+
+    def get_user_model_usage_windows(
+        self,
+        user_id: str,
+        day_start: datetime,
+        minute_ago: datetime,
+    ) -> Dict[str, Dict[str, int]]:
+        now = datetime.now(timezone.utc)
+        earliest = min(day_start, minute_ago)
+        non_ai_actions = {"export_docx", "export_pdf", "export_pptx", "export_csv", "patient_upsert"}
+        rows = (
+            self.db.query(UsageEventORM)
+            .filter(
+                UsageEventORM.user_id == user_id,
+                UsageEventORM.status == "ok",
+            )
+            .all()
+        )
+        stats: Dict[str, Dict[str, int]] = {}
+        for ev in rows:
+            if (ev.action or "") in non_ai_actions:
+                continue
+            model = str(ev.model_used or "").strip().lower()
+            if not model:
+                continue
+            ts = _to_utc(ev.created_at) or now
+            if ts < earliest:
+                continue
+            bucket = stats.setdefault(model, {"rpd_used": 0, "tpm_used": 0})
+            if ts >= day_start:
+                bucket["rpd_used"] += 1
+            if ts >= minute_ago:
+                bucket["tpm_used"] += max(0, int(getattr(ev, "tokens_used", 0) or 0))
+        return stats
 
     def aggregate_ok_events_by_users(
         self,
@@ -1417,6 +1500,60 @@ class SQLDataStore(BaseDataStore):
             existing.updated_at = updated_at
         self.db.commit()
 
+    # --- Named Gemini API Keys ---
+    def list_gemini_api_keys(self) -> List[GeminiApiKeyRecord]:
+        rows = self.db.query(GeminiApiKeyORM).order_by(GeminiApiKeyORM.created_at.asc()).all()
+        return [_orm_to_api_key(r) for r in rows]
+
+    def get_gemini_api_key(self, key_id: str) -> Optional[GeminiApiKeyRecord]:
+        row = self.db.get(GeminiApiKeyORM, key_id)
+        return _orm_to_api_key(row) if row is not None else None
+
+    def create_gemini_api_key(
+        self,
+        name: str,
+        api_key: str,
+        owner_label: str = "",
+        is_active: bool = True,
+    ) -> GeminiApiKeyRecord:
+        now = utcnow()
+        row = GeminiApiKeyORM(
+            name=name.strip()[:128],
+            owner_label=(owner_label or "").strip()[:128],
+            api_key=api_key.strip(),
+            is_active=bool(is_active),
+            created_at=now,
+            updated_at=now,
+        )
+        self.db.add(row)
+        self.db.commit()
+        self.db.refresh(row)
+        return _orm_to_api_key(row)
+
+    def update_gemini_api_key(self, key_id: str, **fields: Any) -> Optional[GeminiApiKeyRecord]:
+        row = self.db.get(GeminiApiKeyORM, key_id)
+        if row is None:
+            return None
+        for k, v in fields.items():
+            if hasattr(row, k) and v is not None:
+                setattr(row, k, v)
+        row.updated_at = utcnow()
+        self.db.commit()
+        self.db.refresh(row)
+        return _orm_to_api_key(row)
+
+    def delete_gemini_api_key(self, key_id: str) -> bool:
+        row = self.db.get(GeminiApiKeyORM, key_id)
+        if row is None:
+            return False
+        # Reassign any users on this key back to default (None)
+        self.db.query(UserORM).filter(UserORM.gemini_api_key_id == key_id).update(
+            {"gemini_api_key_id": None}
+        )
+        self.db.delete(row)
+        self.db.commit()
+        return True
+
 
 # =========================================================================
 # CLOUD FIRESTORE + BLOB STORAGE DATASTORE
@@ -1472,6 +1609,20 @@ def _doc_to_user(doc_id: str, data: Dict[str, Any]) -> UserRecord:
         last_login_ip=data.get("last_login_ip"),
         created_at=_to_utc(data.get("created_at")) or utcnow(),
         created_by_admin_id=data.get("created_by_admin_id"),
+        gemini_api_key_id=data.get("gemini_api_key_id") or None,
+        model_routing_config=data.get("model_routing_config") or None,
+    )
+
+
+def _doc_to_api_key(doc_id: str, data: Dict[str, Any]) -> GeminiApiKeyRecord:
+    return GeminiApiKeyRecord(
+        id=str(data.get("id") or doc_id),
+        name=str(data.get("name") or ""),
+        owner_label=str(data.get("owner_label") or ""),
+        api_key=str(data.get("api_key") or ""),
+        is_active=bool(data.get("is_active", True)),
+        created_at=_to_utc(data.get("created_at")) or utcnow(),
+        updated_at=_to_utc(data.get("updated_at")) or utcnow(),
     )
 
 
@@ -1556,6 +1707,7 @@ def _doc_to_event(doc_id: str, data: Dict[str, Any]) -> UsageEventRecord:
         model_used=str(data.get("model_used") or ""),
         credits_cost=int(data.get("credits_cost") or 0),
         tokens_used=int(data.get("tokens_used") or 0),
+        api_key_id=str(data.get("api_key_id") or "default"),
         status=str(data.get("status") or "ok"),
         ip_address=str(data.get("ip_address") or ""),
         created_at=_to_utc(data.get("created_at")) or utcnow(),
@@ -1736,10 +1888,15 @@ class FirestoreDataStore(BaseDataStore):
         must_change_password: bool = True,
         created_by_admin_id: Optional[str] = None,
         initial_credits: Optional[int] = None,
+        gemini_api_key_id: Optional[str] = None,
+        model_routing_config: Optional[Dict[str, Any]] = None,
     ) -> UserRecord:
         norm_email = email.strip().lower()
         resolved_role = role if role in ("admin", "student") else "student"
         credits = initial_credits if initial_credits is not None else (100000 if resolved_role == "admin" else 0)
+        norm_key_id = (gemini_api_key_id or "").strip() or None
+        if norm_key_id == "default":
+            norm_key_id = None
         uid = str(uuid4())
         now = utcnow()
 
@@ -1759,6 +1916,8 @@ class FirestoreDataStore(BaseDataStore):
             "last_login_ip": None,
             "created_at": now,
             "created_by_admin_id": created_by_admin_id,
+            "gemini_api_key_id": norm_key_id,
+            "model_routing_config": model_routing_config,
         }
         quota_doc = {
             "user_id": uid,
@@ -2221,6 +2380,7 @@ class FirestoreDataStore(BaseDataStore):
         model_used: str = "",
         credits_cost: int = 0,
         tokens_used: int = 0,
+        api_key_id: str = "default",
         status: str = "ok",
         ip_address: str = "",
         created_at: Optional[datetime] = None,
@@ -2235,6 +2395,7 @@ class FirestoreDataStore(BaseDataStore):
             "model_used": (model_used or "")[:128],
             "credits_cost": max(0, int(credits_cost)),
             "tokens_used": max(0, int(tokens_used)),
+            "api_key_id": ((api_key_id or "default").strip() or "default")[:64],
             "status": (status or "ok")[:32],
             "ip_address": (ip_address or "")[:64],
             "created_at": created_at or utcnow(),
@@ -2322,6 +2483,36 @@ class FirestoreDataStore(BaseDataStore):
             if ts >= minute_ago:
                 rpm_count += 1
         return rpm_count, rpd_count
+
+    def get_user_model_usage_windows(
+        self,
+        user_id: str,
+        day_start: datetime,
+        minute_ago: datetime,
+    ) -> Dict[str, Dict[str, int]]:
+        earliest = min(day_start, minute_ago)
+        q = self._col("usage_events")
+        q = self._where(q, "user_id", "==", user_id)
+        q = self._where(q, "status", "==", "ok")
+        q = self._where(q, "created_at", ">=", earliest)
+        non_ai_actions = {"export_docx", "export_pdf", "export_pptx", "export_csv", "patient_upsert"}
+        stats: Dict[str, Dict[str, int]] = {}
+        for snap in q.stream():
+            data = snap.to_dict() or {}
+            if str(data.get("action") or "") in non_ai_actions:
+                continue
+            model = str(data.get("model_used") or "").strip().lower()
+            if not model:
+                continue
+            ts = _to_utc(data.get("created_at"))
+            if ts is None:
+                continue
+            bucket = stats.setdefault(model, {"rpd_used": 0, "tpm_used": 0})
+            if ts >= day_start:
+                bucket["rpd_used"] += 1
+            if ts >= minute_ago:
+                bucket["tpm_used"] += max(0, int(data.get("tokens_used") or 0))
+        return stats
 
     def aggregate_ok_events_by_users(
         self,
@@ -2560,6 +2751,62 @@ class FirestoreDataStore(BaseDataStore):
             "blob_key": blob_key,
         }
         self._col("presentations").document(project_id).set(doc)
+
+    # --- Named Gemini API Keys ---
+    def list_gemini_api_keys(self) -> List[GeminiApiKeyRecord]:
+        snaps = list(self._col("gemini_api_keys").stream())
+        items = [_doc_to_api_key(s.id, s.to_dict() or {}) for s in snaps]
+        items.sort(key=lambda r: r.created_at)
+        return items
+
+    def get_gemini_api_key(self, key_id: str) -> Optional[GeminiApiKeyRecord]:
+        snap = self._col("gemini_api_keys").document(key_id).get()
+        if not snap.exists:
+            return None
+        return _doc_to_api_key(snap.id, snap.to_dict() or {})
+
+    def create_gemini_api_key(
+        self,
+        name: str,
+        api_key: str,
+        owner_label: str = "",
+        is_active: bool = True,
+    ) -> GeminiApiKeyRecord:
+        kid = str(uuid4())
+        now = utcnow()
+        doc = {
+            "id": kid,
+            "name": name.strip()[:128],
+            "owner_label": (owner_label or "").strip()[:128],
+            "api_key": api_key.strip(),
+            "is_active": bool(is_active),
+            "created_at": now,
+            "updated_at": now,
+        }
+        self._col("gemini_api_keys").document(kid).set(doc)
+        return _doc_to_api_key(kid, doc)
+
+    def update_gemini_api_key(self, key_id: str, **fields: Any) -> Optional[GeminiApiKeyRecord]:
+        ref = self._col("gemini_api_keys").document(key_id)
+        snap = ref.get()
+        if not snap.exists:
+            return None
+        updates = {k: v for k, v in fields.items() if v is not None}
+        updates["updated_at"] = utcnow()
+        ref.update(updates)
+        updated = ref.get()
+        return _doc_to_api_key(updated.id, updated.to_dict() or {})
+
+    def delete_gemini_api_key(self, key_id: str) -> bool:
+        ref = self._col("gemini_api_keys").document(key_id)
+        snap = ref.get()
+        if not snap.exists:
+            return False
+        # Reassign any users on this key back to default (None)
+        for usnap in self._where(self._col("users"), "gemini_api_key_id", "==", key_id).stream():
+            self._col("users").document(usnap.id).update({"gemini_api_key_id": None})
+        ref.delete()
+        return True
 
 
 def as_store(db: Any) -> BaseDataStore:

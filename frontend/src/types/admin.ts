@@ -53,6 +53,8 @@ export interface AdminCreateUserRequest {
   initial_protocol_title?: string;
   study_type?: string;
   cover?: CoverMetadata;
+  gemini_api_key_id?: string | null;
+  model_routing_config?: UserModelRoutingConfig | null;
 }
 
 export interface AdminUpdateUserRequest {
@@ -61,6 +63,8 @@ export interface AdminUpdateUserRequest {
   phone?: string;
   role?: "student" | "admin";
   is_active?: boolean;
+  gemini_api_key_id?: string | null;
+  model_routing_config?: UserModelRoutingConfig | null;
 }
 
 export interface AdminResetPasswordResponse {
@@ -165,6 +169,56 @@ export interface AdminStudentStatsRow {
   entitlements: Record<string, ModuleEntitlementOut>;
   ai_quota: AIQuotaOut;
   status_summary: "admin" | "active" | "expiring_soon" | "expired" | "disabled" | "none" | string;
+  gemini_api_key_id?: string | null;
+  gemini_api_key_name?: string;
+  model_routing_config?: UserModelRoutingConfig | null;
+}
+
+export interface GeminiApiKeyCreateRequest {
+  name: string;
+  owner_label?: string;
+  api_key: string;
+  is_active?: boolean;
+}
+
+export interface GeminiApiKeyUpdateRequest {
+  name?: string;
+  owner_label?: string;
+  api_key?: string;
+  is_active?: boolean;
+}
+
+export interface GeminiApiKeyUserUsageOut {
+  user_id: string;
+  full_name: string;
+  email: string;
+  role: string;
+  is_assigned: boolean;
+  calls_total: number;
+  tokens_total: number;
+  credits_total: number;
+  calls_today: number;
+  tokens_today: number;
+  last_used_at?: string | null;
+}
+
+export interface GeminiApiKeyStatsOut {
+  id: string;
+  name: string;
+  owner_label: string;
+  masked_key: string;
+  is_default: boolean;
+  is_active: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+  assigned_users_count: number;
+  total_calls: number;
+  total_tokens: number;
+  total_credits: number;
+  calls_today: number;
+  tokens_today: number;
+  last_used_at?: string | null;
+  users: GeminiApiKeyUserUsageOut[];
 }
 
 export interface AdminCreateUserResponse {
@@ -180,6 +234,50 @@ export interface AdminUserDetailOut {
   recent_audit_logs: AdminAuditLogOut[];
   project_cover?: CoverMetadata | null;
   project_study_type?: string | null;
+  model_daily_usage?: UserModelDailyUsageOut[];
+}
+
+export interface ModelRoutingEntry {
+  model: string;
+  max_rpd?: number | null;
+  max_tpm?: number | null;
+}
+
+export interface UserModelRoutingConfig {
+  enabled: boolean;
+  models: ModelRoutingEntry[];
+}
+
+export interface ModelCatalogItemOut {
+  id: string;
+  label: string;
+  tier: "vip" | "standard" | "lite" | string;
+  in_use: boolean;
+  free_tier_rpm: number;
+  free_tier_tpm: number;
+  free_tier_rpd: number;
+  description: string;
+}
+
+export interface ModelRoutingPresetOut {
+  id: string;
+  label: string;
+  description: string;
+  config: UserModelRoutingConfig;
+}
+
+export interface ModelCatalogResponse {
+  models: ModelCatalogItemOut[];
+  presets: ModelRoutingPresetOut[];
+  note: string;
+}
+
+export interface UserModelDailyUsageOut {
+  model: string;
+  rpd_used: number;
+  tpm_used: number;
+  max_rpd?: number | null;
+  max_tpm?: number | null;
 }
 
 export interface AdminDashboardStatsOut {

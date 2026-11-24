@@ -70,14 +70,24 @@ def set_ai_routing_policy(
     reason: str = "",
     user_id: str = "",
     daily_status: Optional[Dict[str, Any]] = None,
+    api_key: str = "",
+    api_key_id: str = "default",
+    custom_model_chain: Optional[List[str]] = None,
+    custom_chain_enabled: bool = False,
+    custom_chain_skipped: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
-    """Bind per-request Gemini reasoning routing policy into the current context."""
+    """Bind per-request Gemini reasoning routing policy, custom ordered chain, and assigned API key."""
     _ai_routing_policy.set(
         {
             "prefer_fallback_35": bool(prefer_fallback_35),
             "reason": reason,
             "user_id": user_id,
             "daily_status": daily_status or {},
+            "api_key": (api_key or "").strip(),
+            "api_key_id": (api_key_id or "default").strip() or "default",
+            "custom_model_chain": [str(m).strip() for m in (custom_model_chain or []) if str(m).strip()],
+            "custom_chain_enabled": bool(custom_chain_enabled),
+            "custom_chain_skipped": list(custom_chain_skipped or []),
         }
     )
 
@@ -107,33 +117,53 @@ class GeminiRouter:
     def __init__(self) -> None:
         self.settings = get_settings()
         self._client: Optional[genai.Client] = None
+        self._clients_by_key: Dict[str, genai.Client] = {}
         self._model_cooldowns: Dict[str, float] = {}
 
+    def _resolve_active_api_key(self) -> Tuple[str, str]:
+        """Return (api_key_id, raw_api_key) for the current request, falling back to system GEMINI_API_KEY."""
+        policy = get_ai_routing_policy()
+        override_key = str(policy.get("api_key") or "").strip()
+        override_id = str(policy.get("api_key_id") or "default").strip() or "default"
+        if override_key:
+            return override_id, override_key
+        return "default", (self.settings.gemini_api_key or "").strip()
+
     def _get_client(self) -> genai.Client:
-        if self._client is None:
-            if not self.settings.gemini_api_key:
-                raise RuntimeError("GEMINI_API_KEY non configurée dans backend/.env.")
-            timeout_ms = int(getattr(self.settings, "gemini_request_timeout_ms", 60_000) or 0)
-            if timeout_ms > 0:
-                self._client = genai.Client(
-                    api_key=self.settings.gemini_api_key,
-                    http_options=types.HttpOptions(timeout=timeout_ms),
-                )
-            else:
-                self._client = genai.Client(api_key=self.settings.gemini_api_key)
-        return self._client
+        _, active_key = self._resolve_active_api_key()
+        if not active_key:
+            raise RuntimeError("GEMINI_API_KEY non configurée dans backend/.env.")
+        cached = self._clients_by_key.get(active_key)
+        if cached is not None:
+            return cached
+        timeout_ms = int(getattr(self.settings, "gemini_request_timeout_ms", 60_000) or 0)
+        if timeout_ms > 0:
+            client = genai.Client(
+                api_key=active_key,
+                http_options=types.HttpOptions(timeout=timeout_ms),
+            )
+        else:
+            client = genai.Client(api_key=active_key)
+        self._clients_by_key[active_key] = client
+        if active_key == (self.settings.gemini_api_key or "").strip():
+            self._client = client
+        return client
+
+    def _cooldown_key(self, model_id: str) -> str:
+        key_id, _ = self._resolve_active_api_key()
+        return f"{key_id}::{(model_id or '').lower()}"
 
     def _mark_model_unresponsive(self, model_id: str) -> None:
         cooldown_s = int(getattr(self.settings, "gemini_relay_cooldown_seconds", 45) or 0)
         if cooldown_s > 0 and model_id:
-            self._model_cooldowns[model_id.lower()] = time.monotonic() + cooldown_s
+            self._model_cooldowns[self._cooldown_key(model_id)] = time.monotonic() + cooldown_s
 
     def _clear_model_cooldown(self, model_id: str) -> None:
         if model_id:
-            self._model_cooldowns.pop(model_id.lower(), None)
+            self._model_cooldowns.pop(self._cooldown_key(model_id), None)
 
     def _is_model_in_cooldown(self, model_id: str) -> bool:
-        key = (model_id or "").lower()
+        key = self._cooldown_key(model_id)
         until = self._model_cooldowns.get(key)
         if until is None:
             return False
@@ -146,7 +176,7 @@ class GeminiRouter:
         """List Gemini models accessible with the configured API key (including v1beta Decisions)."""
         self._get_client()
         vbeta_client = genai.Client(
-            api_key=self.settings.gemini_api_key,
+            api_key=self._resolve_active_api_key()[1],
             http_options={"api_version": "v1beta"},
         )
         models: List[Dict[str, Any]] = []
@@ -170,10 +200,23 @@ class GeminiRouter:
         return models
 
     def _resolve_candidates(self, role: str) -> Tuple[List[str], bool]:
-        """Resolve ordered model fallback chain with bidirectional 3.5-flash-lite <-> 3.1-flash-lite relay."""
+        """Resolve ordered model fallback chain (per-user custom chain or system default)."""
         chains = self.settings.model_chains()
         candidates = list(chains.get(role, chains["drafting"]))
         policy = get_ai_routing_policy()
+
+        if policy.get("custom_chain_enabled") and policy.get("custom_model_chain"):
+            custom_ordered = list(policy["custom_model_chain"])
+            if role == "layout_decision":
+                head = [m for m in candidates if "decision-1" in m.lower()]
+                resolved = head + [m for m in custom_ordered if m not in head]
+            else:
+                resolved = custom_ordered
+            cap_active = bool(policy.get("custom_chain_skipped"))
+            healthy = [m for m in resolved if not self._is_model_in_cooldown(m)]
+            cooled = [m for m in resolved if self._is_model_in_cooldown(m)]
+            return healthy + cooled, cap_active
+
         prefer_35 = bool(policy.get("prefer_fallback_35"))
 
         if prefer_35:
@@ -623,7 +666,7 @@ class GeminiRouter:
         """Call Google GenAI Antigravity Agent natively via `client.interactions.create`."""
         self._get_client()
         vbeta_client = genai.Client(
-            api_key=self.settings.gemini_api_key,
+            api_key=self._resolve_active_api_key()[1],
             http_options={"api_version": "v1beta"},
         )
         interaction = vbeta_client.interactions.create(

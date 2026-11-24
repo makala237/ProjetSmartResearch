@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { AlertCircle, KeyRound, Loader2, LogOut, ShieldAlert, X } from "lucide-react";
 import { api, setAuthTokens } from "../api/client";
+import { useLanguage } from "../i18n/LanguageContext";
 import type { TokenResponse } from "../types/auth";
 
 interface ChangePasswordModalProps {
@@ -18,6 +19,8 @@ export function ChangePasswordModal({
   onCancel,
   onLogout,
 }: ChangePasswordModalProps) {
+  const { lang } = useLanguage();
+  const isEn = lang === "en";
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -28,11 +31,19 @@ export function ChangePasswordModal({
     e.preventDefault();
     setError(null);
     if (newPassword.trim().length < 8) {
-      setError("Le nouveau mot de passe doit contenir au moins 8 caractères.");
+      setError(
+        isEn
+          ? "The new password must be at least 8 characters long."
+          : "Le nouveau mot de passe doit contenir au moins 8 caractères."
+      );
       return;
     }
     if (newPassword !== confirmPassword) {
-      setError("La confirmation ne correspond pas au nouveau mot de passe.");
+      setError(
+        isEn
+          ? "Password confirmation does not match the new password."
+          : "La confirmation ne correspond pas au nouveau mot de passe."
+      );
       return;
     }
 
@@ -45,6 +56,8 @@ export function ChangePasswordModal({
       setError(
         err instanceof Error
           ? err.message
+          : isEn
+          ? "Unable to update password."
           : "Impossible de modifier le mot de passe."
       );
     } finally {
@@ -63,7 +76,11 @@ export function ChangePasswordModal({
             <div>
               <h3 className="text-base font-bold text-slate-900">
                 {mandatory
-                  ? "Changement de mot de passe obligatoire"
+                  ? isEn
+                    ? "Mandatory password change"
+                    : "Changement de mot de passe obligatoire"
+                  : isEn
+                  ? "Change your password"
                   : "Modifier votre mot de passe"}
               </h3>
               <p className="text-xs text-slate-500">{userEmail}</p>
@@ -74,7 +91,7 @@ export function ChangePasswordModal({
               type="button"
               onClick={onCancel}
               className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
-              title="Fermer"
+              title={isEn ? "Close" : "Fermer"}
             >
               <X className="h-4 w-4" />
             </button>
@@ -83,7 +100,9 @@ export function ChangePasswordModal({
 
         {mandatory && (
           <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            Lors de votre première connexion (ou après réinitialisation), veuillez définir un mot de passe personnel d'au moins 8 caractères avant d'accéder aux modules.
+            {isEn
+              ? "On your first sign-in (or after a password reset), please set a personal password of at least 8 characters before accessing the modules."
+              : "Lors de votre première connexion (ou après réinitialisation), veuillez définir un mot de passe personnel d'au moins 8 caractères avant d'accéder aux modules."}
           </p>
         )}
 
@@ -97,7 +116,7 @@ export function ChangePasswordModal({
         <form onSubmit={handleSubmit} className="mt-4 space-y-3.5">
           <div>
             <label className="block text-xs font-semibold text-slate-700">
-              Mot de passe actuel / temporaire
+              {isEn ? "Current / temporary password" : "Mot de passe actuel / temporaire"}
             </label>
             <input
               type="password"
@@ -109,7 +128,7 @@ export function ChangePasswordModal({
           </div>
           <div>
             <label className="block text-xs font-semibold text-slate-700">
-              Nouveau mot de passe (min. 8 caractères)
+              {isEn ? "New password (min. 8 characters)" : "Nouveau mot de passe (min. 8 caractères)"}
             </label>
             <input
               type="password"
@@ -122,7 +141,7 @@ export function ChangePasswordModal({
           </div>
           <div>
             <label className="block text-xs font-semibold text-slate-700">
-              Confirmer le nouveau mot de passe
+              {isEn ? "Confirm new password" : "Confirmer le nouveau mot de passe"}
             </label>
             <input
               type="password"
@@ -142,7 +161,7 @@ export function ChangePasswordModal({
                 className="mr-auto inline-flex items-center gap-1.5 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
                 <LogOut className="h-3.5 w-3.5" />
-                Se déconnecter
+                {isEn ? "Sign out" : "Se déconnecter"}
               </button>
             )}
             {!mandatory && onCancel && (
@@ -151,7 +170,7 @@ export function ChangePasswordModal({
                 onClick={onCancel}
                 className="rounded-lg border border-slate-300 px-3.5 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50"
               >
-                Annuler
+                {isEn ? "Cancel" : "Annuler"}
               </button>
             )}
             <button
@@ -160,7 +179,7 @@ export function ChangePasswordModal({
               className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-4 py-2 text-xs font-semibold text-white hover:bg-[#571f1d] disabled:opacity-60"
             >
               {loading && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-              Enregistrer le mot de passe
+              {isEn ? "Save password" : "Enregistrer le mot de passe"}
             </button>
           </div>
         </form>

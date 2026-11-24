@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import math
 import secrets
 from typing import Any, Dict, List, Optional
@@ -6,6 +6,13 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from app.api.deps import require_admin
+from app.core.config import get_settings
+from app.core.model_catalog import (
+    FREE_TIER_REFERENCE_NOTE,
+    GEMINI_MODEL_CATALOG,
+    MODEL_ROUTING_PRESETS,
+    normalize_model_routing_config,
+)
 from app.core.security import ensure_utc, hash_password
 from app.db.database import get_db
 from app.db.datastore import (
@@ -31,10 +38,19 @@ from app.schemas.admin import (
     AdminUpdateUserCoverRequest,
     AdminUpdateUserRequest,
     AdminUserDetailOut,
+    GeminiApiKeyCreateRequest,
+    GeminiApiKeyStatsOut,
+    GeminiApiKeyUpdateRequest,
+    GeminiApiKeyUserUsageOut,
     LicensePlanCreateRequest,
     LicensePlanOut,
     LicensePlanUpdateRequest,
+    ModelCatalogItemOut,
+    ModelCatalogResponse,
+    ModelRoutingPresetOut,
     UsageEventOut,
+    UserModelDailyUsageOut,
+    UserModelRoutingConfig,
 )
 from app.schemas.auth import AIQuotaOut, ModuleEntitlementOut
 from app.schemas.protocol import CoverMetadata, CreateProjectRequest, StepStatus
@@ -78,6 +94,7 @@ def _build_student_rows(
     ent_by_user: Dict[str, Dict[str, UserModuleEntitlementRecord]] = store.list_entitlements_for_users(user_ids)
     quota_by_user = store.list_quotas_for_users(user_ids)
     proj_by_user = store.list_project_metas_for_users(user_ids)
+    api_key_names: Dict[str, str] = {k.id: k.name for k in store.list_gemini_api_keys()}
     exports_by_user, ai_calls_by_user = store.aggregate_ok_events_by_users(user_ids, EXPORT_ACTIONS)
 
     result: List[AdminStudentStatsRow] = []
@@ -177,6 +194,17 @@ def _build_student_rows(
                 entitlements=ents_out,
                 ai_quota=ai_quota,
                 status_summary=summary,
+                gemini_api_key_id=u.gemini_api_key_id or "default",
+                gemini_api_key_name=(
+                    api_key_names.get(u.gemini_api_key_id, "Clé système par défaut")
+                    if u.gemini_api_key_id
+                    else "Clé système par défaut"
+                ),
+                model_routing_config=(
+                    UserModelRoutingConfig.model_validate(u.model_routing_config)
+                    if u.model_routing_config
+                    else None
+                ),
             )
         )
     return result
@@ -475,6 +503,14 @@ def admin_create_user(
         if plan is None:
             raise HTTPException(status_code=404, detail="Plan de licence introuvable.")
 
+    assigned_key_id: Optional[str] = (payload.gemini_api_key_id or "").strip() or None
+    if assigned_key_id == "default":
+        assigned_key_id = None
+    if assigned_key_id and store.get_gemini_api_key(assigned_key_id) is None:
+        raise HTTPException(status_code=404, detail="Clé API Gemini introuvable.")
+
+    normalized_routing = normalize_model_routing_config(payload.model_routing_config)
+
     try:
         user = create_user_account(
             db=store,
@@ -486,6 +522,8 @@ def admin_create_user(
             phone=payload.phone,
             must_change_password=True,
             created_by_admin_id=admin_user.id,
+            gemini_api_key_id=assigned_key_id,
+            model_routing_config=normalized_routing,
         )
     except ValueError as exc:
         if str(exc) == "EMAIL_EXISTS":
@@ -589,6 +627,36 @@ def get_user_detail(
     now = datetime.now(timezone.utc)
     proj_obj = project_storage.get(row_out.project_id) if row_out.project_id else None
 
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    minute_ago = now - timedelta(seconds=60)
+    usage_windows = store.get_user_model_usage_windows(user_id, day_start, minute_ago)
+    daily_usage_list: List[UserModelDailyUsageOut] = []
+    seen_models: set[str] = set()
+    if row_out.model_routing_config and row_out.model_routing_config.enabled:
+        for entry in row_out.model_routing_config.models:
+            mk = entry.model.strip().lower()
+            seen_models.add(mk)
+            w = usage_windows.get(mk, {"rpd_used": 0, "tpm_used": 0})
+            daily_usage_list.append(
+                UserModelDailyUsageOut(
+                    model=entry.model,
+                    rpd_used=int(w.get("rpd_used", 0)),
+                    tpm_used=int(w.get("tpm_used", 0)),
+                    max_rpd=entry.max_rpd,
+                    max_tpm=entry.max_tpm,
+                )
+            )
+    for mk, w in sorted(usage_windows.items()):
+        if mk in seen_models:
+            continue
+        daily_usage_list.append(
+            UserModelDailyUsageOut(
+                model=mk,
+                rpd_used=int(w.get("rpd_used", 0)),
+                tpm_used=int(w.get("tpm_used", 0)),
+            )
+        )
+
     return AdminUserDetailOut(
         user=row_out,
         grants=_hydrate_grants(store, grants),
@@ -623,6 +691,7 @@ def get_user_detail(
         ],
         project_cover=proj_obj.cover if proj_obj else None,
         project_study_type=proj_obj.study_type if proj_obj else None,
+        model_daily_usage=daily_usage_list,
     )
 
 
@@ -658,6 +727,16 @@ def update_user(
         updates["is_active"] = payload.is_active
         if not payload.is_active:
             updates["active_session_id"] = None
+    if payload.gemini_api_key_id is not None:
+        clean_kid = payload.gemini_api_key_id.strip()
+        if not clean_kid or clean_kid == "default":
+            updates["gemini_api_key_id"] = None
+        else:
+            if store.get_gemini_api_key(clean_kid) is None:
+                raise HTTPException(status_code=404, detail="Clé API Gemini introuvable.")
+            updates["gemini_api_key_id"] = clean_kid
+    if payload.model_routing_config is not None:
+        updates["model_routing_config"] = normalize_model_routing_config(payload.model_routing_config)
 
     user = store.update_user(user.id, **updates) or user
     store.create_audit_log(
@@ -1172,3 +1251,282 @@ def resolve_admin_error_alert(
         "resolved_by": current_admin.full_name,
         "resolution_note": note,
     }
+
+
+def _mask_api_key(raw: str) -> str:
+    clean = (raw or "").strip()
+    if not clean:
+        return "(non configurée)"
+    if len(clean) <= 10:
+        return clean[:3] + "..." + clean[-2:]
+    return clean[:6] + "…" + clean[-4:]
+
+
+def _compute_api_keys_stats(store: Any) -> List[GeminiApiKeyStatsOut]:
+    now = datetime.now(timezone.utc)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    settings = get_settings()
+
+    custom_keys = store.list_gemini_api_keys()
+    all_users = store.list_users()
+    users_by_id = {u.id: u for u in all_users}
+    events = store.list_usage_events(status="ok")
+
+    # Known key IDs: "default" + all custom keys
+    known_ids = {"default"} | {k.id for k in custom_keys}
+
+    # Aggregate events by (key_id, user_id)
+    key_totals: Dict[str, Dict[str, Any]] = {}
+    user_key_stats: Dict[str, Dict[str, Dict[str, Any]]] = {}
+
+    def _ensure_bucket(kid: str) -> Dict[str, Any]:
+        if kid not in key_totals:
+            key_totals[kid] = {
+                "total_calls": 0,
+                "total_tokens": 0,
+                "total_credits": 0,
+                "calls_today": 0,
+                "tokens_today": 0,
+                "last_used_at": None,
+            }
+        return key_totals[kid]
+
+    for ev in events:
+        if ev.action in EXPORT_ACTIONS or (ev.credits_cost == 0 and ev.tokens_used == 0 and not ev.model_used):
+            continue
+        kid = (getattr(ev, "api_key_id", "default") or "default").strip() or "default"
+        if kid not in known_ids:
+            kid = "default"
+        kt = _ensure_bucket(kid)
+        ev_time = ensure_utc(ev.created_at) or now
+        toks = int(getattr(ev, "tokens_used", 0) or 0)
+        creds = int(ev.credits_cost or 0)
+
+        kt["total_calls"] += 1
+        kt["total_tokens"] += toks
+        kt["total_credits"] += creds
+        if ev_time >= day_start:
+            kt["calls_today"] += 1
+            kt["tokens_today"] += toks
+        if kt["last_used_at"] is None or ev_time > kt["last_used_at"]:
+            kt["last_used_at"] = ev_time
+
+        uk_map = user_key_stats.setdefault(kid, {})
+        uk = uk_map.get(ev.user_id)
+        if uk is None:
+            uk = {
+                "calls_total": 0,
+                "tokens_total": 0,
+                "credits_total": 0,
+                "calls_today": 0,
+                "tokens_today": 0,
+                "last_used_at": None,
+            }
+            uk_map[ev.user_id] = uk
+        uk["calls_total"] += 1
+        uk["tokens_total"] += toks
+        uk["credits_total"] += creds
+        if ev_time >= day_start:
+            uk["calls_today"] += 1
+            uk["tokens_today"] += toks
+        if uk["last_used_at"] is None or ev_time > uk["last_used_at"]:
+            uk["last_used_at"] = ev_time
+
+    # Map assigned users per key
+    assigned_by_key: Dict[str, List[Any]] = {"default": []}
+    for k in custom_keys:
+        assigned_by_key[k.id] = []
+    for u in all_users:
+        kid = (u.gemini_api_key_id or "").strip()
+        if kid and kid in assigned_by_key:
+            assigned_by_key[kid].append(u)
+        else:
+            assigned_by_key["default"].append(u)
+
+    def _build_key_out(
+        kid: str,
+        name: str,
+        owner_label: str,
+        masked_key: str,
+        is_default: bool,
+        is_active: bool,
+        created_at: Optional[datetime],
+        updated_at: Optional[datetime],
+    ) -> GeminiApiKeyStatsOut:
+        kt = key_totals.get(kid, {})
+        assigned_users = assigned_by_key.get(kid, [])
+        assigned_ids = {u.id for u in assigned_users}
+        uk_map = user_key_stats.get(kid, {})
+        involved_uids = assigned_ids | set(uk_map.keys())
+
+        user_rows: List[GeminiApiKeyUserUsageOut] = []
+        for uid in involved_uids:
+            u = users_by_id.get(uid)
+            if u is None:
+                continue
+            st = uk_map.get(uid, {})
+            user_rows.append(
+                GeminiApiKeyUserUsageOut(
+                    user_id=u.id,
+                    full_name=u.full_name,
+                    email=u.email,
+                    role=u.role,
+                    is_assigned=u.id in assigned_ids,
+                    calls_total=int(st.get("calls_total", 0)),
+                    tokens_total=int(st.get("tokens_total", 0)),
+                    credits_total=int(st.get("credits_total", 0)),
+                    calls_today=int(st.get("calls_today", 0)),
+                    tokens_today=int(st.get("tokens_today", 0)),
+                    last_used_at=st.get("last_used_at"),
+                )
+            )
+        user_rows.sort(key=lambda r: (not r.is_assigned, -r.tokens_total, -r.calls_total, r.full_name.lower()))
+
+        return GeminiApiKeyStatsOut(
+            id=kid,
+            name=name,
+            owner_label=owner_label,
+            masked_key=masked_key,
+            is_default=is_default,
+            is_active=is_active,
+            created_at=created_at,
+            updated_at=updated_at,
+            assigned_users_count=len(assigned_users),
+            total_calls=int(kt.get("total_calls", 0)),
+            total_tokens=int(kt.get("total_tokens", 0)),
+            total_credits=int(kt.get("total_credits", 0)),
+            calls_today=int(kt.get("calls_today", 0)),
+            tokens_today=int(kt.get("tokens_today", 0)),
+            last_used_at=kt.get("last_used_at"),
+            users=user_rows,
+        )
+
+    out: List[GeminiApiKeyStatsOut] = [
+        _build_key_out(
+            kid="default",
+            name="Clé système par défaut (GEMINI_API_KEY)",
+            owner_label="Système / Défaut",
+            masked_key=_mask_api_key(settings.gemini_api_key),
+            is_default=True,
+            is_active=bool((settings.gemini_api_key or "").strip()),
+            created_at=None,
+            updated_at=None,
+        )
+    ]
+    for k in custom_keys:
+        out.append(
+            _build_key_out(
+                kid=k.id,
+                name=k.name,
+                owner_label=k.owner_label,
+                masked_key=_mask_api_key(k.api_key),
+                is_default=False,
+                is_active=k.is_active,
+                created_at=k.created_at,
+                updated_at=k.updated_at,
+            )
+        )
+    return out
+
+
+@router.get("/api-keys", response_model=List[GeminiApiKeyStatsOut])
+def list_admin_api_keys(
+    db: Any = Depends(get_db),
+) -> List[GeminiApiKeyStatsOut]:
+    """List all named Gemini API keys (default + custom) with assigned users and consumption stats."""
+    store = as_store(db)
+    return _compute_api_keys_stats(store)
+
+
+@router.post("/api-keys", response_model=GeminiApiKeyStatsOut)
+def create_admin_api_key(
+    payload: GeminiApiKeyCreateRequest,
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
+) -> GeminiApiKeyStatsOut:
+    """Add a new named Gemini API key to the pool."""
+    store = as_store(db)
+    rec = store.create_gemini_api_key(
+        name=payload.name,
+        api_key=payload.api_key,
+        owner_label=payload.owner_label,
+        is_active=payload.is_active,
+    )
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=None,
+        action="create_api_key",
+        details_json={"key_id": rec.id, "name": rec.name, "owner_label": rec.owner_label, "masked": _mask_api_key(rec.api_key)},
+        created_at=utcnow(),
+    )
+    return next(k for k in _compute_api_keys_stats(store) if k.id == rec.id)
+
+
+@router.patch("/api-keys/{key_id}", response_model=GeminiApiKeyStatsOut)
+def update_admin_api_key(
+    key_id: str,
+    payload: GeminiApiKeyUpdateRequest,
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
+) -> GeminiApiKeyStatsOut:
+    """Rename, update owner/key value, or toggle active status for a custom Gemini API key."""
+    if key_id == "default":
+        raise HTTPException(status_code=400, detail="La clé système par défaut ne peut pas être modifiée ici.")
+    store = as_store(db)
+    updates: Dict[str, Any] = {}
+    if payload.name is not None:
+        updates["name"] = payload.name.strip()[:128]
+    if payload.owner_label is not None:
+        updates["owner_label"] = payload.owner_label.strip()[:128]
+    if payload.api_key is not None and payload.api_key.strip():
+        updates["api_key"] = payload.api_key.strip()
+    if payload.is_active is not None:
+        updates["is_active"] = bool(payload.is_active)
+
+    rec = store.update_gemini_api_key(key_id, **updates)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="Clé API Gemini introuvable.")
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=None,
+        action="update_api_key",
+        details_json={"key_id": rec.id, "name": rec.name, "is_active": rec.is_active},
+        created_at=utcnow(),
+    )
+    return next(k for k in _compute_api_keys_stats(store) if k.id == rec.id)
+
+
+@router.delete("/api-keys/{key_id}")
+def delete_admin_api_key(
+    key_id: str,
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Delete a custom Gemini API key and automatically fall back its assigned users to the default key."""
+    if key_id == "default":
+        raise HTTPException(status_code=400, detail="La clé système par défaut ne peut pas être supprimée.")
+    store = as_store(db)
+    deleted = store.delete_gemini_api_key(key_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Clé API Gemini introuvable.")
+    store.create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=None,
+        action="delete_api_key",
+        details_json={"key_id": key_id},
+        created_at=utcnow(),
+    )
+    return {"deleted": True, "key_id": key_id}
+
+
+# =========================================================================
+# GEMINI MODEL CATALOG & PER-USER ROUTING PRESETS
+# =========================================================================
+@router.get("/model-catalog", response_model=ModelCatalogResponse)
+def get_admin_model_catalog() -> ModelCatalogResponse:
+    """Return curated Gemini models (with Free-Tier reference limits) and routing presets."""
+    return ModelCatalogResponse(
+        models=[ModelCatalogItemOut(**m) for m in GEMINI_MODEL_CATALOG],
+        presets=[ModelRoutingPresetOut(**p) for p in MODEL_ROUTING_PRESETS],
+        note=FREE_TIER_REFERENCE_NOTE,
+    )

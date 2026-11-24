@@ -12,9 +12,13 @@ import type {
   AdminUpdateUserCoverRequest,
   AdminUpdateUserRequest,
   AdminUserDetailOut,
+  GeminiApiKeyCreateRequest,
+  GeminiApiKeyStatsOut,
+  GeminiApiKeyUpdateRequest,
   LicensePlanCreateRequest,
   LicensePlanOut,
   LicensePlanUpdateRequest,
+  ModelCatalogResponse,
   UsageEventOut,
 } from "../types/admin";
 import type { TokenResponse, UserMeOut } from "../types/auth";
@@ -128,9 +132,20 @@ export function clearAuthTokens(): void {
   }
 }
 
+export function getActiveUiLang(): "fr" | "en" {
+  try {
+    return localStorage.getItem("sr_default_lang") === "en" ? "en" : "fr";
+  } catch {
+    return "fr";
+  }
+}
+
 export function authHeaders(): Record<string, string> {
   const tok = getAccessToken();
-  return tok ? { Authorization: `Bearer ${tok}` } : {};
+  const lang = getActiveUiLang();
+  return tok
+    ? { Authorization: `Bearer ${tok}`, "Accept-Language": lang }
+    : { "Accept-Language": lang };
 }
 
 export function pipelineHeaders(taskId?: string): Record<string, string> {
@@ -224,6 +239,7 @@ async function request<T>(url: string, options?: RequestOptions): Promise<T> {
       ...fetchOptions,
       headers: {
         "Content-Type": "application/json",
+        "Accept-Language": getActiveUiLang(),
         ...(skipAuth ? {} : authHeaders()),
         ...(headers || {}),
       },
@@ -231,7 +247,9 @@ async function request<T>(url: string, options?: RequestOptions): Promise<T> {
   } catch (err) {
     if (err instanceof TypeError) {
       throw new Error(
-        "Connexion au serveur backend impossible (port 8001). Vérifiez que l'API FastAPI est démarrée."
+        getActiveUiLang() === "en"
+          ? "Unable to reach the backend server. Please check your connection and try again."
+          : "Connexion au serveur backend impossible. Vérifiez votre connexion puis réessayez."
       );
     }
     throw err;
@@ -1250,4 +1268,27 @@ export const api = {
       `/api/notifications/resolved-errors/${encodeURIComponent(notificationId)}/dismiss`,
       { method: "POST" }
     ),
+
+  adminListApiKeys: () =>
+    request<GeminiApiKeyStatsOut[]>("/api/admin/api-keys"),
+
+  adminCreateApiKey: (payload: GeminiApiKeyCreateRequest) =>
+    request<GeminiApiKeyStatsOut>("/api/admin/api-keys", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  adminUpdateApiKey: (keyId: string, payload: GeminiApiKeyUpdateRequest) =>
+    request<GeminiApiKeyStatsOut>(`/api/admin/api-keys/${encodeURIComponent(keyId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+
+  adminDeleteApiKey: (keyId: string) =>
+    request<{ deleted: boolean; key_id: string }>(`/api/admin/api-keys/${encodeURIComponent(keyId)}`, {
+      method: "DELETE",
+    }),
+
+  adminGetModelCatalog: () =>
+    request<ModelCatalogResponse>("/api/admin/model-catalog"),
 };

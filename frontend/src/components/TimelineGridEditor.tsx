@@ -1,4 +1,5 @@
 import { CalendarPlus, Plus, Trash2, X } from "lucide-react";
+import { useLanguage } from "../i18n/LanguageContext";
 import type { TimelineGrid } from "../types/protocol";
 
 interface TimelineGridEditorProps {
@@ -16,6 +17,8 @@ export function TimelineGridEditor({
   variant = "tables",
   saving = false,
 }: TimelineGridEditorProps) {
+  const { lang } = useLanguage();
+  const isEn = lang === "en";
   const periods = timelineGrid.periods || [];
   const rows = timelineGrid.rows || [];
 
@@ -42,10 +45,10 @@ export function TimelineGridEditor({
 
   const handleAddPeriod = () => {
     let idx = periods.length + 1;
-    let candidate = `Période ${idx}`;
+    let candidate = isEn ? `Period ${idx}` : `Période ${idx}`;
     while (periods.includes(candidate)) {
       idx += 1;
-      candidate = `Période ${idx}`;
+      candidate = isEn ? `Period ${idx}` : `Période ${idx}`;
     }
     const next: TimelineGrid = {
       periods: [...periods, candidate],
@@ -84,7 +87,7 @@ export function TimelineGridEditor({
       rows: [
         ...rows,
         {
-          activity: `Nouvelle activité ${rows.length + 1}`,
+          activity: isEn ? `New activity ${rows.length + 1}` : `Nouvelle activité ${rows.length + 1}`,
           active_periods: defaultPeriod,
         },
       ],
@@ -130,7 +133,7 @@ export function TimelineGridEditor({
             className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
           >
             <Plus className="h-3 w-3 text-[#6C2826]" />
-            Ajouter une activité
+            {isEn ? "Add activity" : "Ajouter une activité"}
           </button>
           <button
             type="button"
@@ -138,12 +141,12 @@ export function TimelineGridEditor({
             className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
           >
             <CalendarPlus className="h-3 w-3 text-indigo-600" />
-            Ajouter une date
+            {isEn ? "Add date" : "Ajouter une date"}
           </button>
         </div>
         {saving && (
           <span className="text-[11px] font-medium text-indigo-600">
-            Enregistrement du chronogramme…
+            {isEn ? "Saving timeline…" : "Enregistrement du chronogramme…"}
           </span>
         )}
       </div>
@@ -153,7 +156,7 @@ export function TimelineGridEditor({
           <thead className="bg-[#6C2826] text-white">
             <tr>
               <th className={isPreview ? "min-w-[180px] p-1.5" : "min-w-[200px] p-2"}>
-                Activité FMSB
+                {isEn ? "Study Activity" : "Activité FMSB"}
               </th>
               {periods.map((per, pi) => (
                 <th
@@ -167,7 +170,7 @@ export function TimelineGridEditor({
                   <div className="group flex items-center justify-center gap-0.5">
                     <input
                       type="text"
-                      aria-label={`Date colonne ${pi + 1}`}
+                      aria-label={isEn ? `Column date ${pi + 1}` : `Date colonne ${pi + 1}`}
                       value={per}
                       onChange={(e) => handleRenamePeriod(pi, e.target.value)}
                       onBlur={() => onCommit?.(timelineGrid)}
@@ -177,7 +180,7 @@ export function TimelineGridEditor({
                       <button
                         type="button"
                         onClick={() => handleRemovePeriod(pi)}
-                        title={`Supprimer la date « ${per} »`}
+                        title={isEn ? `Delete date "${per}"` : `Supprimer la date « ${per} »`}
                         className="rounded p-0.5 text-white/70 opacity-70 hover:bg-white/20 hover:text-white hover:opacity-100"
                       >
                         <X className="h-3 w-3" />
@@ -195,7 +198,7 @@ export function TimelineGridEditor({
                 <td className={isPreview ? "p-1" : "p-1.5"}>
                   <input
                     type="text"
-                    aria-label={`Activité ligne ${ri + 1}`}
+                    aria-label={isEn ? `Row activity ${ri + 1}` : `Activité ligne ${ri + 1}`}
                     value={row.activity}
                     onChange={(e) => handleUpdateActivity(ri, e.target.value)}
                     onBlur={() => onCommit?.(timelineGrid)}
@@ -219,9 +222,11 @@ export function TimelineGridEditor({
                           onClick={() => handleToggleCell(ri, per)}
                           aria-label={`${row.activity} — ${per}`}
                           aria-pressed={isChecked}
-                          title={`Cliquer pour ${
-                            isChecked ? "désactiver" : "activer"
-                          } « ${per} »`}
+                          title={
+                            isEn
+                              ? `Click to ${isChecked ? "uncheck" : "check"} "${per}"`
+                              : `Cliquer pour ${isChecked ? "désactiver" : "activer"} « ${per} »`
+                          }
                           className={`mx-auto flex h-6 w-full items-center justify-center rounded text-xs font-bold transition ${
                             isChecked
                               ? "text-[#6C2826] hover:bg-amber-200/70"
@@ -247,7 +252,7 @@ export function TimelineGridEditor({
                     <button
                       type="button"
                       onClick={() => handleRemoveRow(ri)}
-                      title="Supprimer cette activité"
+                      title={isEn ? "Delete this activity" : "Supprimer cette activité"}
                       className="rounded p-1 text-slate-400 hover:bg-rose-50 hover:text-rose-600"
                     >
                       <Trash2 className="h-3.5 w-3.5" />
