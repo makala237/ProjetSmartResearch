@@ -663,8 +663,10 @@ def _action_generate_section_diagram(
         DiagramConnection(**c) if isinstance(c, dict) else c
         for c in (res.get("connections") or [])
     ]
-    layout_raw = str(params.get("layout") or res.get("layout") or "vertical").strip().lower()
-    layout = layout_raw if layout_raw in ("vertical", "horizontal") else "vertical"
+    from app.services.diagram_renderer import VALID_DIAGRAM_LAYOUTS
+
+    layout_raw = str(params.get("layout") or res.get("layout") or "horizontal_flow").strip().lower()
+    layout = layout_raw if layout_raw in VALID_DIAGRAM_LAYOUTS else "horizontal_flow"
     dg = SectionDiagram(
         diagram_id=f"diag_{uuid4().hex[:8]}",
         title=str(res.get("title") or title).strip(),

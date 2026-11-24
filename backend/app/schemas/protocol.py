@@ -318,7 +318,7 @@ class AbbreviationItem(BaseModel):
 
 class DiagramNode(BaseModel):
     id: str
-    shape: str = "rounded"  # "rectangle" | "rounded" | "circle" | "diamond"
+    shape: str = "rounded"  # "rectangle" | "rounded" | "pill" | "oval" | "circle" | "diamond" | "cylinder"
     title: str
     items: List[str] = Field(default_factory=list)
     width_px: int = 380
@@ -337,7 +337,7 @@ class SectionDiagram(BaseModel):
     title: str
     caption: str = ""
     anchor_hint: str = ""
-    layout: str = "vertical"  # "vertical" | "horizontal"
+    layout: str = "horizontal_flow"  # "horizontal_flow" | "prisma_exclusion" | "decision_flowchart" | "branching_tree" | "parallel_converge" | "vertical" | "horizontal"
     nodes: List[DiagramNode] = Field(default_factory=list)
     connections: List[DiagramConnection] = Field(default_factory=list)
 

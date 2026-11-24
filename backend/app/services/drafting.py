@@ -46,7 +46,7 @@ class SuggestedTableInline(BaseModel):
 
 class SuggestedNodeOutput(BaseModel):
     id: str
-    shape: str = "rounded"  # "rectangle" | "rounded" | "circle" | "diamond"
+    shape: str = "rounded"  # "rectangle" | "rounded" | "pill" | "oval" | "circle" | "diamond" | "cylinder"
     title: str
     items: List[str] = Field(default_factory=list)
     width_px: int = 420
@@ -64,7 +64,7 @@ class SuggestedDiagramOutput(BaseModel):
     title: str
     caption: str = ""
     anchor_hint: str = ""
-    layout: str = "vertical"
+    layout: str = "horizontal_flow"  # "horizontal_flow" | "prisma_exclusion" | "decision_flowchart" | "branching_tree" | "parallel_converge"
     nodes: List[SuggestedNodeOutput] = Field(default_factory=list)
     connections: List[SuggestedConnectionOutput] = Field(default_factory=list)
 
@@ -93,7 +93,13 @@ class DraftSectionOutput(BaseModel):
 STRUCTURED_TOOLS_INSTRUCTIONS = """
 OUTILS DE MISE EN FORME & SCHEMAS DISPONIBLES :
 1. FORMULES MATHEMATIQUES : Pour toute équation ou symbole, utilise uniquement les opérateurs standards entre $...$ (en ligne) ou $$...$$ (centré) : \\frac{num}{den}, ^{exp}, _{ind}, \\cdot, \\times, \\pm, \\leq, \\geq, \\neq, \\approx, \\sqrt{...}, \\alpha, \\beta, \\sigma, \\mu. Ils seront automatiquement convertis en équations natives Word et HTML.
-2. SCHEMAS / MODELES CONCEPTUELS / FLUX : N'écris JAMAIS de schéma en texte ASCII (+---+, |, v). Utilise exclusivement le champ structuré `suggested_diagrams` en définissant des nœuds (`id`, `shape`: "rounded"|"rectangle"|"circle"|"diamond", `title`, `items`, `width_px`) et des connexions (`from_id`, `to_id`, `label`).
+2. SCHEMAS / MODELES CONCEPTUELS / FLUX : N'écris JAMAIS de schéma en texte ASCII (+---+, |, v). Utilise exclusivement le champ structuré `suggested_diagrams` en choisissant le `layout` le plus adapté :
+   - `"horizontal_flow"` : modèle conceptuel / justification en 2–4 étapes gauche→droite (ex: Lacune → Étude → Objectif) avec étiquettes courtes sur les flèches (`Justifie`, `Vise à`).
+   - `"prisma_exclusion"` : diagramme de flux PRISMA/CONSORT d'inclusion/exclusion avec colonne principale à gauche et boîtes d'exclusion à droite (`N=...`).
+   - `"decision_flowchart"` : algorithme ou procédure de collecte avec nœuds `shape: "pill"` (début/fin), `"rounded"` (étapes), `"diamond"` (décisions) et flèches `"Oui"`/`"Non"` (boucles de retour possibles).
+   - `"branching_tree"` : arbre décisionnel ou clinique à plusieurs branches.
+   - `"parallel_converge"` : flux multi-bras qui se séparent puis convergent vers une synthèse finale.
+   Utilise des `shape` sémantiques (`"pill"`, `"rounded"`, `"rectangle"`, `"diamond"`, `"oval"`, `"cylinder"`), des titres courts, 2–3 items concis max par nœud, et des `label` de flèches très courts (1–3 mots).
 3. TABLEAUX (USAGE STRICTEMENT JUSTIFIE) : N'écris JAMAIS de tableau Markdown (| col |) dans `content_markdown`, et N'INSERE PAS de tableau superflu dans `suggested_tables` (`suggested_tables=[]`) sauf si cette section l'exige méthodologiquement (variables, synthèse d'études, chronogramme, budget, critères d'éligibilité) ou si l'étudiant en fait la demande explicite.
 """
 
@@ -931,17 +937,19 @@ def _append_structured_elements(sec, dto: DraftSectionOutput) -> None:
         d_title = (dg.title or "").strip()
         if not d_title or not dg.nodes or d_title.lower() in existing_diag_titles:
             continue
+        from app.services.diagram_renderer import VALID_DIAGRAM_LAYOUTS, VALID_DIAGRAM_SHAPES
+
         sec.custom_diagrams.append(
             SectionDiagram(
                 diagram_id=f"diag_{uuid.uuid4().hex[:8]}",
                 title=d_title,
                 caption=(dg.caption or "").strip(),
                 anchor_hint=(dg.anchor_hint or "").strip(),
-                layout=dg.layout if dg.layout in ("vertical", "horizontal") else "vertical",
+                layout=dg.layout if dg.layout in VALID_DIAGRAM_LAYOUTS else "horizontal_flow",
                 nodes=[
                     DiagramNode(
                         id=n.id,
-                        shape=n.shape if n.shape in ("rectangle", "rounded", "circle", "diamond") else "rounded",
+                        shape=n.shape if n.shape in VALID_DIAGRAM_SHAPES else "rounded",
                         title=n.title,
                         items=n.items,
                         width_px=n.width_px or 420,
@@ -1273,7 +1281,14 @@ Upstream working memory:
 
 Current section text: {(sec.content_markdown if sec else '')[:2500]}
 
-Return short node `id` values ("n1", "n2"...), `shape`: "rounded"|"rectangle"|"circle"|"diamond", `title`, concise `items`, and `connections` (`from_id`, `to_id`, `label`).
+Choose the most suitable `layout`:
+- "horizontal_flow": 2-4 stage left-to-right conceptual model (e.g., Gap -> Study -> Objective)
+- "prisma_exclusion": PRISMA/CONSORT inclusion/exclusion flow with main spine + right-hand exclusion boxes
+- "decision_flowchart": process/clinical flowchart with "pill" start/end, "rounded" steps, "diamond" decisions, and "Oui"/"Non" (or "Yes"/"No") edges
+- "branching_tree": 2D clinical/analytical branching tree
+- "parallel_converge": top input splitting into parallel arms that converge into a unified synthesis block
+
+Return short node `id` values ("n1", "n2"...), semantic `shape` ("pill"|"rounded"|"rectangle"|"diamond"|"oval"|"cylinder"), concise `title`, 1-3 short `items`, and `connections` (`from_id`, `to_id`, short 1-3 word `label`, `style`: "solid"|"dashed").
 """
     res = gemini_router.generate_structured(
         role="drafting",
@@ -1282,11 +1297,13 @@ Return short node `id` values ("n1", "n2"...), `shape`: "rounded"|"rectangle"|"c
         temperature=0.2,
     )
     dto: SuggestedDiagramOutput = res["data"]
+    from app.services.diagram_renderer import VALID_DIAGRAM_LAYOUTS
+
     return {
         "model_used": res["model_used"],
         "title": dto.title or diagram_title,
         "caption": dto.caption,
-        "layout": dto.layout if dto.layout in ("vertical", "horizontal") else "vertical",
+        "layout": dto.layout if dto.layout in VALID_DIAGRAM_LAYOUTS else "horizontal_flow",
         "nodes": [n.model_dump() for n in dto.nodes],
         "connections": [c.model_dump() for c in dto.connections],
     }
