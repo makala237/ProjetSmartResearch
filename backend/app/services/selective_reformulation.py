@@ -20,6 +20,16 @@ from app.services.humanizer import sanitize_llm_typography
 from app.services.rich_formatter import markdown_to_clean_html
 
 
+def _clean_text(raw: str) -> str:
+    """Safely unpack sanitize_llm_typography() which returns (cleaned_str, count)."""
+    if not raw:
+        return ""
+    res = sanitize_llm_typography(raw)
+    if isinstance(res, tuple):
+        return str(res[0] or "")
+    return str(res or "")
+
+
 class SelectivePatchItem(BaseModel):
     target_text: str = Field(
         ...,
@@ -170,14 +180,14 @@ RÉFÉRENCES BIBLIOGRAPHIQUES DU PROJET :
     dto: SmartReformulateOutput = res["data"]
     model_used = str(res.get("model_used") or "")
     strategy = dto.strategy
-    summary = sanitize_llm_typography((dto.summary or "").strip())
+    summary = _clean_text((dto.summary or "").strip())
 
     applied_patches: List[Dict[str, Any]] = []
     append_md = ""
     proposed_md = original_md
 
     if strategy == "append_complement" and (dto.append_markdown or "").strip():
-        append_md = sanitize_llm_typography(dto.append_markdown.strip())
+        append_md = _clean_text(dto.append_markdown.strip())
         proposed_md = f"{original_md}\n\n{append_md}".strip() if original_md else append_md
         applied_patches = [
             {
@@ -192,8 +202,8 @@ RÉFÉRENCES BIBLIOGRAPHIQUES DU PROJET :
         raw_patches = [
             {
                 "target_text": p.target_text,
-                "replacement_text": sanitize_llm_typography(p.replacement_text),
-                "reason": sanitize_llm_typography(p.reason),
+                "replacement_text": _clean_text(p.replacement_text),
+                "reason": _clean_text(p.reason),
             }
             for p in dto.patches
         ]
@@ -205,7 +215,7 @@ RÉFÉRENCES BIBLIOGRAPHIQUES DU PROJET :
         if patch_res["applied_count"] == 0:
             if (dto.append_markdown or "").strip():
                 strategy = "append_complement"
-                append_md = sanitize_llm_typography(dto.append_markdown.strip())
+                append_md = _clean_text(dto.append_markdown.strip())
                 proposed_md = f"{original_md}\n\n{append_md}".strip()
                 applied_patches = [
                     {
@@ -216,9 +226,9 @@ RÉFÉRENCES BIBLIOGRAPHIQUES DU PROJET :
                 ]
             elif (dto.full_markdown or "").strip():
                 strategy = "full_rewrite"
-                proposed_md = sanitize_llm_typography(dto.full_markdown.strip())
+                proposed_md = _clean_text(dto.full_markdown.strip())
     else:
-        candidate_full = sanitize_llm_typography((dto.full_markdown or dto.append_markdown or "").strip())
+        candidate_full = _clean_text((dto.full_markdown or dto.append_markdown or "").strip())
         if candidate_full:
             strategy = "full_rewrite"
             proposed_md = candidate_full
@@ -354,7 +364,7 @@ RÉFÉRENCES DU PROJET :
     )
     dto: SelectionTransformOutput = res["data"]
     model_used = str(res.get("model_used") or "")
-    replacement = sanitize_llm_typography((dto.replacement_text or "").strip())
+    replacement = _clean_text((dto.replacement_text or "").strip())
     if not replacement:
         replacement = clean_sel
 
@@ -365,13 +375,13 @@ RÉFÉRENCES DU PROJET :
             {
                 "target_text": clean_sel,
                 "replacement_text": replacement,
-                "reason": dto.summary or f"Action sur sélection : {action_norm}",
+                "reason": _clean_text(dto.summary or "") or f"Action sur sélection : {action_norm}",
             }
         ],
     )
     proposed_md = patch_res["patched_markdown"] if patch_res["applied_count"] > 0 else original_md
 
-    summary = sanitize_llm_typography((dto.summary or "").strip()) or (
+    summary = _clean_text((dto.summary or "").strip()) or (
         "Passage sélectionné transformé — validez ou relancez si besoin."
         if lang != "en"
         else "Selected passage transformed — validate or retry as needed."

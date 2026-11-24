@@ -61,6 +61,10 @@ class TestSelectiveReformulation(unittest.TestCase):
                 instruction="Rends l'objectif plus précis",
             )
         self.assertEqual(res["strategy"], "selective_patch")
+        self.assertIsInstance(res["summary"], str)
+        self.assertIsInstance(res["proposed_markdown"], str)
+        self.assertIsInstance(res["patches"][0]["replacement_text"], str)
+        self.assertIsInstance(res["patches"][0]["reason"], str)
         self.assertIn("Le paludisme demeure un problème majeur de santé publique au Cameroun.", res["proposed_markdown"])
         self.assertIn("déterminants de la mortalité hospitalière à Yaoundé", res["proposed_markdown"])
         self.assertIn("Les données seront recueillies de manière anonyme.", res["proposed_markdown"])
@@ -104,6 +108,9 @@ class TestSelectiveReformulation(unittest.TestCase):
                 action="reformulate",
             )
         self.assertTrue(res["matched_in_section"])
+        self.assertIsInstance(res["summary"], str)
+        self.assertIsInstance(res["replacement_text"], str)
+        self.assertIsInstance(res["proposed_markdown"], str)
         self.assertIn("Le paludisme demeure un problème majeur", res["proposed_markdown"])
         self.assertIn("strictement anonymisée", res["proposed_markdown"])
         self.assertNotIn("recueillies de manière anonyme", res["proposed_markdown"])
