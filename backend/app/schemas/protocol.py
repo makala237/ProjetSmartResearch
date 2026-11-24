@@ -397,12 +397,30 @@ class TextPatchOperation(BaseModel):
     reason: str = ""
 
 
+class AuditWaiverEntry(BaseModel):
+    waiver_id: str = Field(default_factory=lambda: str(uuid4())[:10])
+    issue_text: str
+    justification: str
+    created_by_user_id: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class CopilotProposal(BaseModel):
     section_id: str
     proposed_markdown: str
     summary: str = ""
     patches: List[TextPatchOperation] = Field(default_factory=list)
     applied: bool = False
+
+
+class CopilotAppAction(BaseModel):
+    action_id: str = Field(default_factory=lambda: str(uuid4())[:10])
+    action_type: str
+    label: str = ""
+    summary: str = ""
+    params: Dict[str, Any] = Field(default_factory=dict)
+    applied: bool = False
+    result_summary: str = ""
 
 
 class CopilotMessage(BaseModel):
@@ -415,6 +433,7 @@ class CopilotMessage(BaseModel):
     active_module: str = ""
     active_section_id: Optional[str] = None
     proposal: Optional[CopilotProposal] = None
+    app_action: Optional[CopilotAppAction] = None
     suggested_directive: Optional[str] = None
     restore_version_id: Optional[str] = None
     target_module: Optional[str] = None
@@ -429,6 +448,7 @@ class SectionState(BaseModel):
     content_html: str = ""
     cited_ref_ids: List[str] = Field(default_factory=list)
     audit_notes: List[str] = Field(default_factory=list)
+    audit_waivers: List[AuditWaiverEntry] = Field(default_factory=list)
     user_notes: str = ""
     custom_tables: List[SectionTable] = Field(default_factory=list)
     custom_diagrams: List[SectionDiagram] = Field(default_factory=list)

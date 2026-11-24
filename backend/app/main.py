@@ -59,9 +59,16 @@ from app.services.auth_service import (
 )
 from app.services.licensing_service import (
     assert_ai_quota_available,
+    assert_module_write_allowed,
     is_module_active,
     record_usage_and_debit,
     resolve_user_model_chain,
+)
+from app.services.copilot_actions import (
+    ACTION_MODULE_MAP,
+    AI_ACTION_CREDIT_COSTS,
+    VALID_COPILOT_ACTION_TYPES,
+    execute_copilot_app_action,
 )
 from app.services.copilot_live import handle_copilot_live_websocket
 from app.services.copilot_service import (
@@ -3198,6 +3205,8 @@ def apply_copilot_proposal_endpoint(
     payload: CopilotApplyProposalRequest,
     current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
+    if payload.section_id == "cover_page":
+        assert_cover_admin_only(current_user)
     project = get_authorized_project(project_id, current_user)
     sec = project.sections.get(payload.section_id)
     if sec is None:
@@ -3238,6 +3247,91 @@ def apply_copilot_proposal_endpoint(
 
     update_section_working_memory(project, payload.section_id)
     saved = project_storage.save(project)
+    return scope_project_copilot_for_user(saved, current_user.id)
+
+
+class CopilotExecuteActionRequest(BaseModel):
+    action_type: str
+    params: Dict[str, Any] = {}
+    message_id: Optional[str] = None
+
+
+@app.post("/api/projects/{project_id}/copilot/execute-action", response_model=ProtocolProject)
+def execute_copilot_action_endpoint(
+    project_id: str,
+    payload: CopilotExecuteActionRequest,
+    request: Request,
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
+) -> ProtocolProject:
+    action_type = (payload.action_type or "").strip()
+    if action_type not in VALID_COPILOT_ACTION_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Action applicative inconnue ou non prise en charge : {action_type!r}",
+        )
+
+    target_module = ACTION_MODULE_MAP[action_type]
+    assert_module_write_allowed(db, current_user, target_module)
+    project = get_authorized_project(project_id, current_user)
+
+    clean_params = dict(payload.params or {})
+    if action_type == "update_cover" or (
+        str(clean_params.get("section_id") or "").strip() == "cover_page"
+        and action_type in ("waive_audit_and_validate", "fix_section_issues", "humanize_section")
+    ):
+        assert_cover_admin_only(current_user)
+
+    cost = 0
+    if action_type in AI_ACTION_CREDIT_COSTS:
+        cost = assert_ai_quota_available(
+            db,
+            current_user,
+            module_key=target_module,
+            action=f"copilot_{action_type}",
+            credits_cost=AI_ACTION_CREDIT_COSTS[action_type],
+        )
+
+    try:
+        res = execute_copilot_app_action(
+            project,
+            action_type=action_type,
+            params=clean_params,
+            current_user=current_user,
+        )
+    except PermissionError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "COVER_ADMIN_ONLY", "message": str(exc)},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if payload.message_id:
+        allowed_msg_ids = {
+            m.message_id for m in get_user_copilot_messages(project, current_user.id)
+        }
+        for msg in project.copilot_messages:
+            if (
+                msg.message_id in allowed_msg_ids
+                and msg.message_id == payload.message_id
+                and msg.app_action is not None
+            ):
+                msg.app_action.applied = True
+                msg.app_action.result_summary = str(res.get("summary") or "")
+
+    saved = project_storage.save(project)
+    if action_type in AI_ACTION_CREDIT_COSTS:
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key=target_module,
+            action=f"copilot_{action_type}",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(res.get("model_used") or ""),
+            ip_address=get_client_ip(request),
+        )
     return scope_project_copilot_for_user(saved, current_user.id)
 
 

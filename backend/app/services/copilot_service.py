@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 import re
 from typing import Any, Dict, List, Optional
 
@@ -6,6 +7,7 @@ from pydantic import BaseModel, Field
 
 from app.data.i18n import get_localized_canvas, normalize_lang
 from app.schemas.protocol import (
+    CopilotAppAction,
     CopilotMessage,
     CopilotProposal,
     ProtocolProject,
@@ -13,6 +15,7 @@ from app.schemas.protocol import (
     SectionVersionEntry,
     TextPatchOperation,
 )
+from app.services.copilot_actions import VALID_COPILOT_ACTION_TYPES
 from app.services.gemini_client import gemini_router
 from app.services.rich_formatter import markdown_to_clean_html
 
@@ -102,7 +105,7 @@ def format_supervisor_directives_block(project: ProtocolProject) -> str:
 class CopilotTurnOutput(BaseModel):
     intent: str = Field(
         default="answer",
-        description="One of: answer | propose_edit | suggest_directive | restore_version | navigate_module",
+        description="One of: answer | propose_edit | propose_app_action | suggest_directive | restore_version | navigate_module",
     )
     reply: str = Field(
         ...,
@@ -115,6 +118,22 @@ class CopilotTurnOutput(BaseModel):
     edit_summary: str = Field(
         default="",
         description="Short summary of improvements when proposed_markdown is returned.",
+    )
+    action_type: Optional[str] = Field(
+        default=None,
+        description="Target app action name ONLY when intent=='propose_app_action'. Null otherwise.",
+    )
+    action_label: str = Field(
+        default="",
+        description="Short button/card title for the proposed app action (e.g. 'Enregistrer la directive méthodologique').",
+    )
+    action_summary: str = Field(
+        default="",
+        description="Clear explanation of what executing the proposed app action will change.",
+    )
+    action_params_json: str = Field(
+        default="",
+        description="Valid JSON object string of parameters ONLY when intent=='propose_app_action'. Leave empty string otherwise.",
     )
     suggested_directive: Optional[str] = Field(
         default=None,
@@ -139,7 +158,14 @@ class CopilotTurnOutput(BaseModel):
 
 
 _VALID_INTENTS = frozenset(
-    {"answer", "propose_edit", "suggest_directive", "restore_version", "navigate_module"}
+    {
+        "answer",
+        "propose_edit",
+        "propose_app_action",
+        "suggest_directive",
+        "restore_version",
+        "navigate_module",
+    }
 )
 _VALID_MODULES = frozenset({"module1", "module2", "module3", "module4"})
 _VALID_TOOLS = frozenset(
@@ -154,11 +180,29 @@ _VALID_TOOLS = frozenset(
 )
 
 
+def _build_app_state_summary(project: ProtocolProject, lang: str) -> str:
+    cov = project.cover
+    fmt = project.formatting
+    hosts = ", ".join(cov.host_institutions or []) if cov.host_institutions else ("Aucun" if lang != "en" else "None")
+    period = cov.study_period_label or ("Non précisée" if lang != "en" else "Not specified")
+    tl_rows = len(getattr(project.timeline_grid, "rows", None) or [])
+    return (
+        f"Sites d'étude (page de garde) : {hosts} | Période : {period}\n"
+        f"Mise en forme (Module 2) : police={fmt.font_family}, taille={fmt.body_font_size_pt}pt, "
+        f"interligne={fmt.line_spacing}, alignement={fmt.text_align}, marge={fmt.margin_cm}cm\n"
+        f"Données structurées : {len(project.abbreviations or [])} abréviation(s), "
+        f"{len(project.variables or [])} variable(s), {len(project.budget or [])} ligne(s) budget, "
+        f"{tl_rows} tâche(s) chronogramme, {len(project.crf_fields or [])} champ(s) CRF (Module 3), "
+        f"{len(project.references or [])} référence(s)."
+    )
+
+
 def _build_section_context(
     project: ProtocolProject,
     active_section_id: Optional[str],
     lang: str,
 ) -> Dict[str, str]:
+    app_state_summary = _build_app_state_summary(project, lang)
     if not active_section_id or active_section_id not in project.sections:
         return {
             "section_title": "Page de garde / Vue globale" if lang != "en" else "Cover page / Global view",
@@ -166,12 +210,28 @@ def _build_section_context(
             "refs_text": "",
             "lib_text": "",
             "versions_text": "",
+            "audit_notes_text": "",
+            "app_state_summary": app_state_summary,
         }
 
     sec = project.sections[active_section_id]
     canvas = get_localized_canvas(lang)
     spec = next((s for s in canvas if s.id == active_section_id), None)
     sec_title = f"{spec.chapter_title} — {spec.title}" if spec else active_section_id
+
+    sec_status = sec.status.value if hasattr(sec.status, "value") else str(sec.status)
+    audit_lines = [f"Statut section : {sec_status}"]
+    if sec.audit_notes:
+        audit_lines.append("Remarques d'audit actuelles :")
+        audit_lines.extend(f"- {note}" for note in sec.audit_notes[:10])
+    else:
+        audit_lines.append("Remarques d'audit actuelles : Aucune.")
+    waivers = getattr(sec, "audit_waivers", None) or []
+    if waivers:
+        audit_lines.append("Dérogations tracées actives :")
+        audit_lines.extend(
+            f"- [{w.issue_text}] Justification : {w.justification}" for w in waivers[:5]
+        )
 
     ref_by_id = {r.ref_id: r for r in (project.references or [])}
     cited_lines: List[str] = []
@@ -218,6 +278,8 @@ def _build_section_context(
         "refs_text": "\n".join(cited_lines[:15]),
         "lib_text": "\n".join(lib_lines),
         "versions_text": "\n".join(ver_lines),
+        "audit_notes_text": "\n".join(audit_lines),
+        "app_state_summary": app_state_summary,
     }
 
 
@@ -300,6 +362,27 @@ def clear_user_copilot_messages(
     ]
 
 
+def _parse_action_params_json(raw: str) -> Dict[str, Any]:
+    txt = (raw or "").strip()
+    if not txt:
+        return {}
+    if txt.startswith("```"):
+        txt = re.sub(r"^```(?:json)?\s*|\s*```$", "", txt, flags=re.IGNORECASE | re.DOTALL).strip()
+    try:
+        parsed = json.loads(txt)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        start = txt.find("{")
+        end = txt.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                parsed = json.loads(txt[start : end + 1])
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:
+                return {}
+        return {}
+
+
 def run_copilot_chat(
     project: ProtocolProject,
     message: str,
@@ -335,34 +418,58 @@ def run_copilot_chat(
 
     mode_hint = (
         "MODE=QUESTION_ONLY: L'utilisateur pose une question ou demande un avis. "
-        "TU DOIS mettre intent='answer' et proposed_markdown=null. Ne propose aucune réécriture."
+        "TU DOIS mettre intent='answer' et proposed_markdown=null. Ne propose aucune réécriture ni action mutante."
         if mode == "question"
         else "MODE=EDIT_PROPOSAL: L'utilisateur demande une amélioration/comparaison/fusion de texte pour la section active. "
         "Mets intent='propose_edit', propose le meilleur texte fusionné dans proposed_markdown en conservant les bons passages existants, sans effacer directement la section."
         if mode == "edit"
-        else "MODE=AUTO: Analyse précisément l'intention réelle de l'utilisateur sans jamais écraser son texte par erreur."
+        else "MODE=AUTO: Analyse précisément l'intention réelle de l'utilisateur sans jamais écraser son texte ou ses données sans confirmation."
     )
 
     prompt = f"""
-Tu es **Assistant Smart Research**, le copilote méthodologique et guide intelligent de la plateforme Smart Research (protocoles FMSB / CAMES / CADMEF).
+Tu es **Assistant Smart Research**, le copilote méthodologique et opérateur universel de la plateforme Smart Research (protocoles FMSB / CAMES / CADMEF).
 Langue de réponse attendue : {"English" if lang == "en" else "Français"}.
 
 MISSION & GARDE-FOUS NON DESTRUCTIFS :
 - {mode_hint}
-- Si l'utilisateur pose une QUESTION (ex: d'où vient une définition, quelle source a été utilisée, explication d'une méthode ou d'un bouton de l'application, critique méthodologique) → intent='answer', proposed_markdown=null. NE RÉÉCRIS JAMAIS la section pour une question !
-- Si l'utilisateur demande d'améliorer, comparer, fusionner, reformuler ou compléter la section active → intent='propose_edit' et rédige une proposition complète et soignée dans proposed_markdown (ou déclenche l'outil interne `draft_compare_and_merge`). L'utilisateur décidera ensuite s'il clique sur « Appliquer ».
-- Si l'utilisateur formule une consigne générale de son directeur/encadreur à appliquer sur tout le protocole → intent='suggest_directive' et fournis la consigne formulée clairement dans suggested_directive.
-- Si l'utilisateur demande de retrouver ou restaurer une ancienne version ou un passage supprimé → déclenche `search_protocol_versions` ou identifie le version_id dans VERSIONS RÉCENTES, mets intent='restore_version' et restore_version_id='<id>'.
-- Si l'utilisateur demande à ouvrir un autre module (module1=Rédaction & Recherche, module2=Édition Word/PDF, module3=Masque de saisie & Kobo, module4=Diaporama Soutenance PPTX) → intent='navigate_module' et target_module='<moduleX>'.
+- Si l'utilisateur pose une QUESTION → intent='answer', proposed_markdown=null. NE RÉÉCRIS JAMAIS la section pour une question !
+- Si l'utilisateur demande d'améliorer, comparer, fusionner, reformuler ou corriger une phrase/section → intent='propose_edit' (via `patch_section_text` si correction ciblée, ou `proposed_markdown` / `draft_compare_and_merge`).
+- Si l'utilisateur demande de modifier un outil ou paramètre de l'application hors texte simple → utilise `intent='propose_app_action'` avec `action_type`, `action_label`, `action_summary` et `action_params_json` (JSON valide). L'utilisateur confirmera par un clic sur « Exécuter cette action ».
+- Si l'utilisateur demande de retrouver ou restaurer une ancienne version → `search_protocol_versions` / `intent='restore_version'`.
+- Si l'utilisateur demande d'ouvrir un autre module (module1..module4) → `intent='navigate_module'` et `target_module`.
 - Règle stricte anti-hallucination : n'invente jamais une source, un auteur ou un chiffre absent du contexte ci-dessous.
 
-OUTILS INTERNES ORCHESTRABLES (`tool_call`) :
+RÉSOLUTION DES BLOCAGES D'AUDIT CAMES EN 3 NIVEAUX (TRÈS IMPORTANT) :
+- Si l'utilisateur signale que l'audit insiste sur un point malgré sa saisie (ex. sites d'étude comme « tous les établissements pénitentiaires de la ville », taille d'échantillon ou anonymisation) :
+  - **Niveau 1 (Diagnostic + Reformulation académique)** : explique la remarque d'audit exacte présente dans ÉTAT D'AUDIT ci-dessous, propose soit de reformuler le passage de façon rigoureuse avec `patch_section_text` (ex. qualifier le caractère multicentrique exhaustif et nommer ou motiver la confidentialité des sites), soit de guider l'étudiant sur ce qui manque.
+  - **Niveau 2 (Directive respectée par l'audit)** : si l'utilisateur confirme que ce choix méthodologique est volontaire (ex. « Je veux garder tous les établissements pénitentiaires sans les nommer individuellement »), propose `intent='propose_app_action'` avec `action_type='add_directive'` et `action_params_json='{{"text": "..."}}'` pour que l'audit CAMES tienne compte durablement de cette contrainte lors des prochains audits.
+  - **Niveau 3 (Dérogation explicite et tracée)** : si l'utilisateur demande explicitement de lever l'alerte/valider quand même pour un faux positif persistant, propose `intent='propose_app_action'` avec `action_type='waive_audit_and_validate'` et `action_params_json='{{"section_id": "{active_section_id or ''}", "issue_text": "*", "justification": "...", "also_add_directive": "..."}}'`.
+
+CATALOGUE DES ACTIONS APPLICATIVES DISPONIBLES (`intent='propose_app_action'`) :
+- `add_directive` : enregistrer une directive méthodologique respectée par l'audit et la rédaction. Params: `{{"text": "..."}}`.
+- `waive_audit_and_validate` : lever une remarque d'audit avec justification tracée et valider la section. Params: `{{"section_id": "...", "issue_text": "* ou texte exact", "justification": "...", "also_add_directive": "optionnel"}}`.
+- `run_ai_audit` : relancer l'audit IA CAMES complet de la section. Params: `{{"section_id": "..."}}`.
+- `fix_section_issues` : lancer le correcteur automatique IA selon les notes d'audit. Params: `{{"section_id": "..."}}`.
+- `humanize_section` : humaniser le style académique de la section. Params: `{{"section_id": "...", "use_ai": true}}`.
+- `update_project_meta` : modifier `study_type`, `research_idea`, ou `language` (`"fr"`/`"en"`).
+- `update_cover` (**RÉSERVÉ AUX ADMINISTRATEURS** : ne jamais proposer `update_cover` à un étudiant ; pour un étudiant, modifier la section méthodologique ou ajouter une directive). Params (admin) : `host_institutions`, `study_period_label`, `ethics_committees`, `director`, `department_fr`, etc.
+- `generate_sub_annex` : générer/actualiser une sous-annexe du Chapitre V (`annexe_notice_information`, etc.). Params: `{{"section_id": "...", "user_instruction": "...", "bilingual": false}}`.
+- `update_formatting` (Module 2) : modifier `font_family`, `body_font_size_pt`, `line_spacing`, `text_align` (`justify`|`left`), `margin_cm`, `auto_toc`, etc.
+- `update_structured_data` (Module 2) : mettre à jour `add_abbreviations` (`[{{"acronym": "...", "full_form": "..."}}]`), `add_variables`, `add_budget_items` (`[{{"category": "...", "designation": "...", "quantity": 1, "unit_cost_fcfa": 5000}}]`), `timeline_grid`, `annexes_config`.
+- `sync_structured` (Module 2) : resynchroniser abréviations, variables et budget depuis le texte rédigé. Params: `{{}}`.
+- `generate_toc_and_lists` (Module 2) : régénérer sommaire, liste des tableaux/figures/abréviations. Params: `{{}}`.
+- `validate_references` (Module 2) : valider et normaliser les références Vancouver ICMJE. Params: `{{}}`.
+- `update_crf_fields` (Module 3) : modifier le masque de saisie et l'Annexe 1 (`add_fields`: `[{{"code": "...", "label": "...", "field_type": "text|number|date|single_choice|multi_choice|dichotomous", "options": []}}]`, `remove_field_codes`: `[...]`).
+- `update_presentation_slide` (Module 4) : modifier `slide_index`, `title`, `subtitle`, `bullets`, `presenter_notes`.
+- `generate_presentation_slide` (Module 4) : régénérer une diapositive par IA (`slide_index`, `instruction`).
+
+OUTILS INTERNES DE LECTURE / PRÉPARATION (`tool_call`) :
 - `none` : réponse directe suffisante avec le contexte ci-dessous.
-- `patch_section_text` : **ÉDITION CHIRURGICALE PRÉFÉRÉE** dès que l'étudiant demande de modifier, corriger, préciser, remplacer ou supprimer une phrase, une ligne ou un passage précis sans altérer le reste de la section (retourne uniquement des remplacements ciblés ; tout le reste reste intact au caractère près).
+- `patch_section_text` : **ÉDITION CHIRURGICALE PRÉFÉRÉE** dès que l'étudiant demande de modifier, corriger, préciser, remplacer ou supprimer une phrase, une ligne ou un passage précis sans altérer le reste de la section.
 - `inspect_internal_library` : recherche approfondie dans la bibliothèque interne multi-sections, les documents importés et la bibliographie complète (utilise `tool_query`).
-- `run_section_audit` : exécute l'audit déterministe CAMES/FMSB (volume de mots, citations, alertes de cohérence) sur la section active sans la modifier.
-- `search_protocol_versions` : fouille toutes les versions archivées de la section active pour retrouver un passage ou terme précis (utilise `tool_query`).
-- `draft_compare_and_merge` : lance le rédacteur scientifique en arrière-plan sur une copie isolée, compare sa nouvelle génération avec le texte actuel, garde le meilleur des deux et retourne une proposition fusionnée sans écraser la section (uniquement pour une réécriture/comparaison globale, jamais pour une simple question).
+- `run_section_audit` : lit les contrôles déterministes FMSB/CAMES, les remarques du dernier audit IA enregistrées et les alertes de cohérence.
+- `search_protocol_versions` : fouille toutes les versions archivées de la section active (`tool_query`).
+- `draft_compare_and_merge` : comparaison et fusion sur copie isolée pour une réécriture globale.
 
 CONTEXTE DU PROJET :
 - Titre : {project.cover.title or project.name}
@@ -370,6 +477,12 @@ CONTEXTE DU PROJET :
 - Idée / Contexte : {project.research_idea or 'Non précisé'}
 - Module actif : {mod_clean}
 - Section active : {active_section_id or 'aucune'} ({sec_ctx['section_title']})
+
+ÉTAT APPLICATIF GLOBAL :
+{sec_ctx['app_state_summary']}
+
+ÉTAT D'AUDIT DE LA SECTION ACTIVE :
+{sec_ctx['audit_notes_text'] or '(Aucune section active sélectionnée)'}
 
 {directives_block if directives_block else "DIRECTIVES GLOBALES DE L'ENCADREUR : Aucune directive enregistrée pour l'instant."}
 
@@ -553,6 +666,39 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
     elif intent == "propose_edit":
         intent = "answer"
 
+    app_action_obj: Optional[CopilotAppAction] = None
+    raw_action_type = (getattr(dto, "action_type", None) or "").strip()
+    if (
+        intent == "propose_app_action"
+        and mode != "question"
+        and raw_action_type in VALID_COPILOT_ACTION_TYPES
+    ):
+        parsed_params = _parse_action_params_json(
+            getattr(dto, "action_params_json", "") or ""
+        )
+        if (
+            active_section_id
+            and raw_action_type
+            in (
+                "waive_audit_and_validate",
+                "run_ai_audit",
+                "fix_section_issues",
+                "humanize_section",
+                "generate_sub_annex",
+            )
+            and not parsed_params.get("section_id")
+        ):
+            parsed_params["section_id"] = active_section_id
+        app_action_obj = CopilotAppAction(
+            action_type=raw_action_type,
+            label=(getattr(dto, "action_label", "") or raw_action_type).strip(),
+            summary=(getattr(dto, "action_summary", "") or reply_text[:180]).strip(),
+            params=parsed_params,
+            applied=False,
+        )
+    elif intent == "propose_app_action":
+        intent = "answer"
+
     suggested_dir = (
         (dto.suggested_directive or "").strip()
         if intent == "suggest_directive" and (dto.suggested_directive or "").strip()
@@ -591,6 +737,7 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
         active_module=mod_clean,
         active_section_id=active_section_id,
         proposal=proposal_obj,
+        app_action=app_action_obj,
         suggested_directive=suggested_dir,
         restore_version_id=restore_vid,
         target_module=target_mod,

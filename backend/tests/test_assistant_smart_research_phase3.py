@@ -396,6 +396,241 @@ class TestAssistantSmartResearchPhase3(unittest.TestCase):
         self.assertEqual(len(scoped_b.copilot_messages), 2)
         self.assertEqual(len(project.copilot_messages), 5)
 
+    def test_tool_run_section_audit_includes_ai_audit_notes_and_waivers(self) -> None:
+        from app.schemas.protocol import AuditWaiverEntry
+
+        project = _make_rich_project()
+        sec = project.sections["intro_contexte"]
+        sec.status = StepStatus.NEEDS_REVISION
+        sec.audit_notes = [
+            "Veuillez préciser dans quels établissements l'étude sera exactement menée."
+        ]
+        sec.audit_waivers = [
+            AuditWaiverEntry(
+                issue_text="longueur",
+                justification="Tolérance approuvée par l'encadreur.",
+                created_by_user_id="stu-1",
+            )
+        ]
+        project.cover.host_institutions = ["Établissements pénitentiaires de Yaoundé"]
+
+        res = tool_run_section_audit(project, active_section_id="intro_contexte")
+        self.assertEqual(res["section_status"], "needs_revision")
+        self.assertEqual(len(res["ai_audit_notes"]), 1)
+        self.assertIn("établissements l'étude sera exactement menée", res["ai_audit_notes"][0])
+        self.assertEqual(len(res["audit_waivers"]), 1)
+        self.assertIn("Remarques du dernier audit IA CAMES/FMSB enregistrées", res["summary_text"])
+        self.assertIn("Établissements pénitentiaires de Yaoundé", res["summary_text"])
+
+    def test_audit_section_respects_supervisor_directives_and_waivers(self) -> None:
+        from types import SimpleNamespace
+        from app.services.copilot_actions import execute_copilot_app_action
+        from app.services.drafting import audit_section_with_ai
+
+        project = _make_rich_project()
+        sec_id = "intro_contexte"
+        sec = project.sections[sec_id]
+        # Make text compliant with deterministic checks (length > min_words, >= 1 ref [1])
+        sec.content_markdown = " ".join(
+            [
+                "L'étude couvrira de manière exhaustive l'ensemble des établissements pénitentiaires de la ville [1]."
+            ]
+            * 12
+        )
+        project.supervisor_directives.append(
+            SupervisorDirectiveItem(
+                text="L'étude concerne tous les établissements pénitentiaires de la ville sans les individualiser nominativement.",
+                active=True,
+            )
+        )
+
+        captured_prompts = []
+
+        class _FakeAuditDTO:
+            compliant = False
+            issues = ["Veuillez préciser individuellement les noms des sites d'étude."]
+            recommendations = ["Citer chaque site."]
+
+        def _fake_audit(*args, **kwargs):
+            captured_prompts.append(str(kwargs.get("contents") or ""))
+            return {"data": _FakeAuditDTO(), "model_used": "gemini-3.8-flash"}
+
+        fake_orch = {
+            "orchestration_trace": {"added_references_count": 0, "decision_model": "mock"},
+            "cross_section_memory": "",
+        }
+
+        with (
+            patch("app.services.drafting.orchestrate_section_action", return_value=fake_orch),
+            patch("app.services.drafting.deterministic_section_checks", return_value=[]),
+            patch("app.services.drafting.gemini_router.generate_structured", side_effect=_fake_audit),
+        ):
+            res_before = audit_section_with_ai(project, sec_id)
+            self.assertFalse(res_before["compliant"])
+            self.assertIn("tous les établissements pénitentiaires", captured_prompts[0])
+            self.assertIn("IMPORTANT OVERRIDE RULES", captured_prompts[0])
+
+            # Apply traced waiver (simulating student confirmation)
+            student = SimpleNamespace(id="stu-99", role="student")
+            execute_copilot_app_action(
+                project,
+                "waive_audit_and_validate",
+                {
+                    "section_id": sec_id,
+                    "issue_text": "sites d'étude",
+                    "justification": "Choix méthodologique confirmé : exhaustivité pénitentiaire.",
+                },
+                current_user=student,
+            )
+            self.assertEqual(sec.status, StepStatus.VALIDATED)
+            self.assertEqual(sec.audit_notes, [])
+            self.assertEqual(len(sec.audit_waivers), 1)
+
+            # Subsequent audit still sees the waiver in prompt & filters the waived remark
+            res_after = audit_section_with_ai(project, sec_id)
+            self.assertTrue(res_after["compliant"])
+            self.assertEqual(res_after["issues"], [])
+            self.assertEqual(sec.status, StepStatus.VALIDATED)
+            self.assertIn("APPROVED AUTHOR / SUPERVISOR AUDIT WAIVERS", captured_prompts[1])
+
+    def test_copilot_app_actions_waiver_formatting_structured_crf_and_cover_admin_only(self) -> None:
+        from types import SimpleNamespace
+        from app.services.copilot_actions import execute_copilot_app_action
+
+        project = _make_rich_project()
+        project.topic_locked = True
+        project.locked_title = project.name
+        student = SimpleNamespace(id="stu-1", role="student")
+        admin = SimpleNamespace(id="adm-1", role="admin")
+
+        # 1. COVER_ADMIN_ONLY strictly enforced for non-admins
+        with self.assertRaises(PermissionError):
+            execute_copilot_app_action(
+                project,
+                "update_cover",
+                {"host_institutions": ["Prison Centrale"]},
+                current_user=student,
+            )
+        with self.assertRaises(PermissionError):
+            execute_copilot_app_action(
+                project,
+                "waive_audit_and_validate",
+                {"section_id": "cover_page", "justification": "Test"},
+                current_user=student,
+            )
+
+        # 2. Admin update_cover succeeds & syncs locked_title
+        cov_res = execute_copilot_app_action(
+            project,
+            "update_cover",
+            {
+                "host_institutions": ["Tous les établissements pénitentiaires de Yaoundé"],
+                "title": "Prévalence en milieu carcéral à Yaoundé",
+            },
+            current_user=admin,
+        )
+        self.assertTrue(cov_res["ok"])
+        self.assertEqual(project.locked_title, "Prévalence en milieu carcéral à Yaoundé")
+        self.assertEqual(
+            project.cover.host_institutions,
+            ["Tous les établissements pénitentiaires de Yaoundé"],
+        )
+
+        # 3. Directive, formatting, structured data & CRF actions
+        execute_copilot_app_action(
+            project,
+            "add_directive",
+            {"text": "Accepter les établissements pénitentiaires sans nomination individuelle."},
+            current_user=student,
+        )
+        self.assertTrue(
+            any("établissements pénitentiaires" in d.text for d in project.supervisor_directives)
+        )
+
+        execute_copilot_app_action(
+            project,
+            "update_formatting",
+            {"font_family": "Arial", "body_font_size_pt": 13},
+            current_user=student,
+        )
+        self.assertEqual(project.formatting.font_family, "Arial")
+        self.assertEqual(project.formatting.body_font_size_pt, 13.0)
+
+        execute_copilot_app_action(
+            project,
+            "update_structured_data",
+            {
+                "add_abbreviations": [{"acronym": "MPR", "full_form": "Milieu Pénitentiaire Régional"}],
+                "add_variables": [
+                    {
+                        "name": "site_penitentiaire",
+                        "category": "Sociodémographique",
+                        "role": "Indépendante",
+                        "definition": "Catégorie de l'établissement carcéral",
+                        "measurement_scale": "Nominale",
+                        "modalities": "Centrale, Secondaire",
+                        "collection_tool": "Fiche de collecte",
+                    }
+                ],
+            },
+            current_user=student,
+        )
+        self.assertTrue(any(a.acronym == "MPR" for a in project.abbreviations))
+        self.assertTrue(any(v.name == "site_penitentiaire" for v in project.variables))
+
+        execute_copilot_app_action(
+            project,
+            "update_crf_fields",
+            {
+                "add_fields": [
+                    {
+                        "code": "Q_SITE_PEN",
+                        "label": "Type d'établissement pénitentiaire",
+                        "field_type": "single_choice",
+                        "options": ["Prison centrale", "Prison secondaire"],
+                    }
+                ]
+            },
+            current_user=student,
+        )
+        self.assertTrue(any(f.code == "Q_SITE_PEN" for f in project.crf_fields))
+
+        # 4. End-to-end run_copilot_chat returns non-executed CopilotAppAction pending user confirmation
+        fake_action_turn = {
+            "data": CopilotTurnOutput(
+                intent="propose_app_action",
+                reply="Je peux enregistrer cette règle comme directive pour que l'audit la respecte.",
+                action_type="add_directive",
+                action_label="Enregistrer la directive sites pénitentiaires",
+                action_summary="Ajoute la contrainte de couverture exhaustive aux directives actives.",
+                action_params_json='{"text": "Couvrir tous les établissements pénitentiaires de la ville"}',
+            ),
+            "model_used": "gemini-3.8-flash",
+        }
+        before_dir_count = len(project.supervisor_directives)
+        with patch(
+            "app.services.copilot_service.gemini_router.generate_structured",
+            return_value=fake_action_turn,
+        ):
+            chat_res = run_copilot_chat(
+                project,
+                message="Fais en sorte que l'audit accepte tous les établissements pénitentiaires de la ville.",
+                active_module="module1",
+                active_section_id="intro_contexte",
+                current_user_id="stu-1",
+            )
+        msg = chat_res["assistant_message"]
+        self.assertEqual(msg.intent, "propose_app_action")
+        self.assertIsNotNone(msg.app_action)
+        self.assertFalse(msg.app_action.applied)
+        self.assertEqual(msg.app_action.action_type, "add_directive")
+        self.assertEqual(
+            msg.app_action.params.get("text"),
+            "Couvrir tous les établissements pénitentiaires de la ville",
+        )
+        # Non-destructive guarantee: directive NOT yet applied before explicit click
+        self.assertEqual(len(project.supervisor_directives), before_dir_count)
+
 
 if __name__ == "__main__":
     unittest.main()

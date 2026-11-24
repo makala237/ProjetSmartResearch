@@ -131,17 +131,35 @@ def tool_run_section_audit(
     project: ProtocolProject,
     active_section_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Run read-only FMSB/CAMES deterministic audit + coherence alerts for the active section."""
+    """Run read-only FMSB/CAMES audit report including persisted AI audit notes, waivers, and coherence alerts."""
     from app.services.drafting import deterministic_section_checks
 
     issues: List[str] = []
+    ai_audit_notes: List[str] = []
+    audit_waivers: List[Dict[str, str]] = []
+    section_status = "pending"
     word_count = 0
     if active_section_id and active_section_id in project.sections:
         sec = project.sections[active_section_id]
         word_count = _count_words(sec.content_markdown)
+        section_status = (
+            sec.status.value if hasattr(sec.status, "value") else str(sec.status)
+        )
+        ai_audit_notes = [str(n) for n in (sec.audit_notes or []) if str(n).strip()]
+        audit_waivers = [
+            {
+                "waiver_id": w.waiver_id,
+                "issue_text": w.issue_text,
+                "justification": w.justification,
+            }
+            for w in (getattr(sec, "audit_waivers", None) or [])
+        ]
         issues = deterministic_section_checks(
             project, active_section_id, sec.content_markdown or ""
         )
+
+    cover = getattr(project, "cover", None)
+    host_institutions = list(getattr(cover, "host_institutions", None) or []) if cover else []
 
     alerts = [
         {
@@ -156,11 +174,24 @@ def tool_run_section_audit(
         or a.target_section_id == active_section_id
     ]
 
-    parts: List[str] = [f"Nombre de mots actuel : {word_count}."]
+    parts: List[str] = [
+        f"Statut section : {section_status} | Nombre de mots actuel : {word_count}.",
+        f"Sites/institutions déclarés (page de garde) : {', '.join(host_institutions) if host_institutions else 'Aucun'}."
+    ]
+    if ai_audit_notes:
+        parts.append(
+            "Remarques du dernier audit IA CAMES/FMSB enregistrées :\n"
+            + "\n".join(f"- {n}" for n in ai_audit_notes)
+        )
     if issues:
-        parts.append("Points de conformité FMSB/CAMES détectés :\n" + "\n".join(f"- {i}" for i in issues))
-    else:
-        parts.append("Aucune anomalie déterministe FMSB/CAMES détectée sur cette section.")
+        parts.append("Points de conformité déterministes FMSB/CAMES détectés :\n" + "\n".join(f"- {i}" for i in issues))
+    elif not ai_audit_notes:
+        parts.append("Aucune anomalie déterministe ni remarque d'audit IA enregistrée sur cette section.")
+    if audit_waivers:
+        parts.append(
+            "Dérogations tracées actives :\n"
+            + "\n".join(f"- [{w['issue_text']}] {w['justification']}" for w in audit_waivers)
+        )
     if alerts:
         parts.append(
             "Alertes de cohérence inter-chapitres :\n"
@@ -170,8 +201,12 @@ def tool_run_section_audit(
     return {
         "tool": "run_section_audit",
         "section_id": active_section_id,
+        "section_status": section_status,
         "word_count": word_count,
         "issues": issues,
+        "ai_audit_notes": ai_audit_notes,
+        "audit_waivers": audit_waivers,
+        "host_institutions": host_institutions,
         "coherence_alerts": alerts,
         "summary_text": "\n".join(parts),
     }

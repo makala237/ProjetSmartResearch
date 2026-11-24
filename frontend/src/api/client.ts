@@ -1382,6 +1382,22 @@ export const api = {
       }
     ),
 
+  executeCopilotAction: (
+    projectId: string,
+    payload: {
+      action_type: string;
+      params: Record<string, unknown>;
+      message_id?: string;
+    }
+  ) =>
+    request<ProtocolProject>(
+      `/api/projects/${encodeURIComponent(projectId)}/copilot/execute-action`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
+
   clearCopilotMessages: (projectId: string) =>
     request<ProtocolProject>(
       `/api/projects/${encodeURIComponent(projectId)}/copilot/messages`,

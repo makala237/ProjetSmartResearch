@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   BookmarkCheck,
+  CheckCircle2,
   Compass,
   GitCompareArrows,
   History,
@@ -9,6 +10,7 @@ import {
   Mic,
   MicOff,
   MonitorUp,
+  Play,
   Plus,
   RotateCcw,
   Send,
@@ -202,6 +204,24 @@ export function AssistantSmartResearchWidget({
         proposed_markdown: msg.proposal.proposed_markdown,
         message_id: msg.message_id,
         patches: msg.proposal.patches,
+      });
+      onProjectUpdate(updated);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyAction(false);
+    }
+  }
+
+  async function handleExecuteAppAction(msg: CopilotMessage) {
+    if (!msg.app_action || busyAction) return;
+    setErrorMsg(null);
+    setBusyAction(true);
+    try {
+      const updated = await api.executeCopilotAction(project.project_id, {
+        action_type: msg.app_action.action_type,
+        params: msg.app_action.params ?? {},
+        message_id: msg.message_id,
       });
       onProjectUpdate(updated);
     } catch (err) {
@@ -724,6 +744,60 @@ export function AssistantSmartResearchWidget({
                             </div>
                           );
                         })()}
+
+                        {/* Universal App Action confirmation card */}
+                        {!isUser && msg.app_action && !proposalDismissed && (
+                          <div className="mt-1.5 w-[94%] rounded-xl border border-indigo-200 bg-indigo-50/80 p-2.5 text-[11px]">
+                            <div className="flex flex-wrap items-center justify-between gap-1">
+                              <div className="font-bold text-indigo-950">
+                                {msg.app_action.label || msg.app_action.action_type}
+                              </div>
+                              <span className="rounded-full bg-indigo-100 px-1.5 py-0.5 text-[9px] font-bold text-indigo-800">
+                                {lang === "en" ? "App Action" : "Action sur l'application"}
+                              </span>
+                            </div>
+                            {msg.app_action.summary && (
+                              <p className="mt-1 text-slate-700">{msg.app_action.summary}</p>
+                            )}
+                            {msg.app_action.applied ? (
+                              <div className="mt-2 space-y-1">
+                                <div className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-800">
+                                  <CheckCircle2 className="h-3 w-3" />
+                                  {lang === "en" ? "Action executed" : "Action exécutée"}
+                                </div>
+                                {msg.app_action.result_summary && (
+                                  <div className="text-[10px] text-emerald-900">
+                                    {msg.app_action.result_summary}
+                                  </div>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="mt-2 flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={busyAction}
+                                  onClick={() => handleExecuteAppAction(msg)}
+                                  className="inline-flex items-center gap-1 rounded-lg bg-[#004A8F] px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-[#003b73] disabled:opacity-40"
+                                >
+                                  <Play className="h-3 w-3" />
+                                  {lang === "en" ? "Execute action" : "Exécuter cette action"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setDismissedMsgIds((prev) => ({
+                                      ...prev,
+                                      [msg.message_id]: true,
+                                    }))
+                                  }
+                                  className="rounded-lg border border-slate-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                                >
+                                  {lang === "en" ? "Dismiss" : "Ignorer"}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
 
                         {/* Supervisor Directive detection */}
                         {!isUser && msg.suggested_directive && (

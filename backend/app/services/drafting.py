@@ -938,6 +938,19 @@ def _append_structured_elements(sec, dto: DraftSectionOutput) -> None:
         existing_diag_titles.add(d_title.lower())
 
 
+def _is_issue_waived(issue: str, waivers: List[Any]) -> bool:
+    iss_low = (issue or "").strip().lower()
+    if not iss_low:
+        return False
+    for w in waivers or []:
+        w_txt = (getattr(w, "issue_text", None) or "").strip().lower()
+        if not w_txt:
+            continue
+        if w_txt == "*" or w_txt in iss_low or iss_low in w_txt:
+            return True
+    return False
+
+
 def audit_section_with_ai(project: ProtocolProject, section_id: str) -> Dict[str, object]:
     """Run Tri-Engine orchestration + deterministic checks + Gemini audit role on a section."""
     lang = normalize_lang(getattr(project, "language", "fr"))
@@ -986,8 +999,30 @@ def audit_section_with_ai(project: ProtocolProject, section_id: str) -> Dict[str
             "orchestration_trace": orch_trace,
         }
 
+    from app.services.copilot_service import format_supervisor_directives_block
+
     cames_block = _format_cames_granularity_block(spec, lang=lang)
     lang_directive = get_language_prompt_directive(lang)
+    directives_block = format_supervisor_directives_block(project)
+    waivers = list(getattr(sec, "audit_waivers", None) or []) if sec is not None else []
+    waivers_block = ""
+    if waivers:
+        waivers_lines = [
+            f"- Issue waived: {w.issue_text} | Justification: {w.justification}"
+            for w in waivers
+        ]
+        waivers_block = (
+            "APPROVED AUTHOR / SUPERVISOR AUDIT WAIVERS (DO NOT RE-FLAG THESE POINTS):\n"
+            + "\n".join(waivers_lines)
+        )
+    cover = getattr(project, "cover", None)
+    hosts = ", ".join(getattr(cover, "host_institutions", None) or []) if cover else ""
+    period = getattr(cover, "study_period_label", "") if cover else ""
+    project_meta_ctx = (
+        f"Study type: {project.study_type or 'unspecified'} | "
+        f"Host institutions: {hosts or 'unspecified'} | "
+        f"Study period: {period or 'unspecified'}"
+    )
 
     prompt = f"""
 Evaluate CAMES / FMSB methodological compliance of this medical research protocol section.
@@ -995,8 +1030,17 @@ Evaluate CAMES / FMSB methodological compliance of this medical research protoco
 
 Section: {spec.chapter_title} — {spec.title}
 Expectations: {spec.guidance_points}
+Project context: {project_meta_ctx}
 
 {cames_block}
+
+{directives_block if directives_block else ""}
+
+{waivers_block if waivers_block else ""}
+
+IMPORTANT OVERRIDE RULES:
+- Active supervisor / methodological directives and approved author waivers OVERRIDE generic CAMES defaults.
+- Do NOT flag or insist on any requirement that is already satisfied or explicitly exempted/defined by an active directive, approved waiver, or declared host-institution choice above.
 
 CROSS-SECTION MEMORY (detect redundancy or repetition):
 {cross_memory[:1800]}
@@ -1004,7 +1048,7 @@ CROSS-SECTION MEMORY (detect redundancy or repetition):
 Drafted text:
 {text}
 
-Verify: coverage of mandatory CAMES concepts, word/reference bounds, table/figure policy compliance, presence of [n] citations, and zero repetition across sections. Return `issues` and `recommendations` in {'English' if lang == 'en' else 'French'}.
+Verify: coverage of mandatory CAMES concepts (subject to the override rules above), word/reference bounds, table/figure policy compliance, presence of [n] citations, and zero repetition across sections. Return `issues` and `recommendations` in {'English' if lang == 'en' else 'French'}.
 """
     emit_pipeline_step(
         "llm_audit",
@@ -1019,8 +1063,9 @@ Verify: coverage of mandatory CAMES concepts, word/reference bounds, table/figur
         temperature=0.1,
     )
     dto: AuditOutput = res["data"]
-    all_issues = det_notes + [i for i in dto.issues if i not in det_notes]
-    is_compliant = bool(dto.compliant and len(all_issues) == 0)
+    raw_issues = det_notes + [i for i in dto.issues if i not in det_notes]
+    all_issues = [i for i in raw_issues if not _is_issue_waived(i, waivers)]
+    is_compliant = bool(len(all_issues) == 0 and (dto.compliant or len(waivers) > 0))
     if sec is not None:
         sec.audit_notes = all_issues
         if is_compliant:

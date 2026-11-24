@@ -289,12 +289,30 @@ export interface TextPatchOperation {
   reason: string;
 }
 
+export interface AuditWaiverEntry {
+  waiver_id: string;
+  issue_text: string;
+  justification: string;
+  created_by_user_id?: string | null;
+  created_at: string;
+}
+
 export interface CopilotProposal {
   section_id: string;
   proposed_markdown: string;
   summary: string;
   patches?: TextPatchOperation[];
   applied: boolean;
+}
+
+export interface CopilotAppAction {
+  action_id: string;
+  action_type: string;
+  label: string;
+  summary: string;
+  params: Record<string, unknown>;
+  applied: boolean;
+  result_summary?: string;
 }
 
 export interface CopilotMessage {
@@ -307,6 +325,7 @@ export interface CopilotMessage {
   active_module: string;
   active_section_id?: string | null;
   proposal?: CopilotProposal | null;
+  app_action?: CopilotAppAction | null;
   suggested_directive?: string | null;
   restore_version_id?: string | null;
   target_module?: string | null;
@@ -336,6 +355,7 @@ export interface SectionState {
   content_html: string;
   cited_ref_ids: string[];
   audit_notes: string[];
+  audit_waivers?: AuditWaiverEntry[];
   custom_tables?: SectionTable[];
   custom_diagrams?: SectionDiagram[];
   internal_library?: InternalLibraryEntry[];
