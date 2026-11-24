@@ -1678,6 +1678,8 @@ export default function App() {
 
       {currentUser && activeProject && activeView === "studio" && (
         <AssistantSmartResearchWidget
+          key={`${currentUser.id}::${activeProject.project_id}`}
+          currentUserId={currentUser.id}
           project={activeProject}
           activeModule={activeModule}
           selectedSectionId={selectedSectionId}

@@ -65,9 +65,13 @@ from app.services.licensing_service import (
 )
 from app.services.copilot_live import handle_copilot_live_websocket
 from app.services.copilot_service import (
+    append_scoped_copilot_messages,
+    clear_user_copilot_messages,
     format_supervisor_directives_block,
+    get_user_copilot_messages,
     restore_section_version,
     run_copilot_chat,
+    scope_project_copilot_for_user,
     snapshot_section_version,
 )
 from app.services.copilot_tools import (
@@ -672,7 +676,10 @@ def list_projects(
 ) -> List[ProtocolProject]:
     """Return strictly the caller's own projects by default (admins must opt in with include_all=true)."""
     effective_role = "admin" if (include_all and current_user.role == "admin") else "student"
-    return project_storage.list_for_user(current_user.id, effective_role)
+    return [
+        scope_project_copilot_for_user(p, current_user.id)
+        for p in project_storage.list_for_user(current_user.id, effective_role)
+    ]
 
 
 @app.post("/api/projects", response_model=ProtocolProject)
@@ -706,7 +713,7 @@ def get_project(
     project = get_authorized_project(project_id, current_user)
     if ensure_project_crf_fields(project):
         project = project_storage.save(project)
-    return project
+    return scope_project_copilot_for_user(project, current_user.id)
 
 
 @app.patch("/api/projects/{project_id}/language", response_model=ProtocolProject)
@@ -921,7 +928,7 @@ def update_section(
     saved = project_storage.save(project)
     if payload.content_markdown is not None or payload.content_html is not None:
         update_section_working_memory(saved, section_id)
-    return saved
+    return scope_project_copilot_for_user(saved, current_user.id)
 
 
 @app.patch("/api/projects/{project_id}/formatting", response_model=ProtocolProject)
@@ -3018,7 +3025,8 @@ def restore_section_version_endpoint(
     from app.services.working_memory import update_section_working_memory
 
     update_section_working_memory(project, section_id)
-    return project_storage.save(project)
+    saved = project_storage.save(project)
+    return scope_project_copilot_for_user(saved, current_user.id)
 
 
 @app.get("/api/projects/{project_id}/directives")
@@ -3050,7 +3058,8 @@ def add_project_directive(
         )
     )
     project.updated_at = datetime.now(timezone.utc)
-    return project_storage.save(project)
+    saved = project_storage.save(project)
+    return scope_project_copilot_for_user(saved, current_user.id)
 
 
 @app.patch("/api/projects/{project_id}/directives/{directive_id}", response_model=ProtocolProject)
@@ -3075,7 +3084,8 @@ def update_project_directive(
     if payload.active is not None:
         target.active = bool(payload.active)
     project.updated_at = datetime.now(timezone.utc)
-    return project_storage.save(project)
+    saved = project_storage.save(project)
+    return scope_project_copilot_for_user(saved, current_user.id)
 
 
 @app.delete("/api/projects/{project_id}/directives/{directive_id}", response_model=ProtocolProject)
@@ -3092,7 +3102,8 @@ def delete_project_directive(
     if len(project.supervisor_directives) == before:
         raise HTTPException(status_code=404, detail="Directive introuvable.")
     project.updated_at = datetime.now(timezone.utc)
-    return project_storage.save(project)
+    saved = project_storage.save(project)
+    return scope_project_copilot_for_user(saved, current_user.id)
 
 
 @app.get("/api/projects/{project_id}/copilot/status")
@@ -3125,7 +3136,10 @@ def get_copilot_status(
         "text_models": text_models,
         "voice_models": voice_models,
         "directives_count": sum(1 for d in project.supervisor_directives if d.active),
-        "messages": [m.model_dump(mode="json") for m in (project.copilot_messages or [])],
+        "messages": [
+            m.model_dump(mode="json")
+            for m in get_user_copilot_messages(project, current_user.id)
+        ],
     }
 
 
@@ -3154,6 +3168,7 @@ def copilot_chat_endpoint(
         active_module=payload.active_module,
         active_section_id=payload.active_section_id,
         mode=payload.mode,
+        current_user_id=current_user.id,
     )
     saved = project_storage.save(project)
     record_usage_and_debit(
@@ -3168,7 +3183,9 @@ def copilot_chat_endpoint(
     )
     return {
         "assistant_message": res["assistant_message"].model_dump(mode="json"),
-        "project": saved.model_dump(mode="json"),
+        "project": scope_project_copilot_for_user(saved, current_user.id).model_dump(
+            mode="json"
+        ),
         "model_used": res["model_used"],
         "active_text_models": res["active_text_models"],
         "active_voice_models": res["active_voice_models"],
@@ -3206,14 +3223,22 @@ def apply_copilot_proposal_endpoint(
     now = datetime.now(timezone.utc)
     sec.updated_at = now
     if payload.message_id:
+        allowed_msg_ids = {
+            m.message_id for m in get_user_copilot_messages(project, current_user.id)
+        }
         for msg in project.copilot_messages:
-            if msg.message_id == payload.message_id and msg.proposal is not None:
+            if (
+                msg.message_id in allowed_msg_ids
+                and msg.message_id == payload.message_id
+                and msg.proposal is not None
+            ):
                 msg.proposal.applied = True
     project.updated_at = now
     from app.services.working_memory import update_section_working_memory
 
     update_section_working_memory(project, payload.section_id)
-    return project_storage.save(project)
+    saved = project_storage.save(project)
+    return scope_project_copilot_for_user(saved, current_user.id)
 
 
 @app.delete("/api/projects/{project_id}/copilot/messages", response_model=ProtocolProject)
@@ -3222,9 +3247,10 @@ def clear_copilot_messages_endpoint(
     current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     project = get_authorized_project(project_id, current_user)
-    project.copilot_messages = []
+    clear_user_copilot_messages(project, current_user.id)
     project.updated_at = datetime.now(timezone.utc)
-    return project_storage.save(project)
+    saved = project_storage.save(project)
+    return scope_project_copilot_for_user(saved, current_user.id)
 
 
 class CopilotCompareMergeRequest(BaseModel):
@@ -3293,9 +3319,12 @@ def copilot_compare_merge_endpoint(
         ),
         tools_used=["draft_compare_and_merge"],
     )
-    project.copilot_messages.extend([user_msg, assistant_msg])
-    if len(project.copilot_messages) > 40:
-        project.copilot_messages = project.copilot_messages[-40:]
+    append_scoped_copilot_messages(
+        project,
+        [user_msg, assistant_msg],
+        current_user.id,
+        max_per_user=40,
+    )
     project.updated_at = datetime.now(timezone.utc)
     saved = project_storage.save(project)
 
@@ -3315,7 +3344,9 @@ def copilot_compare_merge_endpoint(
     voice_models = gemini_router.resolve_copilot_voice_models()
     return {
         "assistant_message": assistant_msg.model_dump(mode="json"),
-        "project": saved.model_dump(mode="json"),
+        "project": scope_project_copilot_for_user(saved, current_user.id).model_dump(
+            mode="json"
+        ),
         "model_used": str(t_res.get("model_used") or ""),
         "active_text_models": text_models,
         "active_voice_models": voice_models,

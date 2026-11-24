@@ -19,7 +19,12 @@ from app.schemas.protocol import (
     SupervisorDirectiveItem,
 )
 from app.services.copilot_live import build_live_system_instruction
-from app.services.copilot_service import CopilotTurnOutput, run_copilot_chat
+from app.services.copilot_service import (
+    CopilotTurnOutput,
+    get_user_copilot_messages,
+    run_copilot_chat,
+    scope_project_copilot_for_user,
+)
 from app.services.copilot_tools import (
     CompareMergeOutput,
     SurgicalPatchItem,
@@ -323,6 +328,73 @@ class TestAssistantSmartResearchPhase3(unittest.TestCase):
         self.assertEqual(len(msg.proposal.patches), 1)
         self.assertEqual(msg.proposal.patches[0].target_text, "en 2023 à Douala")
         self.assertEqual(project.sections["intro_contexte"].content_markdown, original)
+
+    def test_copilot_conversations_are_strictly_isolated_per_user(self) -> None:
+        from app.schemas.protocol import CopilotMessage
+
+        project = _make_rich_project()
+        project.owner_user_id = "student-1"
+        # Simulate a legacy untagged message owned by student-1
+        project.copilot_messages = [
+            CopilotMessage(
+                owner_user_id=None,
+                role="user",
+                content="Message privé historique étudiant 1",
+            )
+        ]
+
+        captured_prompts = []
+
+        def _capture_chat(*args, **kwargs):
+            captured_prompts.append(str(kwargs.get("contents") or ""))
+            return {
+                "data": CopilotTurnOutput(
+                    intent="answer",
+                    reply="Réponse isolée pour cet utilisateur.",
+                ),
+                "model_used": "gemini-3.8-flash",
+            }
+
+        with patch(
+            "app.services.copilot_service.gemini_router.generate_structured",
+            side_effect=_capture_chat,
+        ):
+            run_copilot_chat(
+                project,
+                message="Question secrète de l'étudiant A",
+                active_module="module1",
+                active_section_id="intro_contexte",
+                current_user_id="student-1",
+            )
+            run_copilot_chat(
+                project,
+                message="Question de contrôle de l'utilisateur B",
+                active_module="module1",
+                active_section_id="intro_contexte",
+                current_user_id="admin-1",
+            )
+
+        msgs_a = get_user_copilot_messages(project, "student-1")
+        msgs_b = get_user_copilot_messages(project, "admin-1")
+
+        self.assertEqual(len(msgs_a), 3)  # legacy message + user A Q + assistant A
+        self.assertTrue(any("Question secrète" in m.content for m in msgs_a))
+        self.assertFalse(any("utilisateur B" in m.content for m in msgs_a))
+
+        self.assertEqual(len(msgs_b), 2)  # ONLY user B Q + assistant B
+        self.assertTrue(any("utilisateur B" in m.content for m in msgs_b))
+        self.assertFalse(any("Question secrète" in m.content for m in msgs_b))
+        self.assertFalse(any("historique étudiant 1" in m.content for m in msgs_b))
+
+        # LLM prompt for User B must never include User A's private chat history
+        self.assertEqual(len(captured_prompts), 2)
+        self.assertNotIn("Question secrète", captured_prompts[1])
+        self.assertNotIn("historique étudiant 1", captured_prompts[1])
+
+        # Shallow copy scoping preserves all stored messages on disk without leaking
+        scoped_b = scope_project_copilot_for_user(project, "admin-1")
+        self.assertEqual(len(scoped_b.copilot_messages), 2)
+        self.assertEqual(len(project.copilot_messages), 5)
 
 
 if __name__ == "__main__":

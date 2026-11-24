@@ -407,6 +407,7 @@ class CopilotProposal(BaseModel):
 
 class CopilotMessage(BaseModel):
     message_id: str = Field(default_factory=lambda: str(uuid4())[:10])
+    owner_user_id: Optional[str] = None
     role: str = "user"  # user | assistant
     content: str
     intent: str = "answer"

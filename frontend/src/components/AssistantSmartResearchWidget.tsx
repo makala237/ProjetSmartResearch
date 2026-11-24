@@ -27,6 +27,7 @@ import type {
 } from "../types/protocol";
 
 interface AssistantSmartResearchWidgetProps {
+  currentUserId: string;
   project: ProtocolProject;
   activeModule: ModuleKey;
   selectedSectionId: string;
@@ -55,6 +56,7 @@ const MODULE_LABELS_EN: Record<ModuleKey, string> = {
 };
 
 export function AssistantSmartResearchWidget({
+  currentUserId,
   project,
   activeModule,
   selectedSectionId,
@@ -89,7 +91,11 @@ export function AssistantSmartResearchWidget({
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const lastExternalPromptIdRef = useRef<number>(0);
 
-  const messages: CopilotMessage[] = project.copilot_messages ?? [];
+  const messages: CopilotMessage[] = (project.copilot_messages ?? []).filter((m) =>
+    m.owner_user_id
+      ? m.owner_user_id === currentUserId
+      : project.owner_user_id === currentUserId
+  );
   const directives = project.supervisor_directives ?? [];
   const activeDirectivesCount = directives.filter((d) => d.active).length;
   const activeSection = project.sections?.[selectedSectionId];

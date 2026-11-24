@@ -299,6 +299,7 @@ export interface CopilotProposal {
 
 export interface CopilotMessage {
   message_id: string;
+  owner_user_id?: string | null;
   role: "user" | "assistant" | string;
   content: string;
   intent: string;

@@ -221,25 +221,112 @@ def _build_section_context(
     }
 
 
+def _message_belongs_to_user(
+    msg: CopilotMessage,
+    project: ProtocolProject,
+    user_id: str,
+) -> bool:
+    uid = (user_id or "").strip()
+    if not uid:
+        return False
+    msg_owner = (getattr(msg, "owner_user_id", None) or "").strip()
+    if msg_owner:
+        return msg_owner == uid
+    # Legacy messages created before per-user tagging belong strictly to the protocol owner.
+    proj_owner = (getattr(project, "owner_user_id", None) or "").strip()
+    return bool(proj_owner and proj_owner == uid)
+
+
+def get_user_copilot_messages(
+    project: ProtocolProject,
+    user_id: Optional[str],
+) -> List[CopilotMessage]:
+    """Return strictly the assistant conversation messages belonging to user_id."""
+    uid = (user_id or "").strip()
+    if not uid:
+        return []
+    return [
+        m
+        for m in (getattr(project, "copilot_messages", None) or [])
+        if _message_belongs_to_user(m, project, uid)
+    ]
+
+
+def scope_project_copilot_for_user(
+    project: ProtocolProject,
+    user_id: Optional[str],
+) -> ProtocolProject:
+    """Return a non-mutating copy of project containing only user_id's copilot messages."""
+    return project.model_copy(
+        update={"copilot_messages": get_user_copilot_messages(project, user_id)}
+    )
+
+
+def append_scoped_copilot_messages(
+    project: ProtocolProject,
+    new_messages: List[CopilotMessage],
+    user_id: Optional[str],
+    max_per_user: int = 40,
+) -> None:
+    """Append tagged messages for user_id while preserving and isolating all other users' chats."""
+    uid = (user_id or "").strip() or (getattr(project, "owner_user_id", None) or "").strip() or None
+    existing = list(getattr(project, "copilot_messages", None) or [])
+    if uid:
+        others = [m for m in existing if not _message_belongs_to_user(m, project, uid)]
+        mine = [m for m in existing if _message_belongs_to_user(m, project, uid)]
+    else:
+        others = existing
+        mine = []
+    for m in new_messages:
+        m.owner_user_id = uid
+    mine.extend(new_messages)
+    if len(mine) > max_per_user:
+        mine = mine[-max_per_user:]
+    project.copilot_messages = others + mine
+
+
+def clear_user_copilot_messages(
+    project: ProtocolProject,
+    user_id: Optional[str],
+) -> None:
+    """Remove only user_id's copilot messages without affecting any other user's messages."""
+    uid = (user_id or "").strip()
+    if not uid:
+        return
+    project.copilot_messages = [
+        m
+        for m in (getattr(project, "copilot_messages", None) or [])
+        if not _message_belongs_to_user(m, project, uid)
+    ]
+
+
 def run_copilot_chat(
     project: ProtocolProject,
     message: str,
     active_module: str = "module1",
     active_section_id: Optional[str] = None,
     mode: str = "auto",
+    current_user_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run one non-destructive turn of Assistant Smart Research grounded in the active project."""
     clean_msg = (message or "").strip()
     if not clean_msg:
         raise ValueError("Le message ne peut pas être vide.")
 
+    eff_user_id = (
+        (current_user_id or "").strip()
+        or (getattr(project, "owner_user_id", None) or "").strip()
+        or None
+    )
+
     lang = normalize_lang(getattr(project, "language", "fr"))
     mod_clean = active_module if active_module in _VALID_MODULES else "module1"
     sec_ctx = _build_section_context(project, active_section_id, lang)
     directives_block = format_supervisor_directives_block(project)
 
+    user_history = get_user_copilot_messages(project, eff_user_id)
     history_lines: List[str] = []
-    for prev in (project.copilot_messages or [])[-6:]:
+    for prev in user_history[-6:]:
         who = "Étudiant" if prev.role == "user" else "Assistant Smart Research"
         history_lines.append(f"{who}: {prev.content[:350]}")
 
@@ -510,9 +597,12 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
         tools_used=tools_used,
     )
 
-    project.copilot_messages.extend([user_msg, assistant_msg])
-    if len(project.copilot_messages) > 40:
-        project.copilot_messages = project.copilot_messages[-40:]
+    append_scoped_copilot_messages(
+        project,
+        [user_msg, assistant_msg],
+        eff_user_id,
+        max_per_user=40,
+    )
     project.updated_at = datetime.now(timezone.utc)
 
     return {
