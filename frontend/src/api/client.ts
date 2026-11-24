@@ -1460,4 +1460,94 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
+
+  smartReformulateSection: (
+    projectId: string,
+    sectionId: string,
+    payload: {
+      instruction?: string;
+      current_markdown?: string;
+      mode?: "auto" | "audit_fix" | "complement";
+      audit_issues?: string[];
+    }
+  ) =>
+    request<{
+      section_id: string;
+      strategy: "selective_patch" | "append_complement" | "full_rewrite";
+      summary: string;
+      original_markdown: string;
+      proposed_markdown: string;
+      proposed_html: string;
+      patches: Array<{
+        target_text: string;
+        replacement_text: string;
+        reason?: string;
+      }>;
+      append_markdown?: string;
+      model_used: string;
+    }>(
+      `/api/projects/${encodeURIComponent(projectId)}/sections/${encodeURIComponent(
+        sectionId
+      )}/smart-reformulate`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  transformSectionSelection: (
+    projectId: string,
+    sectionId: string,
+    payload: {
+      selected_text: string;
+      action: "reformulate" | "modify" | "complement" | "cite" | "shorten" | "expand";
+      instruction?: string;
+      current_markdown?: string;
+    }
+  ) =>
+    request<{
+      section_id: string;
+      action: string;
+      selected_text: string;
+      replacement_text: string;
+      original_markdown: string;
+      proposed_markdown: string;
+      proposed_html: string;
+      patches: Array<{
+        target_text: string;
+        replacement_text: string;
+        reason?: string;
+      }>;
+      matched_in_section: boolean;
+      summary: string;
+      model_used: string;
+    }>(
+      `/api/projects/${encodeURIComponent(projectId)}/sections/${encodeURIComponent(
+        sectionId
+      )}/transform-selection`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  applySectionReformulation: (
+    projectId: string,
+    sectionId: string,
+    payload: {
+      content_markdown: string;
+      content_html?: string;
+      source?: string;
+      note?: string;
+    }
+  ) =>
+    request<ProtocolProject>(
+      `/api/projects/${encodeURIComponent(projectId)}/sections/${encodeURIComponent(
+        sectionId
+      )}/apply-reformulation`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
 };

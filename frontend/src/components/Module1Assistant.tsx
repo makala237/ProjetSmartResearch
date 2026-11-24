@@ -12,9 +12,12 @@ import {
   Feather,
   FileText,
   Globe,
+  History,
   Loader2,
   Menu,
   RefreshCw,
+  RotateCcw,
+  Save,
   ShieldCheck,
   Sparkles,
   Wand2,
@@ -31,6 +34,7 @@ import type {
   DraftResult,
   HumanizeSectionResult,
   ProtocolProject,
+  SectionVersionEntry,
   StepStatus,
   SupervisorInfo,
 } from "../types/protocol";
@@ -41,8 +45,12 @@ import {
   withStructuredSupervisors,
 } from "./CoverPageForm";
 import { PipelineProgressWidget } from "./PipelineProgressWidget";
+import {
+  ReformulationReviewBanner,
+  type PendingReformulationPreview,
+} from "./ReformulationReviewBanner";
 import { ResearchPanel } from "./ResearchPanel";
-import { RichTextEditor } from "./RichTextEditor";
+import { RichTextEditor, type SelectionTransformAction } from "./RichTextEditor";
 import { SectionMediaPanel } from "./SectionMediaPanel";
 import {
   extractInvestigatorPlaceholders,
@@ -169,6 +177,26 @@ export function Module1Assistant({
   const [draft, setDraft] = useState(activeState?.content_markdown ?? "");
   const [draftHtml, setDraftHtml] = useState(activeState?.content_html ?? "");
   const [notes, setNotes] = useState(activeState?.user_notes ?? "");
+  const draftRef = useRef(draft);
+  const draftHtmlRef = useRef(draftHtml);
+  const notesRef = useRef(notes);
+  draftRef.current = draft;
+  draftHtmlRef.current = draftHtml;
+  notesRef.current = notes;
+
+  const [autoSaveState, setAutoSaveState] = useState<"idle" | "dirty" | "saving" | "saved" | "error">("idle");
+  const [lastSavedAt, setLastSavedAt] = useState<string>("");
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const autoSaveInFlightRef = useRef(false);
+
+  const [pendingReformulation, setPendingReformulation] = useState<PendingReformulationPreview | null>(null);
+  const [busyReformulate, setBusyReformulate] = useState(false);
+  const [busyApplyReformulation, setBusyApplyReformulation] = useState(false);
+
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
+  const [sectionVersions, setSectionVersions] = useState<SectionVersionEntry[]>([]);
+  const [loadingVersions, setLoadingVersions] = useState(false);
+  const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
   const [mobileStepsOpen, setMobileStepsOpen] = useState(false);
   const [showMethodGuide, setShowMethodGuide] = useState(false);
   const [showCamesRequirements, setShowCamesRequirements] = useState(false);
@@ -399,10 +427,305 @@ export function Module1Assistant({
     }
   };
 
+  const isDirty =
+    activeSpec.id !== "cover_page" &&
+    (draft !== (activeState?.content_markdown ?? "") ||
+      draftHtml !== (activeState?.content_html ?? "") ||
+      notes !== (activeState?.user_notes ?? ""));
+
+  async function flushAutoSave(sectionIdToSave?: string): Promise<boolean> {
+    const sid = sectionIdToSave ?? selectedSectionIdRef.current;
+    if (!sid || sid === "cover_page" || autoSaveInFlightRef.current) return true;
+    const secState = latestProjectRef.current.sections[sid];
+    const curDraft = draftRef.current;
+    const curHtml = draftHtmlRef.current;
+    const curNotes = notesRef.current;
+    const changed =
+      curDraft !== (secState?.content_markdown ?? "") ||
+      curHtml !== (secState?.content_html ?? "") ||
+      curNotes !== (secState?.user_notes ?? "");
+    if (!changed) return true;
+
+    autoSaveInFlightRef.current = true;
+    setAutoSaveState("saving");
+    try {
+      const updated = await api.updateSection(latestProjectRef.current.project_id, sid, {
+        content_markdown: curDraft,
+        content_html: curHtml,
+        status: secState?.status && secState.status !== "pending" ? secState.status : "in_progress",
+        user_notes: curNotes,
+      });
+      const merged = mergeSectionProjectUpdate(updated, sid);
+      onProjectUpdated(merged);
+      setAutoSaveState("saved");
+      setLastSavedAt(
+        new Date().toLocaleTimeString(lang === "en" ? "en-US" : "fr-FR", {
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      );
+      return true;
+    } catch {
+      setAutoSaveState("error");
+      return false;
+    } finally {
+      autoSaveInFlightRef.current = false;
+    }
+  }
+
+  async function handleSelectSectionSafe(targetSectionId: string) {
+    if (targetSectionId === activeSpec.id) return;
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    if (isDirty) {
+      await flushAutoSave(activeSpec.id);
+    }
+    onSelectSection(targetSectionId);
+  }
+
+  // Silent debounced auto-save (1.8s after user pauses typing in editor or personal notes)
+  useEffect(() => {
+    if (activeSpec.id === "cover_page") return;
+    if (!isDirty) return;
+    setAutoSaveState("dirty");
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+    }
+    const sid = activeSpec.id;
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      void flushAutoSave(sid);
+    }, 1800);
+    return () => {
+      if (autoSaveTimerRef.current !== null) {
+        window.clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [draft, draftHtml, notes, activeSpec.id, isDirty]);
+
+  // Ctrl+S / Cmd+S manual save shortcut
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        if (selectedSectionIdRef.current !== "cover_page") {
+          e.preventDefault();
+          void handleSectionSaveOrValidate(
+            selectedSectionIdRef.current,
+            activeSpec.title,
+            draftRef.current,
+            activeState?.status && activeState.status !== "pending"
+              ? activeState.status
+              : "in_progress",
+            notesRef.current,
+            draftHtmlRef.current
+          );
+        }
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [activeSpec.title, activeState?.status]);
+
+  async function handleToggleVersionHistory() {
+    if (showVersionHistory) {
+      setShowVersionHistory(false);
+      return;
+    }
+    setShowVersionHistory(true);
+    setLoadingVersions(true);
+    try {
+      const res = await api.listSectionVersions(project.project_id, activeSpec.id);
+      setSectionVersions(res.versions || []);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoadingVersions(false);
+    }
+  }
+
+  async function handleRestoreVersion(versionId: string) {
+    setRestoringVersionId(versionId);
+    onError("");
+    try {
+      const updated = await api.restoreSectionVersion(
+        project.project_id,
+        activeSpec.id,
+        versionId
+      );
+      const merged = mergeSectionProjectUpdate(updated, activeSpec.id);
+      onProjectUpdated(merged);
+      const sec = merged.sections[activeSpec.id];
+      if (sec) {
+        setDraft(sec.content_markdown ?? "");
+        setDraftHtml(sec.content_html ?? "");
+      }
+      setShowVersionHistory(false);
+      showToast(
+        "saved",
+        lang === "en"
+          ? "Previous version restored."
+          : "Version précédente restaurée avec succès."
+      );
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRestoringVersionId(null);
+    }
+  }
+
+  async function handleSmartReformulate(
+    mode: "auto" | "audit_fix" | "complement" = "auto",
+    customInstruction?: string,
+    auditIssues?: string[]
+  ) {
+    const targetSectionId = activeSpec.id;
+    const instr = (customInstruction ?? aiInstruction).trim();
+    const issuesList =
+      auditIssues ??
+      (mode === "audit_fix"
+        ? lastAuditResult?.issues ?? activeState?.audit_notes ?? []
+        : []);
+
+    setBusyReformulate(true);
+    if (mode === "audit_fix") {
+      setBusyFixBySec((prev) => ({ ...prev, [targetSectionId]: true }));
+    }
+    onError("");
+    try {
+      const res = await api.smartReformulateSection(project.project_id, targetSectionId, {
+        instruction: instr,
+        current_markdown: draftRef.current,
+        mode,
+        audit_issues: issuesList,
+      });
+      if (selectedSectionIdRef.current === targetSectionId) {
+        setPendingReformulation({
+          kind: mode === "audit_fix" ? "audit_fix" : "smart_reformulate",
+          strategy: res.strategy,
+          summary: res.summary,
+          original_markdown: res.original_markdown,
+          proposed_markdown: res.proposed_markdown,
+          proposed_html: res.proposed_html,
+          patches: res.patches || [],
+          model_used: res.model_used,
+          retryPayload: {
+            instruction: instr,
+            mode,
+            audit_issues: issuesList,
+          },
+        });
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyReformulate(false);
+      if (mode === "audit_fix") {
+        setBusyFixBySec((prev) => ({ ...prev, [targetSectionId]: false }));
+      }
+    }
+  }
+
+  async function handleSelectionTransform(
+    selectedText: string,
+    action: SelectionTransformAction,
+    instruction?: string
+  ) {
+    const targetSectionId = activeSpec.id;
+    setBusyReformulate(true);
+    onError("");
+    try {
+      const res = await api.transformSectionSelection(project.project_id, targetSectionId, {
+        selected_text: selectedText,
+        action,
+        instruction: instruction ?? "",
+        current_markdown: draftRef.current,
+      });
+      if (selectedSectionIdRef.current === targetSectionId) {
+        setPendingReformulation({
+          kind: "selection_transform",
+          strategy: action === "complement" ? "selective_patch" : "selective_patch",
+          summary: res.summary,
+          original_markdown: res.original_markdown,
+          proposed_markdown: res.proposed_markdown,
+          proposed_html: res.proposed_html,
+          patches: res.patches || [],
+          model_used: res.model_used,
+          retryPayload: {
+            instruction: instruction ?? "",
+            selected_text: selectedText,
+            action,
+          },
+        });
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyReformulate(false);
+    }
+  }
+
+  async function handleApplyPendingReformulation() {
+    if (!pendingReformulation) return;
+    const targetSectionId = activeSpec.id;
+    setBusyApplyReformulation(true);
+    onError("");
+    try {
+      const updated = await api.applySectionReformulation(project.project_id, targetSectionId, {
+        content_markdown: pendingReformulation.proposed_markdown,
+        content_html: pendingReformulation.proposed_html,
+        source: pendingReformulation.kind,
+        note: pendingReformulation.summary,
+      });
+      const merged = mergeSectionProjectUpdate(updated, targetSectionId);
+      onProjectUpdated(merged);
+      const sec = merged.sections[targetSectionId];
+      if (sec) {
+        setDraft(sec.content_markdown ?? "");
+        setDraftHtml(sec.content_html ?? "");
+      }
+      if (pendingReformulation.kind === "audit_fix") {
+        setLastAuditResult(null);
+      }
+      setPendingReformulation(null);
+      setAutoSaveState("saved");
+      setLastSavedAt(
+        new Date().toLocaleTimeString(lang === "en" ? "en-US" : "fr-FR", {
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      );
+      showToast(
+        "saved",
+        lang === "en"
+          ? "Reformulation validated and saved (previous version kept in History)."
+          : "Reformulation validée et enregistrée (version précédente conservée dans l'Historique)."
+      );
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyApplyReformulation(false);
+    }
+  }
+
+  async function handleRetryPendingReformulation(refinedInstruction?: string) {
+    if (!pendingReformulation) return;
+    const rp = pendingReformulation.retryPayload;
+    const nextInstr = refinedInstruction !== undefined ? refinedInstruction : rp.instruction;
+    if (pendingReformulation.kind === "selection_transform" && rp.selected_text && rp.action) {
+      await handleSelectionTransform(rp.selected_text, rp.action, nextInstr);
+    } else {
+      await handleSmartReformulate(rp.mode ?? "auto", nextInstr, rp.audit_issues);
+    }
+  }
+
   useEffect(() => {
     setDraft(activeState?.content_markdown ?? "");
     setDraftHtml(activeState?.content_html ?? "");
     setNotes(activeState?.user_notes ?? "");
+    setAutoSaveState("idle");
   }, [activeSpec.id, activeState?.content_markdown, activeState?.content_html, activeState?.user_notes]);
 
   useEffect(() => {
@@ -411,6 +734,8 @@ export function Module1Assistant({
     setLastHumanizeResult(null);
     setLastRefDecisionNote(null);
     setLastHarmonizeNote(null);
+    setPendingReformulation(null);
+    setShowVersionHistory(false);
     setAiInstruction("");
     setShowPersonalNotes(Boolean(project.sections[activeSpec.id]?.user_notes?.trim()));
   }, [activeSpec.id]);
@@ -584,37 +909,15 @@ export function Module1Assistant({
   }
 
   async function handleFixWithAI() {
-    const targetSectionId = activeSpec.id;
-    const targetTitle = activeSpec.title;
-    setBusyFixBySec((prev) => ({ ...prev, [targetSectionId]: true }));
-    onError("");
-    try {
-      const res = await tracker.runWithProgress(
-        {
-          operation: "fix",
-          titleFr: `Correction audit : ${targetTitle}`,
-          titleEn: `Audit Fix: ${targetTitle}`,
-          projectId: project.project_id,
-        },
-        (taskId) => api.fixSection(project.project_id, targetSectionId, taskId)
-      );
-      const merged = mergeSectionProjectUpdate(res.project, targetSectionId);
-      onProjectUpdated(merged);
-      if (selectedSectionIdRef.current === targetSectionId) {
-        setDraft(res.result.content_markdown);
-        setDraftHtml(
-          res.result.content_html ??
-            merged.sections[targetSectionId]?.content_html ??
-            ""
-        );
-        setLastDraftResult(res.result);
-        setLastAuditResult(null);
-      }
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyFixBySec((prev) => ({ ...prev, [targetSectionId]: false }));
-    }
+    // Use selective surgical audit reformulation so existing manual edits are preserved
+    // and the user reviews the color-highlighted diff before validating!
+    await handleSmartReformulate(
+      "audit_fix",
+      lang === "en"
+        ? "Fix only the passages flagged by the FMSB audit while preserving all other text."
+        : "Corriger uniquement les passages signalés par l'audit FMSB en conservant le reste du texte intact.",
+      lastAuditResult?.issues ?? activeState?.audit_notes ?? []
+    );
   }
 
   async function handleExtractAndSyncToMask() {
@@ -799,7 +1102,7 @@ export function Module1Assistant({
                   key={item.id}
                   type="button"
                   onClick={() => {
-                    onSelectSection(item.id);
+                    void handleSelectSectionSafe(item.id);
                     closeDrawer?.();
                   }}
                   className={`flex min-h-[42px] w-full items-start justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition ${
@@ -1460,12 +1763,16 @@ export function Module1Assistant({
                     </div>
                   </div>
 
-                  {/* Unified Prompt Input + Single Adaptive Primary AI Action */}
+                  {/* Unified Prompt Input + Adaptive Selective Reformulation / Full Generation */}
                   <form
                     onSubmit={(e) => {
                       e.preventDefault();
-                      if (busyDraft) return;
-                      handleDraftWithAI(aiInstruction.trim() || undefined);
+                      if (busyDraft || busyReformulate) return;
+                      if (hasContent && hasInstruction) {
+                        void handleSmartReformulate("auto");
+                      } else {
+                        void handleDraftWithAI(aiInstruction.trim() || undefined);
+                      }
                     }}
                     className="flex flex-wrap items-center gap-2"
                   >
@@ -1490,37 +1797,57 @@ export function Module1Assistant({
                         )}
                         {busyDraft ? t("m1.drafting") : t("m1.generate_ai")}
                       </button>
-                    ) : hasInstruction ? (
-                      <button
-                        type="submit"
-                        disabled={busyDraft}
-                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50"
-                      >
-                        {busyDraft ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <Wand2 className="h-3.5 w-3.5" />
-                        )}
-                        {busyDraft ? t("m1.refining") : t("m1.refine_ai")}
-                      </button>
                     ) : (
-                      <button
-                        type="submit"
-                        disabled={busyDraft}
-                        title={
-                          lang === "en"
-                            ? "Regenerate or refresh this section using current references (type an instruction on the left to refine specific points)"
-                            : "Régénérer cette section à partir des références (ou saisissez une consigne à gauche pour un affinage ciblé)"
-                        }
-                        className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-indigo-300 bg-white px-3.5 py-2 text-xs font-semibold text-indigo-700 transition hover:bg-indigo-50 disabled:opacity-50"
-                      >
-                        {busyDraft ? (
-                          <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                        ) : (
-                          <RefreshCw className="h-3.5 w-3.5" />
-                        )}
-                        {busyDraft ? t("m1.drafting") : t("m1.regenerate_ai")}
-                      </button>
+                      <>
+                        <button
+                          type="button"
+                          disabled={busyReformulate || busyDraft}
+                          onClick={() => void handleSmartReformulate("auto")}
+                          title={
+                            lang === "en"
+                              ? "Intelligently reformulate ONLY the targeted part or complement existing text, with colored diff preview before validating"
+                              : "Reformuler intelligemment UNIQUEMENT la partie concernée ou compléter le texte existant (avec aperçu coloré avant validation)"
+                          }
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50"
+                        >
+                          {busyReformulate ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Wand2 className="h-3.5 w-3.5" />
+                          )}
+                          {busyReformulate
+                            ? lang === "en"
+                              ? "Analyzing..."
+                              : "Analyse..."
+                            : lang === "en"
+                            ? "Smart Reformulate"
+                            : "Reformulation sélective"}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={busyDraft || busyReformulate}
+                          onClick={() =>
+                            void handleDraftWithAI(aiInstruction.trim() || undefined)
+                          }
+                          title={
+                            lang === "en"
+                              ? "Fully regenerate the entire section from scratch"
+                              : "Régénérer intégralement toute la section"
+                          }
+                          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
+                        >
+                          {busyDraft ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-3.5 w-3.5" />
+                          )}
+                          {busyDraft
+                            ? t("m1.drafting")
+                            : lang === "en"
+                            ? "Full regenerate"
+                            : "Tout régénérer"}
+                        </button>
+                      </>
                     )}
                   </form>
                   {activeSpec.id === "annexe_fiche_collecte" && (
@@ -1940,18 +2267,179 @@ export function Module1Assistant({
                 </div>
               )}
 
+              {pendingReformulation && (
+                <ReformulationReviewBanner
+                  preview={pendingReformulation}
+                  busy={busyReformulate}
+                  applying={busyApplyReformulation}
+                  onAccept={() => void handleApplyPendingReformulation()}
+                  onRetry={(refined) => void handleRetryPendingReformulation(refined)}
+                  onCancel={() => setPendingReformulation(null)}
+                />
+              )}
+
               <div>
-                <div className="mb-1.5 flex items-center justify-between gap-2">
-                  <label className="block text-sm font-semibold text-slate-800">
-                    {lang === "en"
-                      ? "Section Content (Rich Text Editor)"
-                      : "Contenu de la section (Éditeur riche FMSB)"}
-                  </label>
+                <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="block text-sm font-semibold text-slate-800">
+                      {lang === "en"
+                        ? "Section Content (Rich Text Editor)"
+                        : "Contenu de la section (Éditeur riche FMSB)"}
+                    </label>
+                    {autoSaveState === "saving" && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-medium text-indigo-700">
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                        {lang === "en" ? "Auto-saving..." : "Enregistrement auto..."}
+                      </span>
+                    )}
+                    {autoSaveState === "dirty" && isDirty && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-[11px] font-semibold text-amber-800">
+                        {lang === "en" ? "Unsaved edits" : "Modifications non enregistrées"}
+                      </span>
+                    )}
+                    {autoSaveState === "saved" && !isDirty && lastSavedAt && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-0.5 text-[11px] font-medium text-emerald-700">
+                        <CheckCircle2 className="h-3 w-3" />
+                        {lang === "en"
+                          ? `Saved at ${lastSavedAt}`
+                          : `Enregistré à ${lastSavedAt}`}
+                      </span>
+                    )}
+                    {autoSaveState === "error" && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-rose-100 px-2.5 py-0.5 text-[11px] font-semibold text-rose-700">
+                        {lang === "en"
+                          ? "Auto-save failed — click Save"
+                          : "Échec auto-save — cliquez sur Enregistrer"}
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleToggleVersionHistory()}
+                      className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold transition ${
+                        showVersionHistory
+                          ? "border-indigo-300 bg-indigo-50 text-indigo-800"
+                          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                      }`}
+                      title={
+                        lang === "en"
+                          ? "Restore a previous version or generation"
+                          : "Revenir sur une version ou génération précédente"
+                      }
+                    >
+                      <History className="h-3.5 w-3.5" />
+                      {lang === "en" ? "History / Undo" : "Historique / Retour"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={saving || (!isDirty && autoSaveState === "saved")}
+                      onClick={() =>
+                        void handleSectionSaveOrValidate(
+                          activeSpec.id,
+                          activeSpec.title,
+                          draft,
+                          activeState?.status && activeState.status !== "pending"
+                            ? activeState.status
+                            : "in_progress",
+                          notes,
+                          draftHtml
+                        )
+                      }
+                      className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs font-semibold transition disabled:opacity-50 ${
+                        isDirty
+                          ? "bg-amber-500 text-white shadow-sm hover:bg-amber-600"
+                          : "border border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                      }`}
+                      title={lang === "en" ? "Save changes (Ctrl+S)" : "Enregistrer (Ctrl+S)"}
+                    >
+                      <Save className="h-3.5 w-3.5" />
+                      {lang === "en" ? "Save" : "Enregistrer"}
+                    </button>
+                  </div>
                 </div>
+
+                {showVersionHistory && (
+                  <div className="mb-2.5 rounded-xl border border-indigo-200 bg-indigo-50/40 p-3 text-xs">
+                    <div className="flex items-center justify-between gap-2 pb-2 border-b border-indigo-100">
+                      <span className="font-bold text-indigo-950">
+                        {lang === "en"
+                          ? "Section Version History (1-click restore)"
+                          : "Historique des versions de cette section (retour en 1 clic)"}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setShowVersionHistory(false)}
+                        className="rounded p-0.5 text-slate-400 hover:text-slate-700"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    {loadingVersions ? (
+                      <div className="py-3 text-center text-slate-500">
+                        <Loader2 className="mx-auto h-4 w-4 animate-spin" />
+                      </div>
+                    ) : sectionVersions.length === 0 ? (
+                      <p className="py-2 text-slate-500">
+                        {lang === "en"
+                          ? "No previous versions recorded yet for this section."
+                          : "Aucune version précédente enregistrée pour cette section."}
+                      </p>
+                    ) : (
+                      <div className="mt-2 max-h-48 space-y-1.5 overflow-y-auto">
+                        {sectionVersions.map((v) => (
+                          <div
+                            key={v.version_id}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-2.5 py-2"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-700">
+                                  {v.source}
+                                </span>
+                                <span className="text-[11px] font-medium text-slate-800 truncate">
+                                  {v.note || (lang === "en" ? "Saved snapshot" : "Sauvegarde")}
+                                </span>
+                                <span className="text-[10px] text-slate-400">
+                                  {new Date(v.created_at).toLocaleString(
+                                    lang === "en" ? "en-US" : "fr-FR",
+                                    { dateStyle: "short", timeStyle: "short" }
+                                  )}
+                                </span>
+                              </div>
+                              <p className="mt-0.5 truncate text-[11px] text-slate-500">
+                                {(v.content_markdown || "").slice(0, 140)}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              disabled={restoringVersionId !== null}
+                              onClick={() => void handleRestoreVersion(v.version_id)}
+                              className="inline-flex shrink-0 items-center gap-1 rounded-md border border-indigo-300 bg-indigo-50 px-2.5 py-1 text-[11px] font-semibold text-indigo-800 hover:bg-indigo-100 disabled:opacity-50"
+                            >
+                              {restoringVersionId === v.version_id ? (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              ) : (
+                                <RotateCcw className="h-3 w-3" />
+                              )}
+                              {lang === "en" ? "Restore" : "Restaurer"}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <RichTextEditor
                   contentHtml={draftHtml}
                   contentMarkdown={draft}
                   wordCount={wordCount}
+                  selectionBusy={busyReformulate}
+                  onSelectionAction={(selectedText, action, instr) =>
+                    void handleSelectionTransform(selectedText, action, instr)
+                  }
                   onChange={(html, text) => {
                     setDraftHtml(html);
                     setDraft(text);

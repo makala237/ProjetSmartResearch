@@ -21,7 +21,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.admin_routes import router as admin_router
 from app.api.deps import (
@@ -84,6 +84,10 @@ from app.services.copilot_service import (
 from app.services.copilot_tools import (
     apply_surgical_text_patches,
     tool_draft_compare_and_merge,
+)
+from app.services.selective_reformulation import (
+    smart_reformulate_section,
+    transform_selected_text,
 )
 from app.services.gemini_client import gemini_router
 from app.schemas.protocol import (
@@ -1443,6 +1447,147 @@ def fix_section(
         if tracked:
             finish_pipeline_task("error", error_message=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+class SmartReformulateRequest(BaseModel):
+    instruction: str = ""
+    current_markdown: Optional[str] = None
+    mode: str = "auto"  # "auto" | "audit_fix" | "complement"
+    audit_issues: List[str] = Field(default_factory=list)
+
+
+class TransformSelectionRequest(BaseModel):
+    selected_text: str = Field(..., min_length=1)
+    action: str = "reformulate"  # "reformulate" | "modify" | "complement" | "cite" | "shorten" | "expand"
+    instruction: str = ""
+    current_markdown: Optional[str] = None
+
+
+class ApplyReformulationRequest(BaseModel):
+    content_markdown: str
+    content_html: Optional[str] = None
+    source: str = "smart_reformulate"
+    note: str = ""
+
+
+@app.post("/api/projects/{project_id}/sections/{section_id}/smart-reformulate")
+def smart_reformulate_endpoint(
+    project_id: str,
+    section_id: str,
+    payload: SmartReformulateRequest,
+    request: Request,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Non-destructive selective AI reformulation (returns colored diff preview before applying)."""
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="draft_section")
+    try:
+        preview = smart_reformulate_section(
+            project=project,
+            section_id=section_id,
+            instruction=payload.instruction,
+            current_markdown=payload.current_markdown,
+            mode=payload.mode,
+            audit_issues=payload.audit_issues,
+        )
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="smart_reformulate",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(preview.get("model_used", "")),
+            ip_address=get_client_ip(request),
+        )
+        return preview
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/sections/{section_id}/transform-selection")
+def transform_selection_endpoint(
+    project_id: str,
+    section_id: str,
+    payload: TransformSelectionRequest,
+    request: Request,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Non-destructive transformation of ONLY the user's highlighted passage."""
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="draft_section")
+    try:
+        preview = transform_selected_text(
+            project=project,
+            section_id=section_id,
+            selected_text=payload.selected_text,
+            action=payload.action,
+            instruction=payload.instruction,
+            current_markdown=payload.current_markdown,
+        )
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action=f"transform_selection:{payload.action}",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(preview.get("model_used", "")),
+            ip_address=get_client_ip(request),
+        )
+        return preview
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/projects/{project_id}/sections/{section_id}/apply-reformulation", response_model=ProtocolProject)
+def apply_reformulation_endpoint(
+    project_id: str,
+    section_id: str,
+    payload: ApplyReformulationRequest,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    """Commit a validated selective reformulation / selection transform after snapshotting the previous version."""
+    if section_id == "cover_page":
+        assert_cover_admin_only(current_user)
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+    sec = project.sections[section_id]
+    snapshot_section_version(
+        sec,
+        source=payload.source or "smart_reformulate",
+        note=payload.note or "Avant reformulation sélective",
+    )
+    sec.content_markdown = payload.content_markdown
+    sec.content_html = (
+        payload.content_html
+        if payload.content_html is not None and payload.content_html.strip()
+        else markdown_to_clean_html(payload.content_markdown)
+    )
+    if sec.status == StepStatus.NOT_STARTED and (sec.content_markdown or "").strip():
+        sec.status = StepStatus.IN_PROGRESS
+    if section_id == "chap3_budget":
+        from app.services.budget_engine import sync_budget_from_section
+        from app.services.presentation_orchestrator import refresh_budget_slide_if_present
+
+        sync_budget_from_section(project, overwrite=True)
+        refresh_budget_slide_if_present(project)
+    if section_id != "references":
+        renumber_and_sync_vancouver_references(project)
+    _sync_module2_queue(project)
+    evaluate_project_coherence(project, changed_section_id=section_id)
+    saved = project_storage.save(project)
+    update_section_working_memory(saved, section_id)
+    return scope_project_copilot_for_user(saved, current_user.id)
 
 
 class HumanizeRequest(BaseModel):
