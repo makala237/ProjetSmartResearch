@@ -37,6 +37,7 @@ interface AssistantSmartResearchWidgetProps {
   lang: "fr" | "en";
   onProjectUpdate: (project: ProtocolProject) => void;
   onNavigateModule: (moduleKey: ModuleKey) => void;
+  onSelectSection?: (sectionId: string) => void;
   externalPrompt?: { id: number; text: string } | null;
   onReplayTour?: () => void;
   onResetTips?: () => void;
@@ -66,6 +67,7 @@ export function AssistantSmartResearchWidget({
   lang,
   onProjectUpdate,
   onNavigateModule,
+  onSelectSection,
   externalPrompt,
   onReplayTour,
   onResetTips,
@@ -218,12 +220,22 @@ export function AssistantSmartResearchWidget({
     setErrorMsg(null);
     setBusyAction(true);
     try {
+      const actionParams = msg.app_action.params ?? {};
       const updated = await api.executeCopilotAction(project.project_id, {
         action_type: msg.app_action.action_type,
-        params: msg.app_action.params ?? {},
+        params: actionParams,
         message_id: msg.message_id,
       });
       onProjectUpdate(updated);
+      const targetSecRaw =
+        (typeof actionParams.section_id === "string" && actionParams.section_id) ||
+        (typeof actionParams.target_section_id === "string" &&
+          actionParams.target_section_id) ||
+        "";
+      const targetSecId = targetSecRaw.trim();
+      if (targetSecId && updated.sections && targetSecId in updated.sections) {
+        onSelectSection?.(targetSecId);
+      }
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {

@@ -631,6 +631,179 @@ class TestAssistantSmartResearchPhase3(unittest.TestCase):
         # Non-destructive guarantee: directive NOT yet applied before explicit click
         self.assertEqual(len(project.supervisor_directives), before_dir_count)
 
+    def test_copilot_app_actions_tables_diagrams_research_global_audit_and_draft(self) -> None:
+        import os
+        from tempfile import TemporaryDirectory
+        from types import SimpleNamespace
+        from PIL import Image
+        from app.schemas.protocol import ImageAsset
+        from app.services.copilot_actions import execute_copilot_app_action
+
+        with TemporaryDirectory() as tmpdir:
+            tmp_png = Path(tmpdir) / "prison_map.png"
+            # >500 bytes PNG so media_transport.materialize_image_asset recognizes a valid local asset
+            Image.frombytes("RGB", (120, 120), os.urandom(120 * 120 * 3)).save(
+                tmp_png, format="PNG"
+            )
+
+            project = _make_rich_project()
+            student = SimpleNamespace(id="stu-1", role="student")
+            target_sec_id = next(
+                (k for k in project.sections if k.startswith("chap3_") and "budget" not in k and "chronogramme" not in k),
+                "intro_interet",
+            )
+            project.images.append(
+                ImageAsset(
+                    asset_id="img-101",
+                    target_section_id="intro_contexte",
+                    title="Carte des établissements pénitentiaires",
+                    anchor_hint="Présentation géographique des sites d'étude.",
+                    local_path=str(tmp_png),
+                    source_url=f"/api/projects/{project.project_id}/images/img-101/file",
+                    approved=False,
+                )
+            )
+
+            # 1. Table generation & manual upsert
+            fake_tbl_ai = {
+                "model_used": "gemini-3.8-flash",
+                "title": "Répartition des sites pénitentiaires",
+                "headers": ["Établissement", "Capacité", "Statut"],
+                "rows": [["Prison Centrale", "1200", "Inclus"], ["Prison Secondaire", "350", "Inclus"]],
+            }
+            with patch(
+                "app.services.drafting.suggest_section_table_with_ai",
+                return_value=fake_tbl_ai,
+            ):
+                gen_tbl_res = execute_copilot_app_action(
+                    project,
+                    "generate_section_table",
+                    {"section_id": target_sec_id, "title": "Sites d'étude", "goal": "Lister les sites"},
+                    current_user=student,
+                )
+            self.assertTrue(gen_tbl_res["ok"])
+            sec_tbls = project.sections[target_sec_id].custom_tables
+            self.assertEqual(len(sec_tbls), 1)
+            created_tid = sec_tbls[0].table_id
+            self.assertEqual(sec_tbls[0].title, "Répartition des sites pénitentiaires")
+
+            # Update same table via upsert_section_table
+            execute_copilot_app_action(
+                project,
+                "upsert_section_table",
+                {
+                    "section_id": target_sec_id,
+                    "table_id": created_tid,
+                    "title": "Répartition mise à jour des sites",
+                },
+                current_user=student,
+            )
+            self.assertEqual(sec_tbls[0].title, "Répartition mise à jour des sites")
+
+            # 2. Diagram generation & project image assignment
+            fake_diag_ai = {
+                "model_used": "gemini-3.8-flash",
+                "title": "Diagramme de sélection",
+                "caption": "Flux des participants inclus",
+                "layout": "vertical",
+                "nodes": [{"id": "n1", "shape": "rounded", "title": "Détenus", "items": ["Éligibles"]}],
+                "connections": [],
+            }
+            with patch(
+                "app.services.drafting.suggest_section_diagram_with_ai",
+                return_value=fake_diag_ai,
+            ):
+                diag_res = execute_copilot_app_action(
+                    project,
+                    "generate_section_diagram",
+                    {"section_id": target_sec_id, "title": "Flux d'inclusion"},
+                    current_user=student,
+                )
+            self.assertTrue(diag_res["ok"])
+            self.assertEqual(len(project.sections[target_sec_id].custom_diagrams), 1)
+
+            img_res = execute_copilot_app_action(
+                project,
+                "assign_project_image",
+                {"title_query": "pénitentiaires", "target_section_id": target_sec_id, "approved": True},
+                current_user=student,
+            )
+            self.assertTrue(img_res["ok"])
+            self.assertEqual(project.images[0].target_section_id, target_sec_id)
+            self.assertTrue(project.images[0].approved)
+
+            # 3. Literature research + optional segmentation
+            def _fake_research(proj, **kwargs):
+                proj.references.append(
+                    ReferenceItem(ref_id="ref-2", order_index=2, title="Santé carcérale", vancouver_citation="Mbarga A. Santé carcérale. 2024.")
+                )
+                return {"planner_model": "gemini-3.8-flash"}
+
+            with (
+                patch("app.services.literature.run_research_pipeline", side_effect=_fake_research),
+                patch(
+                    "app.services.segmentation.segment_project_articles",
+                    return_value={"added_segments": 3},
+                ) as seg_mock,
+            ):
+                res_lit = execute_copilot_app_action(
+                    project,
+                    "run_literature_research",
+                    {"custom_query": "santé mentale milieu carcéral Cameroun", "also_segment": True},
+                    current_user=student,
+                )
+            self.assertTrue(res_lit["ok"])
+            self.assertEqual(len(project.references), 2)
+            seg_mock.assert_called_once()
+
+            # 4. Global protocol audit
+            fake_global = {
+                "ready_for_print": True,
+                "score_percent": 92,
+                "validated_sections_count": 10,
+                "total_sections_count": 12,
+                "checks": [{"label": "Exhaustivité", "status": "ok", "summary": "OK"}],
+            }
+            with patch(
+                "app.services.global_audit.run_global_protocol_audit",
+                return_value=fake_global,
+            ):
+                res_ga = execute_copilot_app_action(
+                    project, "run_global_audit", {}, current_user=student
+                )
+            self.assertTrue(res_ga["ok"])
+            self.assertIn("92 %", res_ga["summary"])
+
+            # 5. Targeted section drafting + COVER_ADMIN_ONLY check on cover_page
+            with self.assertRaises(PermissionError):
+                execute_copilot_app_action(
+                    project,
+                    "draft_section",
+                    {"section_id": "cover_page"},
+                    current_user=student,
+                )
+
+            def _fake_draft_sec(proj, section_id, user_instruction=None):
+                proj.sections[section_id].content_markdown = "Texte rédigé dans la section cible [1]."
+                proj.sections[section_id].status = StepStatus.IN_PROGRESS
+                return {
+                    "model_used": "gemini-3.8-flash",
+                    "content_markdown": proj.sections[section_id].content_markdown,
+                }
+
+            with (
+                patch("app.services.drafting.draft_section_with_ai", side_effect=_fake_draft_sec),
+                patch("app.services.coherence_sentinel.evaluate_project_coherence"),
+            ):
+                draft_res = execute_copilot_app_action(
+                    project,
+                    "draft_section",
+                    {"section_id": target_sec_id, "instruction": "Inclure tous les établissements pénitentiaires"},
+                    current_user=student,
+                )
+            self.assertTrue(draft_res["ok"])
+            self.assertIn("section cible", project.sections[target_sec_id].content_markdown)
+
 
 if __name__ == "__main__":
     unittest.main()

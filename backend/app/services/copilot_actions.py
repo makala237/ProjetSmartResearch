@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
+from uuid import uuid4
 
 from app.schemas.protocol import (
     AbbreviationItem,
@@ -8,8 +9,12 @@ from app.schemas.protocol import (
     BudgetItem,
     CoverMetadata,
     CRFFieldSpec,
+    DiagramConnection,
+    DiagramNode,
     FormattingRules,
     ProtocolProject,
+    SectionDiagram,
+    SectionTable,
     StepStatus,
     SupervisorDirectiveItem,
     TimelineGrid,
@@ -25,6 +30,13 @@ ACTION_MODULE_MAP: Dict[str, str] = {
     "update_cover": "module1",
     "update_project_meta": "module1",
     "generate_sub_annex": "module1",
+    "generate_section_table": "module1",
+    "upsert_section_table": "module1",
+    "generate_section_diagram": "module1",
+    "assign_project_image": "module1",
+    "run_literature_research": "module1",
+    "draft_section": "module1",
+    "run_global_audit": "module2",
     "update_formatting": "module2",
     "update_structured_data": "module2",
     "sync_structured": "module2",
@@ -45,6 +57,11 @@ AI_ACTION_CREDIT_COSTS: Dict[str, int] = {
     "validate_references": 1,
     "generate_sub_annex": 2,
     "generate_presentation_slide": 2,
+    "generate_section_table": 1,
+    "generate_section_diagram": 1,
+    "run_literature_research": 2,
+    "run_global_audit": 2,
+    "draft_section": 2,
 }
 
 
@@ -546,6 +563,276 @@ def _action_generate_presentation_slide(
     }
 
 
+def _action_generate_section_table(
+    project: ProtocolProject, params: Dict[str, Any], current_user: Any
+) -> Dict[str, Any]:
+    from app.services.drafting import suggest_section_table_with_ai
+
+    section_id, sec = _require_section(project, params)
+    title = str(params.get("title") or "Tableau synthétique").strip() or "Tableau synthétique"
+    goal = str(params.get("goal") or "").strip()
+    res = suggest_section_table_with_ai(
+        project,
+        section_id=section_id,
+        table_title=title,
+        table_goal=goal,
+    )
+    tbl = SectionTable(
+        table_id=f"tbl_{uuid4().hex[:8]}",
+        title=str(res.get("title") or title).strip(),
+        anchor_hint=str(params.get("anchor_hint") or "").strip(),
+        headers=[str(h) for h in (res.get("headers") or [])],
+        rows=[[str(c) for c in r] for r in (res.get("rows") or [])],
+    )
+    sec.custom_tables.append(tbl)
+    _sync_module2_media(project)
+    return {
+        "summary": (
+            f"Tableau « {tbl.title} » généré par l'IA et inséré dans `{section_id}` "
+            f"({len(tbl.headers)} colonne(s), {len(tbl.rows)} ligne(s))."
+        ),
+        "model_used": str(res.get("model_used") or ""),
+    }
+
+
+def _action_upsert_section_table(
+    project: ProtocolProject, params: Dict[str, Any], current_user: Any
+) -> Dict[str, Any]:
+    section_id, sec = _require_section(project, params)
+    table_id = str(params.get("table_id") or "").strip()
+    target = (
+        next((t for t in sec.custom_tables if t.table_id == table_id), None)
+        if table_id
+        else None
+    )
+    if target is not None:
+        if params.get("title") is not None:
+            target.title = str(params["title"]).strip() or target.title
+        if params.get("anchor_hint") is not None:
+            target.anchor_hint = str(params["anchor_hint"]).strip()
+        if isinstance(params.get("headers"), list) and params["headers"]:
+            target.headers = [str(h) for h in params["headers"]]
+        if isinstance(params.get("rows"), list):
+            target.rows = [[str(c) for c in r] for r in params["rows"]]
+        _sync_module2_media(project)
+        return {
+            "summary": f"Tableau `{target.table_id}` (« {target.title} ») mis à jour dans `{section_id}`."
+        }
+
+    headers = [str(h).strip() for h in (params.get("headers") or []) if str(h).strip()]
+    rows = [[str(c) for c in r] for r in (params.get("rows") or [])]
+    if not headers and not rows:
+        raise ValueError("Les colonnes (`headers`) ou lignes (`rows`) du tableau sont requises.")
+    if not headers and rows:
+        headers = [f"Colonne {i + 1}" for i in range(len(rows[0]))]
+    tbl = SectionTable(
+        table_id=table_id or f"tbl_{uuid4().hex[:8]}",
+        title=str(params.get("title") or "Tableau personnalisé").strip() or "Tableau personnalisé",
+        anchor_hint=str(params.get("anchor_hint") or "").strip(),
+        headers=headers,
+        rows=rows,
+    )
+    sec.custom_tables.append(tbl)
+    _sync_module2_media(project)
+    return {
+        "summary": (
+            f"Tableau « {tbl.title} » inséré dans `{section_id}` "
+            f"({len(tbl.headers)} colonne(s), {len(tbl.rows)} ligne(s))."
+        )
+    }
+
+
+def _action_generate_section_diagram(
+    project: ProtocolProject, params: Dict[str, Any], current_user: Any
+) -> Dict[str, Any]:
+    from app.services.drafting import suggest_section_diagram_with_ai
+
+    section_id, sec = _require_section(project, params)
+    title = str(params.get("title") or "Schéma conceptuel").strip() or "Schéma conceptuel"
+    goal = str(params.get("goal") or "").strip()
+    res = suggest_section_diagram_with_ai(
+        project,
+        section_id=section_id,
+        diagram_title=title,
+        diagram_goal=goal,
+    )
+    nodes = [
+        DiagramNode(**n) if isinstance(n, dict) else n for n in (res.get("nodes") or [])
+    ]
+    connections = [
+        DiagramConnection(**c) if isinstance(c, dict) else c
+        for c in (res.get("connections") or [])
+    ]
+    layout_raw = str(params.get("layout") or res.get("layout") or "vertical").strip().lower()
+    layout = layout_raw if layout_raw in ("vertical", "horizontal") else "vertical"
+    dg = SectionDiagram(
+        diagram_id=f"diag_{uuid4().hex[:8]}",
+        title=str(res.get("title") or title).strip(),
+        caption=str(params.get("caption") or res.get("caption") or "").strip(),
+        anchor_hint=str(params.get("anchor_hint") or "").strip(),
+        layout=layout,
+        nodes=nodes,
+        connections=connections,
+    )
+    sec.custom_diagrams.append(dg)
+    _sync_module2_media(project)
+    return {
+        "summary": (
+            f"Figure/Schéma « {dg.title} » généré par l'IA et inséré dans `{section_id}` "
+            f"({len(dg.nodes)} nœud(s), {len(dg.connections)} connexion(s))."
+        ),
+        "model_used": str(res.get("model_used") or ""),
+    }
+
+
+def _action_assign_project_image(
+    project: ProtocolProject, params: Dict[str, Any], current_user: Any
+) -> Dict[str, Any]:
+    images = list(project.images or [])
+    if not images:
+        raise ValueError("Aucune image ou figure disponible dans le projet.")
+
+    asset_id = str(params.get("asset_id") or "").strip()
+    title_q = str(params.get("title_query") or "").strip().lower()
+    target = (
+        next((img for img in images if img.asset_id == asset_id), None)
+        if asset_id
+        else None
+    )
+    if target is None and title_q:
+        target = next(
+            (
+                img
+                for img in images
+                if title_q in (img.title or "").lower()
+                or title_q in (img.caption or "").lower()
+            ),
+            None,
+        )
+    if target is None:
+        raise ValueError(
+            "Image/figure introuvable (précisez `asset_id` ou un `title_query` correspondant)."
+        )
+
+    if params.get("target_section_id") is not None:
+        sec_id = str(params["target_section_id"]).strip()
+        if sec_id and sec_id not in project.sections:
+            raise ValueError(f"Section cible introuvable : {sec_id!r}")
+        if sec_id:
+            target.target_section_id = sec_id
+    if params.get("approved") is not None:
+        target.approved = bool(params["approved"])
+    elif params.get("target_section_id"):
+        target.approved = True
+    if params.get("caption") is not None:
+        target.caption = str(params["caption"]).strip()
+    if params.get("title") is not None:
+        target.title = str(params["title"]).strip() or target.title
+
+    _sync_module2_media(project)
+    return {
+        "summary": (
+            f"Figure « {target.title} » (`{target.asset_id}`) associée à "
+            f"`{target.target_section_id}` (approuvée={target.approved})."
+        )
+    }
+
+
+def _action_run_literature_research(
+    project: ProtocolProject, params: Dict[str, Any], current_user: Any
+) -> Dict[str, Any]:
+    from app.services.literature import run_research_pipeline
+    from app.services.segmentation import segment_project_articles
+
+    custom_query = str(params.get("custom_query") or "").strip() or None
+    max_per_source = max(1, min(10, int(params.get("max_per_source") or 4)))
+    include_web = bool(params.get("include_web_grounding", True))
+    search_scope = str(params.get("search_scope") or "hybrid_africa").strip() or "hybrid_africa"
+
+    before_refs = len(project.references or [])
+    report = run_research_pipeline(
+        project,
+        custom_query=custom_query,
+        max_per_source=max_per_source,
+        include_web_grounding=include_web,
+        search_scope=search_scope,
+    )
+    after_refs = len(project.references or [])
+    seg_info = ""
+    if bool(params.get("also_segment", False)) and project.references:
+        seg_limit = max(1, min(25, int(params.get("segment_limit") or 8)))
+        seg_rep = segment_project_articles(
+            project, limit=seg_limit, only_unsegmented=True
+        )
+        seg_count = seg_rep.get("added_segments", len(project.article_segments or []))
+        seg_info = f" ; segmentation lancée ({seg_count} segment(s))"
+
+    return {
+        "summary": (
+            f"Recherche documentaire exécutée (portée={search_scope}) : "
+            f"{after_refs} référence(s) au projet (+{max(0, after_refs - before_refs)} nouvelle(s)){seg_info}."
+        ),
+        "model_used": str(report.get("planner_model") or ""),
+    }
+
+
+def _action_run_global_audit(
+    project: ProtocolProject, params: Dict[str, Any], current_user: Any
+) -> Dict[str, Any]:
+    from app.services.global_audit import run_global_protocol_audit
+
+    res = run_global_protocol_audit(project)
+    score = int(res.get("score_percent") or 0)
+    ready = bool(res.get("ready_for_print"))
+    validated = int(res.get("validated_sections_count") or 0)
+    total = int(res.get("total_sections_count") or len(project.sections))
+    warnings_or_errors = [
+        f"{c.get('label')}: {c.get('summary')}"
+        for c in (res.get("checks") or [])
+        if c.get("status") in ("warning", "error")
+    ]
+    alerts_str = " | ".join(warnings_or_errors[:3]) if warnings_or_errors else "Aucune alerte critique"
+    return {
+        "summary": (
+            f"Audit global FMSB/CAMES terminé : score {score} %, "
+            f"{validated}/{total} section(s) validée(s), prêt pour export={'oui' if ready else 'non'}. "
+            f"Points clés : {alerts_str}."
+        ),
+        "model_used": str(res.get("model_used") or ""),
+    }
+
+
+def _action_draft_section(
+    project: ProtocolProject, params: Dict[str, Any], current_user: Any
+) -> Dict[str, Any]:
+    from app.services.coherence_sentinel import evaluate_project_coherence
+    from app.services.drafting import draft_section_with_ai
+    from app.services.list_builder import generate_all_lists_and_toc
+
+    section_id, _ = _require_section(project, params)
+    if section_id in ("toc", "abbreviations", "list_of_tables", "list_of_figures"):
+        res_lists = generate_all_lists_and_toc(project, use_gemini_decision=True)
+        plan = res_lists.get("plan")
+        return {
+            "summary": f"Section `{section_id}` générée automatiquement ({res_lists.get('entries_count', 0)} entrée(s)).",
+            "model_used": str(getattr(plan, "model_used", "") or ""),
+        }
+
+    instruction = str(params.get("instruction") or params.get("user_instruction") or "").strip() or None
+    res = draft_section_with_ai(
+        project,
+        section_id=section_id,
+        user_instruction=instruction,
+    )
+    _sync_module2_media(project)
+    evaluate_project_coherence(project, changed_section_id=section_id)
+    words_cnt = len(str(res.get("content_markdown") or "").split())
+    return {
+        "summary": f"Section `{section_id}` rédigée dans son espace de travail ({words_cnt} mots).",
+        "model_used": str(res.get("model_used") or ""),
+    }
+
+
 _ACTION_HANDLERS: Dict[str, Callable[[ProtocolProject, Dict[str, Any], Any], Dict[str, Any]]] = {
     "add_directive": _action_add_directive,
     "waive_audit_and_validate": _action_waive_audit_and_validate,
@@ -561,6 +848,13 @@ _ACTION_HANDLERS: Dict[str, Callable[[ProtocolProject, Dict[str, Any], Any], Dic
     "validate_references": _action_validate_references,
     "update_crf_fields": _action_update_crf_fields,
     "generate_sub_annex": _action_generate_sub_annex,
+    "generate_section_table": _action_generate_section_table,
+    "upsert_section_table": _action_upsert_section_table,
+    "generate_section_diagram": _action_generate_section_diagram,
+    "assign_project_image": _action_assign_project_image,
+    "run_literature_research": _action_run_literature_research,
+    "run_global_audit": _action_run_global_audit,
+    "draft_section": _action_draft_section,
     "update_presentation_slide": _action_update_presentation_slide,
     "generate_presentation_slide": _action_generate_presentation_slide,
 }
@@ -581,7 +875,16 @@ def execute_copilot_app_action(
     sec_id = str(clean_params.get("section_id") or "").strip()
     is_cover_mutation = clean_type == "update_cover" or (
         sec_id == "cover_page"
-        and clean_type in ("waive_audit_and_validate", "fix_section_issues", "humanize_section")
+        and clean_type
+        in (
+            "waive_audit_and_validate",
+            "fix_section_issues",
+            "humanize_section",
+            "draft_section",
+            "generate_section_table",
+            "upsert_section_table",
+            "generate_section_diagram",
+        )
     )
     if (
         is_cover_mutation

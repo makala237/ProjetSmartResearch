@@ -415,6 +415,22 @@ def run_copilot_chat(
 
     text_chain, _ = gemini_router._resolve_candidates("copilot_text")
     voice_chain = gemini_router.resolve_copilot_voice_models()
+    sections_catalog_lines = ", ".join(
+        f"{spec.id} ({spec.title})" for spec in get_localized_canvas(lang)
+    )
+    active_tables_hint = ""
+    if active_section_id and active_section_id in project.sections:
+        cur_tbls = getattr(project.sections[active_section_id], "custom_tables", None) or []
+        if cur_tbls:
+            active_tables_hint = " | Tableaux section : " + ", ".join(
+                f"{t.table_id} (« {t.title} »)" for t in cur_tbls[:6]
+            )
+    proj_imgs_hint = ""
+    if project.images:
+        proj_imgs_hint = " | Images projet : " + ", ".join(
+            f"{img.asset_id} (« {img.title} », sec={img.target_section_id}, approuvée={img.approved})"
+            for img in (project.images or [])[:8]
+        )
 
     mode_hint = (
         "MODE=QUESTION_ONLY: L'utilisateur pose une question ou demande un avis. "
@@ -446,6 +462,13 @@ RÉSOLUTION DES BLOCAGES D'AUDIT CAMES EN 3 NIVEAUX (TRÈS IMPORTANT) :
   - **Niveau 3 (Dérogation explicite et tracée)** : si l'utilisateur demande explicitement de lever l'alerte/valider quand même pour un faux positif persistant, propose `intent='propose_app_action'` avec `action_type='waive_audit_and_validate'` et `action_params_json='{{"section_id": "{active_section_id or ''}", "issue_text": "*", "justification": "...", "also_add_directive": "..."}}'`.
 
 CATALOGUE DES ACTIONS APPLICATIVES DISPONIBLES (`intent='propose_app_action'`) :
+- `draft_section` : rédiger directement une section précise dans son espace de travail (même si ce n'est pas la section ouverte ; l'interface ouvrira cette section après exécution). Params: `{{"section_id": "<id_section_cible>", "instruction": "optionnel"}}`. (Attention : ne jamais proposer `draft_section` sur `cover_page` pour un étudiant.)
+- `generate_section_table` : générer par IA et insérer un tableau dans une section. Params: `{{"section_id": "...", "title": "...", "goal": "...", "anchor_hint": "optionnel"}}`.
+- `upsert_section_table` : créer ou modifier manuellement un tableau (`table_id` existant ou nouveau). Params: `{{"section_id": "...", "table_id": "optionnel", "title": "...", "headers": ["Col1", "Col2"], "rows": [["..."]]}}`.
+- `generate_section_diagram` : générer par IA et insérer une figure / schéma / organigramme vectoriel dans une section. Params: `{{"section_id": "...", "title": "...", "goal": "...", "layout": "vertical|horizontal"}}`.
+- `assign_project_image` : associer, légender ou approuver une image du projet pour une section. Params: `{{"asset_id": "ou title_query", "target_section_id": "...", "approved": true, "caption": "optionnel"}}`.
+- `run_literature_research` : lancer une recherche bibliographique multi-sources (PubMed/EuropePMC/OpenAlex/Web) + segmentation optionnelle. Params: `{{"custom_query": "optionnel", "max_per_source": 4, "include_web_grounding": true, "search_scope": "hybrid_africa", "also_segment": true}}`.
+- `run_global_audit` : lancer l'audit global FMSB/CAMES de cohérence sur tout le protocole. Params: `{{}}`.
 - `add_directive` : enregistrer une directive méthodologique respectée par l'audit et la rédaction. Params: `{{"text": "..."}}`.
 - `waive_audit_and_validate` : lever une remarque d'audit avec justification tracée et valider la section. Params: `{{"section_id": "...", "issue_text": "* ou texte exact", "justification": "...", "also_add_directive": "optionnel"}}`.
 - `run_ai_audit` : relancer l'audit IA CAMES complet de la section. Params: `{{"section_id": "..."}}`.
@@ -477,9 +500,10 @@ CONTEXTE DU PROJET :
 - Idée / Contexte : {project.research_idea or 'Non précisé'}
 - Module actif : {mod_clean}
 - Section active : {active_section_id or 'aucune'} ({sec_ctx['section_title']})
+- Catalogue des sections du protocole : {sections_catalog_lines}
 
 ÉTAT APPLICATIF GLOBAL :
-{sec_ctx['app_state_summary']}
+{sec_ctx['app_state_summary']}{active_tables_hint}{proj_imgs_hint}
 
 ÉTAT D'AUDIT DE LA SECTION ACTIVE :
 {sec_ctx['audit_notes_text'] or '(Aucune section active sélectionnée)'}
@@ -685,6 +709,10 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
                 "fix_section_issues",
                 "humanize_section",
                 "generate_sub_annex",
+                "generate_section_table",
+                "upsert_section_table",
+                "generate_section_diagram",
+                "draft_section",
             )
             and not parsed_params.get("section_id")
         ):

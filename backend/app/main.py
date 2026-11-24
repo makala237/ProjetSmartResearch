@@ -3278,7 +3278,16 @@ def execute_copilot_action_endpoint(
     clean_params = dict(payload.params or {})
     if action_type == "update_cover" or (
         str(clean_params.get("section_id") or "").strip() == "cover_page"
-        and action_type in ("waive_audit_and_validate", "fix_section_issues", "humanize_section")
+        and action_type
+        in (
+            "waive_audit_and_validate",
+            "fix_section_issues",
+            "humanize_section",
+            "draft_section",
+            "generate_section_table",
+            "upsert_section_table",
+            "generate_section_diagram",
+        )
     ):
         assert_cover_admin_only(current_user)
 

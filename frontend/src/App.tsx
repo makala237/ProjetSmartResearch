@@ -1694,6 +1694,10 @@ export default function App() {
             );
           }}
           onNavigateModule={(modKey) => setActiveModule(modKey)}
+          onSelectSection={(secId) => {
+            setActiveModule("module1");
+            setSelectedSectionId(secId);
+          }}
           externalPrompt={copilotExternalPrompt}
           onReplayTour={() => setTourOpenManual(true)}
           onResetTips={() => {
