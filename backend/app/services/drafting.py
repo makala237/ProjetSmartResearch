@@ -749,7 +749,7 @@ def draft_section_with_ai(
 
     cames_block = _format_cames_granularity_block(spec, lang=lang)
     intro_budget_block = _build_intro_shared_budget_block(project, section_id, lang=lang)
-    supervisor_block = format_supervisor_directives_block(project)
+    supervisor_block = format_supervisor_directives_block(project, section_id=section_id)
     lang_directive = get_language_prompt_directive(lang)
     style_instructions = get_human_style_instructions(lang)
 
@@ -842,6 +842,25 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
     )
     orch_trace["word_count_continuation"] = wc_trace
     clean_md = _reconcile_intro_citation_cap(project, section_id, clean_md, max_refs=5)
+    # Internal Supervisor Alignment Gate (only runs when active directives exist for this section)
+    from app.services.supervisor_media import align_text_with_supervisor_directives
+
+    sup_align = align_text_with_supervisor_directives(project, section_id, clean_md)
+    if sup_align.get("adjusted") and (sup_align.get("content_markdown") or "").strip():
+        clean_md = sup_align["content_markdown"]
+    if sup_align.get("summary"):
+        dto.assistant_commentary = (
+            f"{dto.assistant_commentary}\n\n[Alignement encadreur] {sup_align['summary']}"
+            if (dto.assistant_commentary or "").strip()
+            else f"[Alignement encadreur] {sup_align['summary']}"
+        )
+    orch_trace["supervisor_alignment"] = {
+        "directives_checked": sup_align.get("directives_checked", 0),
+        "adjusted": bool(sup_align.get("adjusted", False)),
+        "model_used": sup_align.get("model_used", ""),
+        "summary": sup_align.get("summary", ""),
+    }
+
     # Recompute cited_ref_ids including any citations introduced during continuation passes
     all_cited_nums = _ordered_unique_citations(clean_md)
     cited_ref_ids = list(
@@ -1009,7 +1028,7 @@ def audit_section_with_ai(project: ProtocolProject, section_id: str) -> Dict[str
 
     cames_block = _format_cames_granularity_block(spec, lang=lang)
     lang_directive = get_language_prompt_directive(lang)
-    directives_block = format_supervisor_directives_block(project)
+    directives_block = format_supervisor_directives_block(project, section_id=section_id)
     waivers = list(getattr(sec, "audit_waivers", None) or []) if sec is not None else []
     waivers_block = ""
     if waivers:
@@ -1114,7 +1133,7 @@ def fix_section_issues_with_ai(
 
     cames_block = _format_cames_granularity_block(spec, lang=lang)
     intro_budget_block = _build_intro_shared_budget_block(project, section_id, lang=lang)
-    supervisor_block = format_supervisor_directives_block(project)
+    supervisor_block = format_supervisor_directives_block(project, section_id=section_id)
     lang_directive = get_language_prompt_directive(lang)
     style_instructions = get_human_style_instructions(lang)
 

@@ -279,6 +279,9 @@ export interface SupervisorDirectiveItem {
   directive_id: string;
   text: string;
   source: string;
+  section_id?: string | null;
+  media_filename?: string;
+  timestamp_hint?: string;
   active: boolean;
   created_at: string;
 }

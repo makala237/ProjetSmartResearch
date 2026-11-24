@@ -79,24 +79,41 @@ def restore_section_version(
     return target
 
 
-def format_supervisor_directives_block(project: ProtocolProject) -> str:
-    """Render active project-wide supervisor directives as a top-priority prompt block."""
-    directives = [
-        d for d in (getattr(project, "supervisor_directives", None) or [])
-        if getattr(d, "active", True) and (getattr(d, "text", "") or "").strip()
-    ]
+def format_supervisor_directives_block(
+    project: ProtocolProject,
+    section_id: Optional[str] = None,
+) -> str:
+    """Render active supervisor directives (global + section-scoped) as a top-priority prompt block."""
+    directives = []
+    for d in getattr(project, "supervisor_directives", None) or []:
+        if not getattr(d, "active", True) or not (getattr(d, "text", "") or "").strip():
+            continue
+        d_sec = (getattr(d, "section_id", None) or "").strip()
+        if not d_sec or (section_id and d_sec == section_id):
+            directives.append(d)
     if not directives:
         return ""
     lang = normalize_lang(getattr(project, "language", "fr"))
-    lines = [f"- {d.text.strip()}" for d in directives]
+    lines = []
+    for d in directives:
+        src = (getattr(d, "source", "manual") or "manual").strip().upper()
+        ts = (getattr(d, "timestamp_hint", "") or "").strip()
+        d_sec = (getattr(d, "section_id", None) or "").strip()
+        tag_parts = []
+        if src in ("VIDEO", "AUDIO"):
+            tag_parts.append(f"{src}{(' ' + ts) if ts else ''}")
+        if d_sec:
+            tag_parts.append(f"section:{d_sec}")
+        prefix = f"[{' · '.join(tag_parts)}] " if tag_parts else ""
+        lines.append(f"- {prefix}{d.text.strip()}")
     if lang == "en":
         return (
-            "GLOBAL SUPERVISOR DIRECTIVES (TOP PRIORITY — OVERRIDE GENERIC STYLE DEFAULTS):\n"
+            "SUPERVISOR DIRECTIVES (TOP PRIORITY — OVERRIDE GENERIC STYLE DEFAULTS):\n"
             + "\n".join(lines)
             + "\nApply all active supervisor directives consistently in this section while never inventing fake numbers or citations."
         )
     return (
-        "DIRECTIVES GLOBALES DE L'ENCADREUR (PRIORITÉ ABSOLUE — PRIMENT SUR LES RÈGLES GÉNÉRIQUES) :\n"
+        "DIRECTIVES DE L'ENCADREUR (PRIORITÉ ABSOLUE — PRIMENT SUR LES RÈGLES GÉNÉRIQUES) :\n"
         + "\n".join(lines)
         + "\nApplique rigoureusement ces consignes de l'encadreur dans cette section tout en n'inventant jamais de statistiques ni de références fictives."
     )

@@ -6,6 +6,7 @@ import {
   Compass,
   GitCompareArrows,
   History,
+  Loader2,
   MessageSquare,
   Mic,
   MicOff,
@@ -16,6 +17,8 @@ import {
   Send,
   Sparkles,
   Trash2,
+  Upload,
+  Video,
   Wrench,
   X,
 } from "lucide-react";
@@ -83,6 +86,10 @@ export function AssistantSmartResearchWidget({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [dismissedMsgIds, setDismissedMsgIds] = useState<Record<string, boolean>>({});
   const [newDirective, setNewDirective] = useState("");
+  const [busyMediaUpload, setBusyMediaUpload] = useState(false);
+  const [mediaScopeCurrentSection, setMediaScopeCurrentSection] = useState(true);
+  const [mediaExtractBanner, setMediaExtractBanner] = useState<string | null>(null);
+  const mediaFileInputRef = useRef<HTMLInputElement | null>(null);
   const [activeTextModels, setActiveTextModels] = useState<string[]>(["gemini-3.8-flash"]);
   const [activeVoiceModels, setActiveVoiceModels] = useState<string[]>(["gemini-3.8-live"]);
 
@@ -94,6 +101,45 @@ export function AssistantSmartResearchWidget({
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const lastExternalPromptIdRef = useRef<number>(0);
+
+  async function handleUploadSupervisorMedia(file: File | null) {
+    if (!file) return;
+    if (file.size > 25 * 1024 * 1024) {
+      setErrorMsg(
+        lang === "en"
+          ? "File exceeds 25 MB limit. Please compress or trim the video/audio."
+          : "Le fichier dépasse 25 Mo. Compressez ou découpez la vidéo/l'audio."
+      );
+      return;
+    }
+    setBusyMediaUpload(true);
+    setErrorMsg(null);
+    setMediaExtractBanner(null);
+    try {
+      const scopeSec =
+        mediaScopeCurrentSection && selectedSectionId && selectedSectionId !== "cover_page"
+          ? selectedSectionId
+          : undefined;
+      const res = await api.uploadSupervisorMediaDirectives(
+        project.project_id,
+        file,
+        scopeSec
+      );
+      onProjectUpdate(res.project);
+      setMediaExtractBanner(
+        lang === "en"
+          ? `${res.extraction.created_count} directive(s) extracted from "${res.extraction.filename}": ${res.extraction.summary}`
+          : `${res.extraction.created_count} directive(s) extraite(s) de « ${res.extraction.filename} » : ${res.extraction.summary}`
+      );
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyMediaUpload(false);
+      if (mediaFileInputRef.current) {
+        mediaFileInputRef.current.value = "";
+      }
+    }
+  }
 
   const messages: CopilotMessage[] = (project.copilot_messages ?? []).filter((m) =>
     m.owner_user_id
@@ -1011,6 +1057,69 @@ export function AssistantSmartResearchWidget({
                   : "Les directives de votre directeur enregistrées ici s'appliquent en priorité sur l'ensemble des 5 chapitres."}
               </p>
 
+              {/* Video / Audio Supervisor Feedback Upload */}
+              <div className="mb-3 rounded-xl border border-purple-200 bg-purple-50/70 p-2.5 text-[11px]">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 font-semibold text-purple-950">
+                    <Video className="h-3.5 w-3.5 text-purple-700" />
+                    <span>
+                      {lang === "en"
+                        ? "Import Supervisor Video / Audio (≤ 25 MB)"
+                        : "Importer Vidéo / Audio encadreur (≤ 25 Mo)"}
+                    </span>
+                  </div>
+                  <input
+                    ref={mediaFileInputRef}
+                    type="file"
+                    accept="video/*,audio/*,.mp4,.webm,.mov,.ogg,.mp3,.m4a,.wav"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] ?? null;
+                      void handleUploadSupervisorMedia(f);
+                    }}
+                  />
+                  <button
+                    type="button"
+                    disabled={busyMediaUpload || busyAction}
+                    onClick={() => mediaFileInputRef.current?.click()}
+                    className="inline-flex shrink-0 items-center gap-1 rounded-lg bg-purple-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-purple-800 disabled:opacity-50"
+                  >
+                    {busyMediaUpload ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <Upload className="h-3 w-3" />
+                    )}
+                    <span>
+                      {busyMediaUpload
+                        ? lang === "en"
+                          ? "Analyzing..."
+                          : "Analyse..."
+                        : lang === "en"
+                        ? "Upload"
+                        : "Charger"}
+                    </span>
+                  </button>
+                </div>
+                <label className="mt-1.5 flex items-center gap-1.5 text-[10px] text-purple-900 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={mediaScopeCurrentSection}
+                    onChange={(e) => setMediaScopeCurrentSection(e.target.checked)}
+                    className="rounded border-purple-300 text-purple-700"
+                  />
+                  <span>
+                    {lang === "en"
+                      ? `Prioritize current section (${sectionTitle})`
+                      : `Cibler prioritairement cette section (${sectionTitle})`}
+                  </span>
+                </label>
+                {mediaExtractBanner && (
+                  <div className="mt-2 rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1.5 text-[10px] font-medium text-emerald-900">
+                    {mediaExtractBanner}
+                  </div>
+                )}
+              </div>
+
               <div className="mb-3 flex gap-1.5">
                 <input
                   type="text"
@@ -1068,7 +1177,24 @@ export function AssistantSmartResearchWidget({
                             }
                             className="mt-0.5 rounded border-slate-300 text-[#004A8F]"
                           />
-                          <span className="leading-snug text-slate-800">{dir.text}</span>
+                          <div className="min-w-0 flex-1">
+                            <span className="leading-snug text-slate-800">{dir.text}</span>
+                            {(dir.source === "video" || dir.source === "audio" || dir.section_id) && (
+                              <div className="mt-1 flex flex-wrap items-center gap-1">
+                                {(dir.source === "video" || dir.source === "audio") && (
+                                  <span className="rounded bg-purple-100 px-1.5 py-0.5 text-[9px] font-bold uppercase text-purple-800">
+                                    {dir.source === "video" ? "Vidéo" : "Audio"}
+                                    {dir.timestamp_hint ? ` · ${dir.timestamp_hint}` : ""}
+                                  </span>
+                                )}
+                                {dir.section_id && (
+                                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[9px] font-medium text-slate-600">
+                                    {dir.section_id}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </label>
                         <button
                           type="button"

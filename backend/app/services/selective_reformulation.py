@@ -113,7 +113,7 @@ def smart_reformulate_section(
         else (sec.content_markdown or "")
     ).strip()
 
-    directives_block = format_supervisor_directives_block(project)
+    directives_block = format_supervisor_directives_block(project, section_id=section_id)
     refs_ctx = _format_refs_context(project)
     issues = [i.strip() for i in (audit_issues or []) if i and i.strip()]
     if mode == "audit_fix" and not issues and sec.audit_notes:
@@ -267,6 +267,15 @@ RÉFÉRENCES BIBLIOGRAPHIQUES DU PROJET :
                 if lang != "en"
                 else "Full rewrite proposed for review."
             )
+
+    # Internal Supervisor Alignment Gate before returning final preview
+    from app.services.supervisor_media import align_text_with_supervisor_directives
+
+    sup_align = align_text_with_supervisor_directives(project, section_id, proposed_md)
+    if sup_align.get("adjusted") and (sup_align.get("content_markdown") or "").strip():
+        proposed_md = sup_align["content_markdown"]
+        if sup_align.get("summary"):
+            summary = f"{summary} ({sup_align['summary']})" if summary else sup_align["summary"]
 
     return {
         "section_id": section_id,

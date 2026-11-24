@@ -89,6 +89,7 @@ from app.services.selective_reformulation import (
     smart_reformulate_section,
     transform_selected_text,
 )
+from app.services.supervisor_media import extract_directives_from_media
 from app.services.gemini_client import gemini_router
 from app.schemas.protocol import (
     CoverMetadata,
@@ -3222,6 +3223,55 @@ def add_project_directive(
     project.updated_at = datetime.now(timezone.utc)
     saved = project_storage.save(project)
     return scope_project_copilot_for_user(saved, current_user.id)
+
+
+@app.post("/api/projects/{project_id}/directives/upload-media")
+async def upload_supervisor_media_directives(
+    project_id: str,
+    request: Request,
+    file: UploadFile = File(...),
+    section_id: Optional[str] = Form(default=None),
+    user_note: str = Form(default=""),
+    current_user: UserRecord = Depends(require_module_write("module1")),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Analyze a supervisor's video or audio clip (via `supervisor_media` chain, default gemini-3.5-flash-lite)
+    and save extracted directives into `project.supervisor_directives`."""
+    project = get_authorized_project(project_id, current_user)
+    raw_bytes = await file.read()
+    cost = assert_ai_quota_available(
+        db, current_user, module_key="module1", action="supervisor_media_directives"
+    )
+    try:
+        result = extract_directives_from_media(
+            project=project,
+            file_bytes=raw_bytes,
+            filename=file.filename or "directive_media.mp4",
+            content_type=file.content_type,
+            section_id=(section_id or "").strip() or None,
+            user_note=user_note or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    project.updated_at = datetime.now(timezone.utc)
+    saved = project_storage.save(project)
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module1",
+        action="supervisor_media_directives",
+        credits_cost=cost,
+        project_id=project_id,
+        model_used=str(result.get("model_used") or ""),
+        ip_address=get_client_ip(request),
+    )
+    return {
+        "project": scope_project_copilot_for_user(saved, current_user.id).model_dump(mode="json"),
+        "extraction": result,
+    }
 
 
 @app.patch("/api/projects/{project_id}/directives/{directive_id}", response_model=ProtocolProject)

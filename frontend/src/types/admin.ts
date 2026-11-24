@@ -248,6 +248,7 @@ export interface UserModelRoutingConfig {
   models: ModelRoutingEntry[];
   copilot_text_models?: ModelRoutingEntry[];
   copilot_voice_models?: ModelRoutingEntry[];
+  supervisor_media_models?: ModelRoutingEntry[];
 }
 
 export interface ModelCatalogItemOut {

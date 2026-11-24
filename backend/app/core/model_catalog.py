@@ -284,8 +284,9 @@ def normalize_model_routing_config(raw: Any) -> Optional[Dict[str, Any]]:
     cleaned = _clean_model_entries(raw.get("models"))
     copilot_text = _clean_model_entries(raw.get("copilot_text_models"))
     copilot_voice = _clean_model_entries(raw.get("copilot_voice_models"))
+    supervisor_media = _clean_model_entries(raw.get("supervisor_media_models"))
 
-    if not cleaned and not copilot_text and not copilot_voice:
+    if not cleaned and not copilot_text and not copilot_voice and not supervisor_media:
         return None
 
     out: Dict[str, Any] = {
@@ -296,4 +297,6 @@ def normalize_model_routing_config(raw: Any) -> Optional[Dict[str, Any]]:
         out["copilot_text_models"] = copilot_text
     if copilot_voice:
         out["copilot_voice_models"] = copilot_voice
+    if supervisor_media:
+        out["supervisor_media_models"] = supervisor_media
     return out

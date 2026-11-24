@@ -1455,6 +1455,32 @@ export const api = {
       { method: "DELETE" }
     ),
 
+  uploadSupervisorMediaDirectives: async (
+    projectId: string,
+    file: File,
+    sectionId?: string,
+    userNote?: string
+  ) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    if (sectionId) fd.append("section_id", sectionId);
+    if (userNote) fd.append("user_note", userNote);
+    return request<{
+      project: ProtocolProject;
+      extraction: {
+        media_kind: "video" | "audio";
+        filename: string;
+        summary: string;
+        created_directives: Array<Record<string, unknown>>;
+        created_count: number;
+        model_used: string;
+      };
+    }>(`/api/projects/${encodeURIComponent(projectId)}/directives/upload-media`, {
+      method: "POST",
+      body: fd,
+    });
+  },
+
   updateOnboardingState: (payload: OnboardingStateUpdateRequest) =>
     request<UserMeOut>("/api/auth/me/onboarding", {
       method: "PATCH",

@@ -277,6 +277,7 @@ class UserModelRoutingConfig(BaseModel):
     models: List[ModelRoutingEntry] = Field(default_factory=list)
     copilot_text_models: List[ModelRoutingEntry] = Field(default_factory=list)
     copilot_voice_models: List[ModelRoutingEntry] = Field(default_factory=list)
+    supervisor_media_models: List[ModelRoutingEntry] = Field(default_factory=list)
 
 
 class ModelCatalogItemOut(BaseModel):

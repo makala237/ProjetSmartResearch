@@ -147,6 +147,7 @@ export function ModelRoutingEditor({
   const [selectedToAdd, setSelectedToAdd] = useState("");
   const [selectedCopilotTextToAdd, setSelectedCopilotTextToAdd] = useState("");
   const [selectedCopilotVoiceToAdd, setSelectedCopilotVoiceToAdd] = useState("");
+  const [selectedSupervisorMediaToAdd, setSelectedSupervisorMediaToAdd] = useState("");
   const effectiveCatalog = catalog && catalog.models.length > 0 ? catalog : FALLBACK_CATALOG;
   const modelsCatalog = effectiveCatalog.models;
   const liveModelsCatalog =
@@ -167,13 +168,18 @@ export function ModelRoutingEditor({
 
   const copilotTextModels = value.copilot_text_models ?? [];
   const copilotVoiceModels = value.copilot_voice_models ?? [];
+  const supervisorMediaModels = value.supervisor_media_models ?? [];
   const usedCopilotTextIds = new Set(copilotTextModels.map((m) => m.model.toLowerCase()));
   const usedCopilotVoiceIds = new Set(copilotVoiceModels.map((m) => m.model.toLowerCase()));
+  const usedSupervisorMediaIds = new Set(supervisorMediaModels.map((m) => m.model.toLowerCase()));
   const availableCopilotTextToAdd = modelsCatalog.filter(
     (m) => !usedCopilotTextIds.has(m.id.toLowerCase())
   );
   const availableCopilotVoiceToAdd = liveModelsCatalog.filter(
     (m) => !usedCopilotVoiceIds.has(m.id.toLowerCase())
+  );
+  const availableSupervisorMediaToAdd = modelsCatalog.filter(
+    (m) => !usedSupervisorMediaIds.has(m.id.toLowerCase())
   );
 
   function setEnabled(enabled: boolean) {
@@ -247,8 +253,16 @@ export function ModelRoutingEditor({
     setSelectedToAdd("");
   }
 
+  function getSubChainList(
+    field: "copilot_text_models" | "copilot_voice_models" | "supervisor_media_models"
+  ): ModelRoutingEntry[] {
+    if (field === "copilot_text_models") return copilotTextModels;
+    if (field === "copilot_voice_models") return copilotVoiceModels;
+    return supervisorMediaModels;
+  }
+
   function updateCopilotChain(
-    field: "copilot_text_models" | "copilot_voice_models",
+    field: "copilot_text_models" | "copilot_voice_models" | "supervisor_media_models",
     nextList: ModelRoutingEntry[]
   ) {
     onChange({
@@ -259,12 +273,12 @@ export function ModelRoutingEditor({
   }
 
   function addCopilotModel(
-    field: "copilot_text_models" | "copilot_voice_models",
+    field: "copilot_text_models" | "copilot_voice_models" | "supervisor_media_models",
     modelId: string
   ) {
     if (!modelId) return;
     const meta = catalogById.get(modelId.toLowerCase());
-    const current = field === "copilot_text_models" ? copilotTextModels : copilotVoiceModels;
+    const current = getSubChainList(field);
     const entry: ModelRoutingEntry = {
       model: modelId,
       max_rpd: meta ? meta.free_tier_rpd : 20,
@@ -273,17 +287,19 @@ export function ModelRoutingEditor({
     updateCopilotChain(field, [...current, entry]);
     if (field === "copilot_text_models") {
       setSelectedCopilotTextToAdd("");
-    } else {
+    } else if (field === "copilot_voice_models") {
       setSelectedCopilotVoiceToAdd("");
+    } else {
+      setSelectedSupervisorMediaToAdd("");
     }
   }
 
   function moveCopilotEntry(
-    field: "copilot_text_models" | "copilot_voice_models",
+    field: "copilot_text_models" | "copilot_voice_models" | "supervisor_media_models",
     idx: number,
     delta: -1 | 1
   ) {
-    const current = field === "copilot_text_models" ? copilotTextModels : copilotVoiceModels;
+    const current = getSubChainList(field);
     const target = idx + delta;
     if (target < 0 || target >= current.length) return;
     const next = [...current];
@@ -293,10 +309,10 @@ export function ModelRoutingEditor({
   }
 
   function removeCopilotEntry(
-    field: "copilot_text_models" | "copilot_voice_models",
+    field: "copilot_text_models" | "copilot_voice_models" | "supervisor_media_models",
     idx: number
   ) {
-    const current = field === "copilot_text_models" ? copilotTextModels : copilotVoiceModels;
+    const current = getSubChainList(field);
     updateCopilotChain(
       field,
       current.filter((_, i) => i !== idx)
@@ -732,6 +748,88 @@ export function ModelRoutingEditor({
                       addCopilotModel("copilot_voice_models", selectedCopilotVoiceToAdd)
                     }
                     className="rounded bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-40"
+                  >
+                    Ajouter
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Directives Vidéo / Audio & Alignement Encadreur */}
+            <div className="space-y-2 border-t border-slate-100 pt-2">
+              <div className="flex flex-wrap items-center justify-between gap-1 text-[11px]">
+                <span className="font-semibold text-slate-800">
+                  Directives Vidéo / Audio & Alignement encadreur
+                </span>
+                <span className="text-[10px] text-slate-500">
+                  Défaut : <code>gemini-3.5-flash-lite</code> → <code>3.1-flash-lite</code>
+                </span>
+              </div>
+              {supervisorMediaModels.length > 0 && (
+                <div className="space-y-1">
+                  {supervisorMediaModels.map((entry, idx) => (
+                    <div
+                      key={entry.model}
+                      className="flex items-center justify-between gap-2 rounded border border-purple-200 bg-purple-50/40 px-2 py-1 text-[11px]"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="rounded bg-purple-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
+                          {idx + 1}
+                        </span>
+                        <span className="font-mono font-semibold text-slate-900">
+                          {entry.model}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          disabled={idx === 0}
+                          onClick={() => moveCopilotEntry("supervisor_media_models", idx, -1)}
+                          className="rounded border border-slate-200 bg-white p-0.5 text-slate-600 disabled:opacity-30"
+                        >
+                          <ArrowUp className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={idx === supervisorMediaModels.length - 1}
+                          onClick={() => moveCopilotEntry("supervisor_media_models", idx, 1)}
+                          className="rounded border border-slate-200 bg-white p-0.5 text-slate-600 disabled:opacity-30"
+                        >
+                          <ArrowDown className="h-3 w-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeCopilotEntry("supervisor_media_models", idx)}
+                          className="rounded border border-rose-200 bg-white p-0.5 text-rose-600"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {availableSupervisorMediaToAdd.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <select
+                    value={selectedSupervisorMediaToAdd}
+                    onChange={(e) => setSelectedSupervisorMediaToAdd(e.target.value)}
+                    className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                  >
+                    <option value="">+ Choisir un modèle Vidéo/Audio & Alignement...</option>
+                    {availableSupervisorMediaToAdd.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.label} ({m.id})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    disabled={!selectedSupervisorMediaToAdd}
+                    onClick={() =>
+                      addCopilotModel("supervisor_media_models", selectedSupervisorMediaToAdd)
+                    }
+                    className="rounded bg-purple-600 px-2 py-1 text-[11px] font-semibold text-white disabled:opacity-40"
                   >
                     Ajouter
                   </button>

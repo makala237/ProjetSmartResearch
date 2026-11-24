@@ -264,12 +264,16 @@ export function AdminPortal({
               copilot_voice_models: (
                 det.user.model_routing_config.copilot_voice_models ?? []
               ).map((m) => ({ ...m })),
+              supervisor_media_models: (
+                det.user.model_routing_config.supervisor_media_models ?? []
+              ).map((m) => ({ ...m })),
             }
           : {
               enabled: false,
               models: [],
               copilot_text_models: [],
               copilot_voice_models: [],
+              supervisor_media_models: [],
             }
       );
       if (det.project_cover) {
@@ -418,11 +422,12 @@ export function AdminPortal({
       const hasAnyChain =
         drawerModelRouting.models.length > 0 ||
         (drawerModelRouting.copilot_text_models?.length ?? 0) > 0 ||
-        (drawerModelRouting.copilot_voice_models?.length ?? 0) > 0;
+        (drawerModelRouting.copilot_voice_models?.length ?? 0) > 0 ||
+        (drawerModelRouting.supervisor_media_models?.length ?? 0) > 0;
       const payloadCfg: UserModelRoutingConfig =
         drawerModelRouting.enabled && hasAnyChain
           ? drawerModelRouting
-          : { enabled: false, models: [], copilot_text_models: [], copilot_voice_models: [] };
+          : { enabled: false, models: [], copilot_text_models: [], copilot_voice_models: [], supervisor_media_models: [] };
       await api.adminUpdateUser(userId, { model_routing_config: payloadCfg });
       setNotice(
         payloadCfg.enabled
@@ -494,7 +499,8 @@ export function AdminPortal({
           newUserModelRouting.enabled &&
           (newUserModelRouting.models.length > 0 ||
             (newUserModelRouting.copilot_text_models?.length ?? 0) > 0 ||
-            (newUserModelRouting.copilot_voice_models?.length ?? 0) > 0)
+            (newUserModelRouting.copilot_voice_models?.length ?? 0) > 0 ||
+            (newUserModelRouting.supervisor_media_models?.length ?? 0) > 0)
             ? newUserModelRouting
             : undefined,
       });

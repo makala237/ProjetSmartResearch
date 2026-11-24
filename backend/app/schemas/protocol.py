@@ -386,7 +386,10 @@ class SectionVersionEntry(BaseModel):
 class SupervisorDirectiveItem(BaseModel):
     directive_id: str = Field(default_factory=lambda: str(uuid4())[:10])
     text: str
-    source: str = "manual"
+    source: str = "manual"  # "manual" | "video" | "audio" | "copilot"
+    section_id: Optional[str] = None  # None = global protocol directive; else scoped to a specific section
+    media_filename: str = ""
+    timestamp_hint: str = ""
     active: bool = True
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

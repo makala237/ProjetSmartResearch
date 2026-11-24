@@ -77,6 +77,7 @@ def set_ai_routing_policy(
     custom_chain_skipped: Optional[List[Dict[str, Any]]] = None,
     copilot_text_chain: Optional[List[str]] = None,
     copilot_voice_chain: Optional[List[str]] = None,
+    supervisor_media_chain: Optional[List[str]] = None,
 ) -> None:
     """Bind per-request Gemini reasoning routing policy, custom ordered chain, and assigned API key."""
     _ai_routing_policy.set(
@@ -92,6 +93,7 @@ def set_ai_routing_policy(
             "custom_chain_skipped": list(custom_chain_skipped or []),
             "copilot_text_chain": [str(m).strip() for m in (copilot_text_chain or []) if str(m).strip()],
             "copilot_voice_chain": [str(m).strip() for m in (copilot_voice_chain or []) if str(m).strip()],
+            "supervisor_media_chain": [str(m).strip() for m in (supervisor_media_chain or []) if str(m).strip()],
         }
     )
 
@@ -213,9 +215,22 @@ class GeminiRouter:
                 "gemini-3.5-flash-lite",
                 "gemini-3.1-flash-lite",
             ]
+        elif role == "supervisor_media":
+            candidates = [
+                "gemini-3.5-flash-lite",
+                "gemini-3.1-flash-lite",
+                "gemini-3.5-flash",
+            ]
         else:
             candidates = list(chains.get(role, chains["drafting"]))
         policy = get_ai_routing_policy()
+
+        if role == "supervisor_media" and policy.get("supervisor_media_chain"):
+            resolved = list(policy["supervisor_media_chain"])
+            cap_active = bool(policy.get("custom_chain_skipped"))
+            healthy = [m for m in resolved if not self._is_model_in_cooldown(m)]
+            cooled = [m for m in resolved if self._is_model_in_cooldown(m)]
+            return healthy + cooled, cap_active
 
         if role == "copilot_text" and policy.get("copilot_text_chain"):
             resolved = list(policy["copilot_text_chain"])

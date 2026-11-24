@@ -279,20 +279,33 @@ def assert_ai_quota_available(
     eff_key_id, eff_raw_key = resolve_user_gemini_api_key(store, user)
     custom_chain = resolve_user_model_chain(store, user)
 
+    is_sup_media_action = action in ("supervisor_media_directives", "supervisor_align")
     active_override_models = (
-        custom_chain["copilot_text_models"]
-        if (action == "copilot_chat" and custom_chain.get("has_copilot_text_chain"))
-        else custom_chain["eligible_models"]
+        custom_chain["supervisor_media_models"]
+        if (is_sup_media_action and custom_chain.get("has_supervisor_media_chain"))
+        else (
+            custom_chain["copilot_text_models"]
+            if (action == "copilot_chat" and custom_chain.get("has_copilot_text_chain"))
+            else custom_chain["eligible_models"]
+        )
     )
     has_active_override = (
-        custom_chain.get("has_copilot_text_chain")
-        if (action == "copilot_chat" and custom_chain.get("has_copilot_text_chain"))
-        else custom_chain.get("has_main_chain")
+        custom_chain.get("has_supervisor_media_chain")
+        if (is_sup_media_action and custom_chain.get("has_supervisor_media_chain"))
+        else (
+            custom_chain.get("has_copilot_text_chain")
+            if (action == "copilot_chat" and custom_chain.get("has_copilot_text_chain"))
+            else custom_chain.get("has_main_chain")
+        )
     )
     skipped_items = (
-        custom_chain.get("copilot_text_skipped", [])
-        if (action == "copilot_chat" and custom_chain.get("has_copilot_text_chain"))
-        else custom_chain["skipped"]
+        custom_chain.get("supervisor_media_skipped", [])
+        if (is_sup_media_action and custom_chain.get("has_supervisor_media_chain"))
+        else (
+            custom_chain.get("copilot_text_skipped", [])
+            if (action == "copilot_chat" and custom_chain.get("has_copilot_text_chain"))
+            else custom_chain["skipped"]
+        )
     )
 
     if custom_chain["enabled"] and has_active_override and not active_override_models:
@@ -336,6 +349,7 @@ def assert_ai_quota_available(
         custom_chain_skipped=custom_chain["skipped"],
         copilot_text_chain=custom_chain.get("copilot_text_models", []),
         copilot_voice_chain=custom_chain.get("copilot_voice_models", []),
+        supervisor_media_chain=custom_chain.get("supervisor_media_models", []),
     )
     return max(0, cost)
 
@@ -388,11 +402,14 @@ def resolve_user_model_chain(store: Any, user: Any) -> Dict[str, Any]:
             "enabled": False,
             "has_main_chain": False,
             "has_copilot_text_chain": False,
+            "has_supervisor_media_chain": False,
             "eligible_models": [],
             "skipped": [],
             "copilot_text_models": [],
             "copilot_text_skipped": [],
             "copilot_voice_models": [],
+            "supervisor_media_models": [],
+            "supervisor_media_skipped": [],
             "usage_by_model": {},
         }
 
@@ -404,6 +421,7 @@ def resolve_user_model_chain(store: Any, user: Any) -> Dict[str, Any]:
     main_entries = list(cfg.get("models") or [])
     text_entries = list(cfg.get("copilot_text_models") or [])
     voice_entries = list(cfg.get("copilot_voice_models") or [])
+    sup_media_entries = list(cfg.get("supervisor_media_models") or [])
 
     eligible, skipped = _evaluate_model_entries_against_usage(main_entries, usage_by_model)
     copilot_text_eligible, copilot_text_skipped = _evaluate_model_entries_against_usage(
@@ -412,16 +430,22 @@ def resolve_user_model_chain(store: Any, user: Any) -> Dict[str, Any]:
     copilot_voice_eligible, _ = _evaluate_model_entries_against_usage(
         voice_entries, usage_by_model
     )
+    sup_media_eligible, sup_media_skipped = _evaluate_model_entries_against_usage(
+        sup_media_entries, usage_by_model
+    )
 
     return {
         "enabled": True,
         "has_main_chain": bool(main_entries),
         "has_copilot_text_chain": bool(text_entries),
+        "has_supervisor_media_chain": bool(sup_media_entries),
         "eligible_models": eligible,
         "skipped": skipped,
         "copilot_text_models": copilot_text_eligible,
         "copilot_text_skipped": copilot_text_skipped,
         "copilot_voice_models": copilot_voice_eligible,
+        "supervisor_media_models": sup_media_eligible,
+        "supervisor_media_skipped": sup_media_skipped,
         "usage_by_model": usage_by_model,
     }
 
