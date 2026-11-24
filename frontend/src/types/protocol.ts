@@ -302,6 +302,7 @@ export interface CopilotMessage {
   suggested_directive?: string | null;
   restore_version_id?: string | null;
   target_module?: string | null;
+  tools_used?: string[];
   created_at: string;
 }
 

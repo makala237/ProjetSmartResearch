@@ -127,12 +127,29 @@ class CopilotTurnOutput(BaseModel):
         default=None,
         description="One of module1 | module2 | module3 | module4 ONLY when intent=='navigate_module'.",
     )
+    tool_call: str = Field(
+        default="none",
+        description="Optional internal tool to execute: none | inspect_internal_library | draft_compare_and_merge | run_section_audit | search_protocol_versions",
+    )
+    tool_query: str = Field(
+        default="",
+        description="Optional search query or drafting instruction for tool_call.",
+    )
 
 
 _VALID_INTENTS = frozenset(
     {"answer", "propose_edit", "suggest_directive", "restore_version", "navigate_module"}
 )
 _VALID_MODULES = frozenset({"module1", "module2", "module3", "module4"})
+_VALID_TOOLS = frozenset(
+    {
+        "none",
+        "inspect_internal_library",
+        "draft_compare_and_merge",
+        "run_section_audit",
+        "search_protocol_versions",
+    }
+)
 
 
 def _build_section_context(
@@ -244,11 +261,18 @@ Langue de réponse attendue : {"English" if lang == "en" else "Français"}.
 MISSION & GARDE-FOUS NON DESTRUCTIFS :
 - {mode_hint}
 - Si l'utilisateur pose une QUESTION (ex: d'où vient une définition, quelle source a été utilisée, explication d'une méthode ou d'un bouton de l'application, critique méthodologique) → intent='answer', proposed_markdown=null. NE RÉÉCRIS JAMAIS la section pour une question !
-- Si l'utilisateur demande d'améliorer, comparer, fusionner, reformuler ou compléter la section active → intent='propose_edit' et rédige une proposition complète et soignée dans proposed_markdown (en préservant les définitions/passages existants de qualité et en respectant les directives de l'encadreur). L'utilisateur décidera ensuite s'il clique sur « Appliquer ».
+- Si l'utilisateur demande d'améliorer, comparer, fusionner, reformuler ou compléter la section active → intent='propose_edit' et rédige une proposition complète et soignée dans proposed_markdown (ou déclenche l'outil interne `draft_compare_and_merge`). L'utilisateur décidera ensuite s'il clique sur « Appliquer ».
 - Si l'utilisateur formule une consigne générale de son directeur/encadreur à appliquer sur tout le protocole → intent='suggest_directive' et fournis la consigne formulée clairement dans suggested_directive.
-- Si l'utilisateur demande de retrouver ou restaurer une ancienne version ou un passage supprimé → identifie le version_id le plus pertinent dans VERSIONS RÉCENTES DE LA SECTION, mets intent='restore_version' et restore_version_id='<id>'.
+- Si l'utilisateur demande de retrouver ou restaurer une ancienne version ou un passage supprimé → déclenche `search_protocol_versions` ou identifie le version_id dans VERSIONS RÉCENTES, mets intent='restore_version' et restore_version_id='<id>'.
 - Si l'utilisateur demande à ouvrir un autre module (module1=Rédaction & Recherche, module2=Édition Word/PDF, module3=Masque de saisie & Kobo, module4=Diaporama Soutenance PPTX) → intent='navigate_module' et target_module='<moduleX>'.
 - Règle stricte anti-hallucination : n'invente jamais une source, un auteur ou un chiffre absent du contexte ci-dessous.
+
+OUTILS INTERNES ORCHESTRABLES (`tool_call`) :
+- `none` : réponse directe suffisante avec le contexte ci-dessous.
+- `inspect_internal_library` : recherche approfondie dans la bibliothèque interne multi-sections, les documents importés et la bibliographie complète (utilise `tool_query`).
+- `run_section_audit` : exécute l'audit déterministe CAMES/FMSB (volume de mots, citations, alertes de cohérence) sur la section active sans la modifier.
+- `search_protocol_versions` : fouille toutes les versions archivées de la section active pour retrouver un passage ou terme précis (utilise `tool_query`).
+- `draft_compare_and_merge` : lance le rédacteur scientifique en arrière-plan sur une copie isolée, compare sa nouvelle génération avec le texte actuel, garde le meilleur des deux et retourne une proposition fusionnée sans écraser la section (uniquement pour une demande de rédaction/amélioration/comparaison, jamais pour une simple question).
 
 CONTEXTE DU PROJET :
 - Titre : {project.cover.title or project.name}
@@ -303,17 +327,114 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
     if mode == "question":
         intent = "answer"
 
+    reply_text = (dto.reply or "").strip()
+    proposal_markdown = (dto.proposed_markdown or "").strip()
+    edit_summary = (dto.edit_summary or "").strip()
+    restore_vid: Optional[str] = None
+    tools_used: List[str] = []
+
+    tool_name = (getattr(dto, "tool_call", "none") or "none").strip().lower()
+    tool_q = (getattr(dto, "tool_query", "") or "").strip() or clean_msg
+    if tool_name not in _VALID_TOOLS:
+        tool_name = "none"
+    if mode == "question" and tool_name == "draft_compare_and_merge":
+        tool_name = "none"
+
+    if tool_name != "none":
+        try:
+            from app.services.copilot_tools import (
+                tool_draft_compare_and_merge,
+                tool_inspect_internal_library,
+                tool_run_section_audit,
+                tool_search_protocol_versions,
+            )
+
+            if tool_name == "inspect_internal_library":
+                t_res = tool_inspect_internal_library(
+                    project, query=tool_q, active_section_id=active_section_id
+                )
+                tools_used.append("inspect_internal_library")
+                synth_prompt = (
+                    f"Demande étudiant : {clean_msg}\n"
+                    f"Résultats de l'outil Bibliothèque Interne :\n{t_res['summary_text']}\n\n"
+                    f"Réponds en {'English' if lang == 'en' else 'Français'} de façon claire, pédagogique et fidèle à ces extraits sans rien modifier."
+                )
+                try:
+                    s_res = gemini_router.generate_with_fallback(
+                        role="copilot_text", contents=synth_prompt
+                    )
+                    if str(s_res.get("text") or "").strip():
+                        reply_text = str(s_res["text"]).strip()
+                        model_used = str(s_res.get("model_used") or model_used)
+                except Exception:
+                    reply_text = f"{reply_text}\n\n{t_res['summary_text']}".strip()
+
+            elif tool_name == "run_section_audit":
+                t_res = tool_run_section_audit(
+                    project, active_section_id=active_section_id
+                )
+                tools_used.append("run_section_audit")
+                synth_prompt = (
+                    f"Demande étudiant : {clean_msg}\n"
+                    f"Résultats de l'outil Audit CAMES/FMSB (lecture seule) :\n{t_res['summary_text']}\n\n"
+                    f"Explique clairement à l'étudiant en {'English' if lang == 'en' else 'Français'} ce qui est conforme et ce qui reste à corriger."
+                )
+                try:
+                    s_res = gemini_router.generate_with_fallback(
+                        role="copilot_text", contents=synth_prompt
+                    )
+                    if str(s_res.get("text") or "").strip():
+                        reply_text = str(s_res["text"]).strip()
+                        model_used = str(s_res.get("model_used") or model_used)
+                except Exception:
+                    reply_text = f"{reply_text}\n\n{t_res['summary_text']}".strip()
+
+            elif tool_name == "search_protocol_versions" and active_section_id:
+                t_res = tool_search_protocol_versions(
+                    project, active_section_id=active_section_id, query=tool_q
+                )
+                tools_used.append("search_protocol_versions")
+                best_vid = t_res.get("best_version_id")
+                if best_vid:
+                    restore_vid = str(best_vid)
+                    if mode != "edit":
+                        intent = "restore_version"
+                    if restore_vid not in reply_text:
+                        reply_text = (
+                            f"{reply_text}\n\nVersions correspondantes :\n{t_res['summary_text']}"
+                        ).strip()
+
+            elif (
+                tool_name == "draft_compare_and_merge"
+                and active_section_id
+                and active_section_id in project.sections
+            ):
+                t_res = tool_draft_compare_and_merge(
+                    project, section_id=active_section_id, instruction=tool_q
+                )
+                tools_used.append("draft_compare_and_merge")
+                if (t_res.get("proposed_markdown") or "").strip():
+                    proposal_markdown = t_res["proposed_markdown"].strip()
+                    edit_summary = t_res.get("summary") or edit_summary
+                    intent = "propose_edit"
+                    if t_res.get("model_used"):
+                        model_used = str(t_res["model_used"])
+                    if edit_summary and edit_summary not in reply_text:
+                        reply_text = f"{reply_text}\n\n{edit_summary}".strip()
+        except Exception:
+            pass
+
     proposal_obj: Optional[CopilotProposal] = None
     if (
         intent == "propose_edit"
         and active_section_id
         and active_section_id in project.sections
-        and (dto.proposed_markdown or "").strip()
+        and proposal_markdown
     ):
         proposal_obj = CopilotProposal(
             section_id=active_section_id,
-            proposed_markdown=dto.proposed_markdown.strip(),
-            summary=(dto.edit_summary or "").strip(),
+            proposed_markdown=proposal_markdown,
+            summary=edit_summary,
             applied=False,
         )
     elif intent == "propose_edit":
@@ -325,8 +446,12 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
         else None
     )
 
-    restore_vid: Optional[str] = None
-    if intent == "restore_version" and active_section_id and active_section_id in project.sections:
+    if (
+        not restore_vid
+        and intent == "restore_version"
+        and active_section_id
+        and active_section_id in project.sections
+    ):
         valid_vids = {v.version_id for v in project.sections[active_section_id].versions}
         cand_vid = (dto.restore_version_id or "").strip()
         if cand_vid in valid_vids:
@@ -347,7 +472,7 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
     )
     assistant_msg = CopilotMessage(
         role="assistant",
-        content=(dto.reply or "").strip(),
+        content=reply_text,
         intent=intent,
         model_used=model_used,
         active_module=mod_clean,
@@ -356,6 +481,7 @@ DEMANDE ACTUELLE DE L'UTILISATEUR :
         suggested_directive=suggested_dir,
         restore_version_id=restore_vid,
         target_module=target_mod,
+        tools_used=tools_used,
     )
 
     project.copilot_messages.extend([user_msg, assistant_msg])

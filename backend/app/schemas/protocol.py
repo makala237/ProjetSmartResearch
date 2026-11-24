@@ -410,6 +410,7 @@ class CopilotMessage(BaseModel):
     suggested_directive: Optional[str] = None
     restore_version_id: Optional[str] = None
     target_module: Optional[str] = None
+    tools_used: List[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 

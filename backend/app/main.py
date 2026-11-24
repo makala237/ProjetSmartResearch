@@ -6,7 +6,18 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
-from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import (
+    Body,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -52,12 +63,14 @@ from app.services.licensing_service import (
     record_usage_and_debit,
     resolve_user_model_chain,
 )
+from app.services.copilot_live import handle_copilot_live_websocket
 from app.services.copilot_service import (
     format_supervisor_directives_block,
     restore_section_version,
     run_copilot_chat,
     snapshot_section_version,
 )
+from app.services.copilot_tools import tool_draft_compare_and_merge
 from app.services.gemini_client import gemini_router
 from app.schemas.protocol import (
     CoverMetadata,
@@ -3201,6 +3214,169 @@ def clear_copilot_messages_endpoint(
     project.copilot_messages = []
     project.updated_at = datetime.now(timezone.utc)
     return project_storage.save(project)
+
+
+class CopilotCompareMergeRequest(BaseModel):
+    section_id: str
+    instruction: str = ""
+
+
+@app.post("/api/projects/{project_id}/copilot/compare-merge")
+def copilot_compare_merge_endpoint(
+    project_id: str,
+    payload: CopilotCompareMergeRequest,
+    request: Request,
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    project = get_authorized_project(project_id, current_user)
+    if payload.section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section introuvable.")
+
+    cost = assert_ai_quota_available(
+        db,
+        current_user,
+        module_key="module1",
+        action="copilot_chat",
+        credits_cost=2,
+    )
+    t_res = tool_draft_compare_and_merge(
+        project,
+        section_id=payload.section_id,
+        instruction=payload.instruction,
+    )
+    from app.schemas.protocol import CopilotMessage, CopilotProposal
+
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    reply_txt = (
+        f"Background comparison completed ({t_res['original_word_count']} -> {t_res['merged_word_count']} words). Review and apply if you approve.\n\n{t_res['summary']}"
+        if lang == "en"
+        else f"Comparaison & fusion effectuée en arrière-plan ({t_res['original_word_count']} → {t_res['merged_word_count']} mots) sans toucher votre texte actuel.\n\n{t_res['summary']}"
+    )
+    user_msg = CopilotMessage(
+        role="user",
+        content=(
+            payload.instruction.strip()
+            or (
+                "Compare background generation with my current text and keep the best"
+                if lang == "en"
+                else "Comparer une nouvelle génération en coulisses avec mon texte actuel et garder le meilleur"
+            )
+        ),
+        intent="edit",
+        active_module="module1",
+        active_section_id=payload.section_id,
+    )
+    assistant_msg = CopilotMessage(
+        role="assistant",
+        content=reply_txt,
+        intent="propose_edit",
+        model_used=str(t_res.get("model_used") or ""),
+        active_module="module1",
+        active_section_id=payload.section_id,
+        proposal=CopilotProposal(
+            section_id=payload.section_id,
+            proposed_markdown=t_res["proposed_markdown"],
+            summary=t_res["summary"],
+            applied=False,
+        ),
+        tools_used=["draft_compare_and_merge"],
+    )
+    project.copilot_messages.extend([user_msg, assistant_msg])
+    if len(project.copilot_messages) > 40:
+        project.copilot_messages = project.copilot_messages[-40:]
+    project.updated_at = datetime.now(timezone.utc)
+    saved = project_storage.save(project)
+
+    record_usage_and_debit(
+        db=db,
+        user=current_user,
+        module_key="module1",
+        action="copilot_chat",
+        credits_cost=cost,
+        project_id=project_id,
+        model_used=str(t_res.get("model_used") or ""),
+        ip_address=get_client_ip(request),
+    )
+    chain = resolve_user_model_chain(as_store(db), current_user) if False else None
+    _ = chain
+    text_models, _ = gemini_router._resolve_candidates("copilot_text")
+    voice_models = gemini_router.resolve_copilot_voice_models()
+    return {
+        "assistant_message": assistant_msg.model_dump(mode="json"),
+        "project": saved.model_dump(mode="json"),
+        "model_used": str(t_res.get("model_used") or ""),
+        "active_text_models": text_models,
+        "active_voice_models": voice_models,
+    }
+
+
+@app.websocket("/api/projects/{project_id}/copilot/live")
+async def copilot_live_websocket_endpoint(
+    websocket: WebSocket,
+    project_id: str,
+    access_token: str = "",
+    active_module: str = "module1",
+    active_section_id: Optional[str] = None,
+    db: Any = Depends(get_db),
+) -> None:
+    await websocket.accept()
+    token = (access_token or "").strip()
+    if not token:
+        await websocket.send_json({"type": "error", "message": "Authentification requise."})
+        await websocket.close(code=1008)
+        return
+
+    try:
+        from app.services.auth_service import verify_session_token
+
+        user = verify_session_token(db, token, expected_type="access")
+        if user.must_change_password:
+            await websocket.send_json({"type": "error", "message": "Changement de mot de passe requis."})
+            await websocket.close(code=1008)
+            return
+        project = get_authorized_project(project_id, user)
+        cost = assert_ai_quota_available(
+            db,
+            user,
+            module_key="module1",
+            action="copilot_chat",
+            credits_cost=1,
+        )
+        record_usage_and_debit(
+            db=db,
+            user=user,
+            module_key="module1",
+            action="copilot_chat",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used="gemini-3.8-live",
+            ip_address="",
+        )
+    except HTTPException as exc:
+        detail_msg = (
+            exc.detail.get("message")
+            if isinstance(exc.detail, dict)
+            else str(exc.detail or "Accès refusé.")
+        )
+        await websocket.send_json({"type": "error", "message": detail_msg})
+        await websocket.close(code=1008)
+        return
+    except WebSocketDisconnect:
+        return
+    except Exception as exc:
+        await websocket.send_json({"type": "error", "message": str(exc)})
+        await websocket.close(code=1011)
+        return
+
+    await handle_copilot_live_websocket(
+        websocket=websocket,
+        project=project,
+        user=user,
+        db=db,
+        active_module=active_module,
+        active_section_id=active_section_id,
+    )
 
 
 app.include_router(admin_router)

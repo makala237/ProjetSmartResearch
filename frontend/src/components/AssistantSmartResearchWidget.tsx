@@ -3,17 +3,22 @@ import {
   ArrowRight,
   BookmarkCheck,
   Compass,
+  GitCompareArrows,
   History,
   MessageSquare,
   Mic,
+  MicOff,
+  MonitorUp,
   Plus,
   RotateCcw,
   Send,
   Sparkles,
   Trash2,
+  Wrench,
   X,
 } from "lucide-react";
 import { api } from "../api/client";
+import { useCopilotLiveSession } from "../hooks/useCopilotLiveSession";
 import type { ModuleKey } from "../types/auth";
 import type {
   CopilotMessage,
@@ -75,6 +80,12 @@ export function AssistantSmartResearchWidget({
   const [activeTextModels, setActiveTextModels] = useState<string[]>(["gemini-3.8-flash"]);
   const [activeVoiceModels, setActiveVoiceModels] = useState<string[]>(["gemini-3.8-live"]);
 
+  const live = useCopilotLiveSession(
+    project.project_id,
+    activeModule,
+    selectedSectionId
+  );
+
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const lastExternalPromptIdRef = useRef<number>(0);
 
@@ -83,6 +94,17 @@ export function AssistantSmartResearchWidget({
   const activeDirectivesCount = directives.filter((d) => d.active).length;
   const activeSection = project.sections?.[selectedSectionId];
   const sectionVersions: SectionVersionEntry[] = [...(activeSection?.versions ?? [])].reverse();
+  const canCompareSection = Boolean(
+    selectedSectionId &&
+      project.sections?.[selectedSectionId] &&
+      selectedSectionId !== "cover_page"
+  );
+
+  useEffect(() => {
+    if (live.status === "connected") {
+      live.updateLiveContext(activeModule, selectedSectionId);
+    }
+  }, [activeModule, selectedSectionId, live.status, live.updateLiveContext]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -106,7 +128,7 @@ export function AssistantSmartResearchWidget({
     if (isOpen && activeTab === "chat") {
       messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [isOpen, activeTab, messages.length]);
+  }, [isOpen, activeTab, messages.length, live.liveTranscripts.length]);
 
   const handleSendMessage = useCallback(
     async (overrideText?: string, overrideMode?: "auto" | "question" | "edit") => {
@@ -143,6 +165,26 @@ export function AssistantSmartResearchWidget({
     setActiveTab("chat");
     handleSendMessage(externalPrompt.text, "question");
   }, [externalPrompt, handleSendMessage]);
+
+  async function handleCompareMerge() {
+    if (!canCompareSection || busyChat || busyAction) return;
+    setErrorMsg(null);
+    setBusyChat(true);
+    try {
+      const res = await api.copilotCompareMerge(project.project_id, {
+        section_id: selectedSectionId,
+        instruction: inputText.trim() || undefined,
+      });
+      setInputText("");
+      if (res.active_text_models?.length) setActiveTextModels(res.active_text_models);
+      if (res.active_voice_models?.length) setActiveVoiceModels(res.active_voice_models);
+      onProjectUpdate(res.project);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyChat(false);
+    }
+  }
 
   async function handleApplyProposal(msg: CopilotMessage) {
     if (!msg.proposal || busyAction) return;
@@ -422,6 +464,85 @@ export function AssistantSmartResearchWidget({
             </div>
           )}
 
+          {(live.status !== "idle" || live.liveError) && (
+            <div className="border-b border-emerald-200 bg-emerald-50/80 px-3 py-2 text-[11px]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 font-semibold text-emerald-900">
+                  <span
+                    className={`h-2 w-2 rounded-full ${
+                      live.status === "connected"
+                        ? "animate-pulse bg-emerald-500"
+                        : live.status === "connecting"
+                        ? "animate-pulse bg-amber-500"
+                        : "bg-rose-500"
+                    }`}
+                  />
+                  <span>
+                    {live.status === "connected"
+                      ? `Live · ${live.activeLiveModel}`
+                      : live.status === "connecting"
+                      ? lang === "en"
+                        ? "Connecting voice..."
+                        : "Connexion vocale..."
+                      : lang === "en"
+                      ? "Voice disconnected"
+                      : "Voix déconnectée"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {live.status === "connected" && (
+                    <button
+                      type="button"
+                      onClick={live.toggleScreenShare}
+                      className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-semibold transition ${
+                        live.screenSharing
+                          ? "border-indigo-400 bg-indigo-600 text-white"
+                          : "border-slate-300 bg-white text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      <MonitorUp className="h-3 w-3" />
+                      <span>
+                        {live.screenSharing
+                          ? lang === "en"
+                            ? "Stop screen"
+                            : "Arrêter écran"
+                          : lang === "en"
+                          ? "Share screen"
+                          : "Partager écran"}
+                      </span>
+                    </button>
+                  )}
+                  {(live.status === "connected" || live.status === "connecting") && (
+                    <button
+                      type="button"
+                      onClick={live.stopLive}
+                      className="rounded-md bg-rose-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-rose-700"
+                    >
+                      {lang === "en" ? "End" : "Couper"}
+                    </button>
+                  )}
+                </div>
+              </div>
+              {live.liveError && (
+                <div className="mt-1 text-[10px] font-medium text-rose-700">
+                  {live.liveError}
+                </div>
+              )}
+              {live.liveTranscripts.length > 0 && (
+                <div className="mt-1.5 max-h-20 space-y-1 overflow-y-auto rounded border border-emerald-200 bg-white/90 p-1.5 text-[10px] text-slate-700">
+                  {live.liveTranscripts.slice(-4).map((tr) => (
+                    <div key={tr.id}>
+                      <strong className={tr.role === "user" ? "text-[#004A8F]" : "text-emerald-700"}>
+                        {tr.role === "user" ? (lang === "en" ? "You:" : "Vous :") : "Assistant :"}{" "}
+                      </strong>
+                      <span>{tr.text}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* TAB 1: NON-DESTRUCTIVE CHAT */}
           {activeTab === "chat" && (
             <>
@@ -462,11 +583,36 @@ export function AssistantSmartResearchWidget({
                     const isUser = msg.role === "user";
                     const proposal = msg.proposal;
                     const proposalDismissed = dismissedMsgIds[msg.message_id];
+                    const toolsUsed = msg.tools_used ?? [];
+                    const formatToolName = (tName: string) => {
+                      if (tName === "inspect_internal_library")
+                        return lang === "en" ? "Internal Library" : "Bibliothèque interne";
+                      if (tName === "draft_compare_and_merge")
+                        return lang === "en" ? "Compare & Merge" : "Comparaison & Fusion";
+                      if (tName === "run_section_audit")
+                        return lang === "en" ? "CAMES Audit" : "Audit CAMES";
+                      if (tName === "search_protocol_versions")
+                        return lang === "en" ? "Version Search" : "Recherche versions";
+                      return tName;
+                    };
                     return (
                       <div
                         key={msg.message_id}
                         className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
                       >
+                        {!isUser && toolsUsed.length > 0 && (
+                          <div className="mb-1 flex flex-wrap gap-1">
+                            {toolsUsed.map((tName) => (
+                              <span
+                                key={tName}
+                                className="inline-flex items-center gap-1 rounded-full bg-slate-200/80 px-2 py-0.5 text-[9px] font-bold text-slate-700"
+                              >
+                                <Wrench className="h-2.5 w-2.5" />
+                                {formatToolName(tName)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
                         <div
                           className={`max-w-[92%] rounded-2xl px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap shadow-xs ${
                             isUser
@@ -633,19 +779,54 @@ export function AssistantSmartResearchWidget({
                       </button>
                     ))}
                   </div>
-                  <button
-                    type="button"
-                    disabled
-                    title={
-                      lang === "en"
-                        ? `Live voice (${activeVoiceModels[0] ?? "gemini-3.8-live"}) — Phase 3 roadmap`
-                        : `Micro Live (${activeVoiceModels[0] ?? "gemini-3.8-live"}) — feuille de route Phase 3`
-                    }
-                    className="inline-flex cursor-not-allowed items-center gap-1 rounded-lg border border-slate-200 bg-slate-100 px-2 py-0.5 font-semibold text-slate-400"
-                  >
-                    <Mic className="h-3 w-3" />
-                    <span>Live</span>
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    {canCompareSection && (
+                      <button
+                        type="button"
+                        disabled={busyChat || busyAction}
+                        onClick={handleCompareMerge}
+                        title={
+                          lang === "en"
+                            ? "Draft in background, compare with current text, and keep the best"
+                            : "Générer en coulisses, comparer avec le texte actuel et garder le meilleur"
+                        }
+                        className="inline-flex items-center gap-1 rounded-lg border border-amber-300 bg-amber-50 px-2 py-0.5 font-semibold text-amber-900 transition hover:bg-amber-100 disabled:opacity-40"
+                      >
+                        <GitCompareArrows className="h-3 w-3" />
+                        <span>{lang === "en" ? "Compare" : "Comparer"}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        live.status === "connected" || live.status === "connecting"
+                          ? live.stopLive()
+                          : live.startLive()
+                      }
+                      title={
+                        lang === "en"
+                          ? `Real-time Voice & Screen Live (${activeVoiceModels[0] ?? "gemini-3.8-live"})`
+                          : `Mode vocal & écran en direct (${activeVoiceModels[0] ?? "gemini-3.8-live"})`
+                      }
+                      className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 font-semibold transition ${
+                        live.status === "connected" || live.status === "connecting"
+                          ? "border-rose-300 bg-rose-600 text-white hover:bg-rose-700"
+                          : "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                      }`}
+                    >
+                      {live.status === "connected" || live.status === "connecting" ? (
+                        <>
+                          <MicOff className="h-3 w-3" />
+                          <span>{lang === "en" ? "End Live" : "Couper"}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Mic className="h-3 w-3" />
+                          <span>Live</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex items-end gap-1.5">

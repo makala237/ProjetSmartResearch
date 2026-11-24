@@ -113,6 +113,34 @@ export function getAccessToken(): string | null {
   }
 }
 
+export function getCopilotLiveWsUrl(
+  projectId: string,
+  activeModule: string,
+  activeSectionId?: string
+): string {
+  const token = getAccessToken() ?? "";
+  const apiBase = getApiBaseUrl();
+  let wsOrigin = "";
+  if (apiBase.startsWith("https://")) {
+    wsOrigin = `wss://${apiBase.slice("https://".length)}`;
+  } else if (apiBase.startsWith("http://")) {
+    wsOrigin = `ws://${apiBase.slice("http://".length)}`;
+  } else if (typeof window !== "undefined") {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    wsOrigin = `${proto}//${window.location.host}`;
+  }
+  const params = new URLSearchParams({
+    access_token: token,
+    active_module: activeModule,
+  });
+  if (activeSectionId) {
+    params.set("active_section_id", activeSectionId);
+  }
+  return `${wsOrigin}/api/projects/${encodeURIComponent(
+    projectId
+  )}/copilot/live?${params.toString()}`;
+}
+
 export function getRefreshToken(): string | null {
   try {
     return localStorage.getItem(REFRESH_TOKEN_KEY);
@@ -1315,6 +1343,21 @@ export const api = {
   ) =>
     request<CopilotChatResponse>(
       `/api/projects/${encodeURIComponent(projectId)}/copilot/chat`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  copilotCompareMerge: (
+    projectId: string,
+    payload: {
+      section_id: string;
+      instruction?: string;
+    }
+  ) =>
+    request<CopilotChatResponse>(
+      `/api/projects/${encodeURIComponent(projectId)}/copilot/compare-merge`,
       {
         method: "POST",
         body: JSON.stringify(payload),
