@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
 
     gemini_api_key: str = ""
+    openrouter_api_key: str = ""
+    openrouter_emergency_fallback_model: str = "nvidia/nemotron-3.5-super-vl:free"
 
     gemini_primary_reasoning_model: str = "gemini-3.5-flash-lite"
     gemini_fallback_reasoning_model: str = "gemini-3.1-flash-lite"
@@ -75,8 +77,17 @@ class Settings(BaseSettings):
 
     def model_chains(self) -> Dict[str, List[str]]:
         """Return ordered model fallback chains per pipeline role."""
+        or_backup = (
+            (self.openrouter_emergency_fallback_model or "").strip()
+            if (self.openrouter_api_key or "").strip()
+            else ""
+        )
+
         def parse(raw: str) -> List[str]:
-            return [m.strip() for m in raw.split(",") if m.strip()]
+            items = [m.strip() for m in raw.split(",") if m.strip()]
+            if or_backup and or_backup not in items:
+                items.append(or_backup)
+            return items
 
         return {
             "research": parse(self.gemini_models_research),

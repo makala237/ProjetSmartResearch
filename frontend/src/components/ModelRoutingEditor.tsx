@@ -61,6 +61,9 @@ const FALLBACK_CATALOG: ModelCatalogResponse = {
     { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", tier: "vip", in_use: false, free_tier_rpm: 5, free_tier_tpm: 250000, free_tier_rpd: 20, description: "Raisonnement approfondi." },
     { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", tier: "standard", in_use: false, free_tier_rpm: 5, free_tier_tpm: 250000, free_tier_rpd: 20, description: "Backup stable 2.5." },
     { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", tier: "lite", in_use: false, free_tier_rpm: 15, free_tier_tpm: 250000, free_tier_rpd: 20, description: "Filet de sécurité 2.5 Flash-Lite." },
+    { id: "nvidia/nemotron-3.5-super-vl:free", label: "NVIDIA Nemotron 3.5 Super VL (OpenRouter Free)", tier: "vip", in_use: true, free_tier_rpm: 20, free_tier_tpm: 250000, free_tier_rpd: 50, description: "4e secours global anti-503 Gemini — 120B MoE VL (1M contexte)." },
+    { id: "nvidia/nemotron-3.5-lightning:free", label: "NVIDIA Nemotron 3.5 Lightning (OpenRouter Free)", tier: "lite", in_use: false, free_tier_rpm: 20, free_tier_tpm: 250000, free_tier_rpd: 50, description: "OpenRouter Free — variante rapide Nemotron 3.5." },
+    { id: "nvidia/nemotron-3-ultra-550b-a55b:free", label: "NVIDIA Nemotron 3 Ultra 550B (OpenRouter Free)", tier: "vip", in_use: false, free_tier_rpm: 20, free_tier_tpm: 250000, free_tier_rpd: 50, description: "OpenRouter Free — 550B MoE raisonnement avancé." },
   ],
   presets: [
     {

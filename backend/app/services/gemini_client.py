@@ -1,4 +1,5 @@
 from contextvars import ContextVar
+import base64
 import json
 import logging
 import re
@@ -8,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Type, TypeVar
 from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel
+import requests
 
 from app.core.config import get_settings
 from app.services.pipeline_tracker import update_pipeline_model
@@ -215,12 +217,20 @@ class GeminiRouter:
                 "gemini-3.5-flash-lite",
                 "gemini-3.1-flash-lite",
             ]
+            if (self.settings.openrouter_api_key or "").strip() and (
+                self.settings.openrouter_emergency_fallback_model or ""
+            ).strip():
+                candidates.append(self.settings.openrouter_emergency_fallback_model.strip())
         elif role == "supervisor_media":
             candidates = [
                 "gemini-3.5-flash-lite",
                 "gemini-3.1-flash-lite",
                 "gemini-3.5-flash",
             ]
+            if (self.settings.openrouter_api_key or "").strip() and (
+                self.settings.openrouter_emergency_fallback_model or ""
+            ).strip():
+                candidates.append(self.settings.openrouter_emergency_fallback_model.strip())
         else:
             candidates = list(chains.get(role, chains["drafting"]))
         policy = get_ai_routing_policy()
@@ -285,6 +295,129 @@ class GeminiRouter:
         cooled = [m for m in resolved if self._is_model_in_cooldown(m)]
         return healthy + cooled
 
+    @staticmethod
+    def _is_openrouter_model(model_id: str) -> bool:
+        return "/" in (model_id or "")
+
+    def _call_openrouter(
+        self,
+        model_id: str,
+        contents: Any,
+        config: Optional[types.GenerateContentConfig] = None,
+    ) -> Tuple[str, int, Any]:
+        """Execute a chat completion against OpenRouter (OpenAI-compatible) for cross-provider models."""
+        api_key = (self.settings.openrouter_api_key or "").strip()
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY non configurée.")
+
+        messages: List[Dict[str, Any]] = []
+        sys_parts: List[str] = []
+        if config is not None and getattr(config, "system_instruction", None):
+            sys_parts.append(str(config.system_instruction))
+
+        schema_cls = getattr(config, "response_schema", None) if config is not None else None
+        wants_json = bool(
+            schema_cls is not None
+            or (config is not None and getattr(config, "response_mime_type", None) == "application/json")
+        )
+        if schema_cls is not None and hasattr(schema_cls, "model_json_schema"):
+            try:
+                schema_json = json.dumps(schema_cls.model_json_schema(), ensure_ascii=False)
+                sys_parts.append(
+                    "CRITICAL OUTPUT FORMAT: Return ONLY a valid JSON object strictly conforming to this JSON Schema "
+                    "(no markdown fences, no commentary outside JSON):\n" + schema_json
+                )
+            except Exception:
+                pass
+        elif wants_json:
+            sys_parts.append("CRITICAL OUTPUT FORMAT: Return ONLY a valid JSON object without markdown fences.")
+
+        if sys_parts:
+            messages.append({"role": "system", "content": "\n\n".join(sys_parts)})
+
+        # Normalize `contents` (str or list of text/image Parts)
+        user_content_parts: List[Dict[str, Any]] = []
+        raw_items = contents if isinstance(contents, list) else [contents]
+        for item in raw_items:
+            if isinstance(item, str):
+                if item.strip():
+                    user_content_parts.append({"type": "text", "text": item})
+            elif hasattr(item, "inline_data") and getattr(item, "inline_data", None) is not None:
+                inline = item.inline_data
+                mime = str(getattr(inline, "mime_type", "") or "").lower()
+                raw_data = getattr(inline, "data", None)
+                if mime.startswith("image/") and isinstance(raw_data, (bytes, bytearray)):
+                    b64 = base64.b64encode(raw_data).decode("ascii")
+                    user_content_parts.append(
+                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+                    )
+                else:
+                    raise ValueError(
+                        f"Le modèle OpenRouter {model_id} ne supporte pas les flux binaires '{mime}'."
+                    )
+            elif hasattr(item, "uri") or hasattr(item, "name"):
+                raise ValueError(
+                    f"Le modèle OpenRouter {model_id} ne supporte pas les fichiers Gemini Files API."
+                )
+            elif item is not None:
+                user_content_parts.append({"type": "text", "text": str(item)})
+
+        if not user_content_parts:
+            raise ValueError("Contenu de requête vide pour OpenRouter.")
+        if len(user_content_parts) == 1 and user_content_parts[0]["type"] == "text":
+            messages.append({"role": "user", "content": user_content_parts[0]["text"]})
+        else:
+            messages.append({"role": "user", "content": user_content_parts})
+
+        temperature = getattr(config, "temperature", None) if config is not None else None
+        payload: Dict[str, Any] = {
+            "model": model_id,
+            "messages": messages,
+            "max_tokens": 8192,
+        }
+        if temperature is not None:
+            payload["temperature"] = float(temperature)
+        if wants_json:
+            payload["response_format"] = {"type": "json_object"}
+
+        timeout_s = max(25.0, float(getattr(self.settings, "gemini_request_timeout_ms", 60_000) or 60_000) / 1000.0)
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://smart-research-fmsb.web.app",
+                "X-Title": "Smart Research FMSB",
+            },
+            json=payload,
+            timeout=timeout_s,
+        )
+        if not resp.ok:
+            raise RuntimeError(f"HTTP {resp.status_code} - {resp.text[:240]}")
+
+        body = resp.json()
+        choices = body.get("choices") or []
+        msg = (choices[0].get("message") or {}) if choices else {}
+        text = str(msg.get("content") or "").strip()
+        if not text:
+            raise ValueError("Réponse vide du modèle OpenRouter.")
+        if wants_json:
+            # Strip optional ```json ... ``` fences if present
+            fence_match = re.search(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", text, flags=re.DOTALL)
+            if fence_match:
+                text = fence_match.group(1).strip()
+            else:
+                first_brace = text.find("{")
+                last_brace = text.rfind("}")
+                if first_brace >= 0 and last_brace > first_brace:
+                    text = text[first_brace : last_brace + 1].strip()
+
+        usage = body.get("usage") or {}
+        tokens_used = int(usage.get("total_tokens") or 0)
+        if tokens_used <= 0:
+            tokens_used = max(0, int(usage.get("prompt_tokens") or 0) + int(usage.get("completion_tokens") or 0))
+        return text, tokens_used, body
+
     def generate_with_fallback(
         self,
         role: str,
@@ -292,9 +425,10 @@ class GeminiRouter:
         config: Optional[types.GenerateContentConfig] = None,
         validator: Optional[Callable[[Any, str], Any]] = None,
     ) -> Dict[str, Any]:
-        """Run generate_content trying each model in the role's fallback chain (3.5-flash-lite <-> 3.1-flash-lite relay)."""
+        """Run generate_content trying each model in the role's fallback chain (Gemini + OpenRouter emergency backup)."""
         candidates, cap_fallback_active = self._resolve_candidates(role)
-        client = self._get_client()
+        has_gemini_candidate = any(not self._is_openrouter_model(m) for m in candidates)
+        client = self._get_client() if has_gemini_candidate else None
 
         if candidates:
             update_pipeline_model(
@@ -315,6 +449,34 @@ class GeminiRouter:
             max_attempts = 1 if has_next_candidate else 2
             for attempt in range(max_attempts):
                 try:
+                    if self._is_openrouter_model(model_id):
+                        text, tokens_used, raw_body = self._call_openrouter(
+                            model_id=model_id,
+                            contents=contents,
+                            config=config,
+                        )
+                        validated_data: Any = None
+                        if validator is not None:
+                            validated_data = validator(raw_body, text)
+                        elif not text.strip():
+                            raise ValueError("Réponse vide du modèle OpenRouter")
+
+                        self._clear_model_cooldown(model_id)
+                        update_pipeline_model(model_id, fallback_triggered=is_fallback_step)
+                        add_request_tokens_used(tokens_used)
+                        result: Dict[str, Any] = {
+                            "model_used": model_id,
+                            "text": text,
+                            "raw": raw_body,
+                            "tokens_used": tokens_used,
+                            "fallback_errors": errors_log,
+                            "cap_fallback_active": cap_fallback_active,
+                        }
+                        if validator is not None:
+                            result["validated"] = validated_data
+                        return result
+
+                    assert client is not None
                     response = client.models.generate_content(
                         model=model_id,
                         contents=contents,
