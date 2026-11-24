@@ -920,10 +920,17 @@ def update_section(
         if payload.content_html is None:
             sec.content_html = markdown_to_clean_html(payload.content_markdown)
     if payload.content_html is not None:
-        sec.content_html = payload.content_html
-        # If user removed a table in RichTextEditor HTML, strip orphaned pipe tables from markdown too
-        if "<table" not in payload.content_html.lower() and re.search(r"(?m)^\s*\|[\s:\-|]+\|\s*$", sec.content_markdown or ""):
-            sec.content_markdown = re.sub(r"(?m)(?:\n|^)(?:\s*\|[^\n]+\n?)+", "\n", sec.content_markdown).strip()
+        is_auto_table_sec = section_id in ("toc", "abbreviations", "list_of_tables", "list_of_figures")
+        had_html_table = "<table" in (sec.content_html or "").lower()
+        incoming_has_table = "<table" in (payload.content_html or "").lower()
+        if is_auto_table_sec and had_html_table and not incoming_has_table:
+            # Protect generated TOC/list HTML tables from being flattened by rich-text editors without table support
+            pass
+        else:
+            sec.content_html = payload.content_html
+            # If user removed a table in RichTextEditor HTML, strip orphaned pipe tables from markdown too
+            if not incoming_has_table and re.search(r"(?m)^\s*\|[\s:\-|]+\|\s*$", sec.content_markdown or ""):
+                sec.content_markdown = re.sub(r"(?m)(?:\n|^)(?:\s*\|[^\n]+\n?)+", "\n", sec.content_markdown).strip()
     if payload.status is not None:
         sec.status = payload.status
     if payload.cited_ref_ids is not None:

@@ -427,19 +427,43 @@ export function Module1Assistant({
     }
   };
 
+  const isAutoTableSection =
+    activeSpec.id === "toc" ||
+    activeSpec.id === "abbreviations" ||
+    activeSpec.id === "list_of_tables" ||
+    activeSpec.id === "list_of_figures";
+
   const isDirty =
     activeSpec.id !== "cover_page" &&
+    !isAutoTableSection &&
     (draft !== (activeState?.content_markdown ?? "") ||
       draftHtml !== (activeState?.content_html ?? "") ||
       notes !== (activeState?.user_notes ?? ""));
 
   async function flushAutoSave(sectionIdToSave?: string): Promise<boolean> {
     const sid = sectionIdToSave ?? selectedSectionIdRef.current;
-    if (!sid || sid === "cover_page" || autoSaveInFlightRef.current) return true;
+    if (
+      !sid ||
+      sid === "cover_page" ||
+      sid === "toc" ||
+      sid === "abbreviations" ||
+      sid === "list_of_tables" ||
+      sid === "list_of_figures" ||
+      autoSaveInFlightRef.current
+    ) {
+      return true;
+    }
     const secState = latestProjectRef.current.sections[sid];
     const curDraft = draftRef.current;
     const curHtml = draftHtmlRef.current;
     const curNotes = notesRef.current;
+    // Never silently overwrite a structured HTML table if TipTap stripped <table> tags
+    if (
+      (secState?.content_html ?? "").toLowerCase().includes("<table") &&
+      !curHtml.toLowerCase().includes("<table")
+    ) {
+      return true;
+    }
     const changed =
       curDraft !== (secState?.content_markdown ?? "") ||
       curHtml !== (secState?.content_html ?? "") ||
@@ -2432,19 +2456,28 @@ export function Module1Assistant({
                   </div>
                 )}
 
-                <RichTextEditor
-                  contentHtml={draftHtml}
-                  contentMarkdown={draft}
-                  wordCount={wordCount}
-                  selectionBusy={busyReformulate}
-                  onSelectionAction={(selectedText, action, instr) =>
-                    void handleSelectionTransform(selectedText, action, instr)
-                  }
-                  onChange={(html, text) => {
-                    setDraftHtml(html);
-                    setDraft(text);
-                  }}
-                />
+                {isAutoTableSection && draftHtml.toLowerCase().includes("<table") ? (
+                  <div className="overflow-x-auto rounded-xl border border-slate-300 bg-white p-5 shadow-sm">
+                    <div
+                      className="prose prose-sm max-w-none text-slate-900"
+                      dangerouslySetInnerHTML={{ __html: draftHtml }}
+                    />
+                  </div>
+                ) : (
+                  <RichTextEditor
+                    contentHtml={draftHtml}
+                    contentMarkdown={draft}
+                    wordCount={wordCount}
+                    selectionBusy={busyReformulate}
+                    onSelectionAction={(selectedText, action, instr) =>
+                      void handleSelectionTransform(selectedText, action, instr)
+                    }
+                    onChange={(html, text) => {
+                      setDraftHtml(html);
+                      setDraft(text);
+                    }}
+                  />
+                )}
               </div>
 
               {showMediaPanel && (

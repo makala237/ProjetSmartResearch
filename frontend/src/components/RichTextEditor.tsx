@@ -172,7 +172,7 @@ export function RichTextEditor({
       : "<p></p>";
 
     if (currentHtml !== target && editor.getText().trim() !== contentMarkdown.trim()) {
-      editor.commands.setContent(target);
+      editor.commands.setContent(target, { emitUpdate: false });
       setSelectedText("");
       setShowCustomPrompt(false);
     }
