@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -50,6 +50,21 @@ class AIQuotaOut(BaseModel):
     using_35_fallback: bool = False
 
 
+class OnboardingStateOut(BaseModel):
+    welcome_tour_completed: bool = False
+    welcome_tour_dismissed: bool = False
+    seen_features: List[str] = Field(default_factory=list)
+    tips_enabled: bool = True
+
+
+class OnboardingStateUpdateRequest(BaseModel):
+    welcome_tour_completed: Optional[bool] = None
+    welcome_tour_dismissed: Optional[bool] = None
+    mark_feature_seen: Optional[str] = Field(default=None, max_length=64)
+    tips_enabled: Optional[bool] = None
+    reset: bool = False
+
+
 class UserMeOut(BaseModel):
     id: str
     email: str
@@ -64,6 +79,7 @@ class UserMeOut(BaseModel):
     project_id: Optional[str] = None
     entitlements: Dict[str, ModuleEntitlementOut] = Field(default_factory=dict)
     ai_quota: AIQuotaOut = Field(default_factory=AIQuotaOut)
+    onboarding_state: OnboardingStateOut = Field(default_factory=OnboardingStateOut)
 
 
 class TokenResponse(BaseModel):

@@ -98,6 +98,7 @@ class UserRecord:
     created_by_admin_id: Optional[str]
     gemini_api_key_id: Optional[str] = None
     model_routing_config: Optional[Dict[str, Any]] = None
+    onboarding_state: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -563,6 +564,7 @@ def _orm_to_user(row: UserORM) -> UserRecord:
         created_by_admin_id=row.created_by_admin_id,
         gemini_api_key_id=getattr(row, "gemini_api_key_id", None),
         model_routing_config=getattr(row, "model_routing_config", None),
+        onboarding_state=getattr(row, "onboarding_state", None),
     )
 
 
@@ -1611,6 +1613,7 @@ def _doc_to_user(doc_id: str, data: Dict[str, Any]) -> UserRecord:
         created_by_admin_id=data.get("created_by_admin_id"),
         gemini_api_key_id=data.get("gemini_api_key_id") or None,
         model_routing_config=data.get("model_routing_config") or None,
+        onboarding_state=data.get("onboarding_state") or None,
     )
 
 

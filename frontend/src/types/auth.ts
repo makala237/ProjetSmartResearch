@@ -19,6 +19,21 @@ export interface AIQuotaOut {
   using_35_fallback?: boolean;
 }
 
+export interface OnboardingStateOut {
+  welcome_tour_completed: boolean;
+  welcome_tour_dismissed: boolean;
+  seen_features: string[];
+  tips_enabled: boolean;
+}
+
+export interface OnboardingStateUpdateRequest {
+  welcome_tour_completed?: boolean;
+  welcome_tour_dismissed?: boolean;
+  mark_feature_seen?: string;
+  tips_enabled?: boolean;
+  reset?: boolean;
+}
+
 export interface UserMeOut {
   id: string;
   email: string;
@@ -33,6 +48,7 @@ export interface UserMeOut {
   project_id?: string | null;
   entitlements: Record<string, ModuleEntitlementOut>;
   ai_quota: AIQuotaOut;
+  onboarding_state?: OnboardingStateOut;
 }
 
 export interface TokenResponse {

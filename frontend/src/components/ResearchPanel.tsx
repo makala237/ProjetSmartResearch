@@ -31,6 +31,7 @@ interface ResearchPanelProps {
   onProjectUpdated: (updated: ProtocolProject) => void;
   onError: (msg: string) => void;
   runWithProgress?: RunWithProgressFn;
+  onFeatureUsed?: (featureId: string) => void;
 }
 
 export function ResearchPanel({
@@ -38,6 +39,7 @@ export function ResearchPanel({
   onProjectUpdated,
   onError,
   runWithProgress,
+  onFeatureUsed,
 }: ResearchPanelProps) {
   const { lang, t } = useLanguage();
   const [tab, setTab] = useState<"search" | "import" | "refs">(
@@ -204,7 +206,10 @@ export function ResearchPanel({
           </button>
           <button
             type="button"
-            onClick={() => setTab("import")}
+            onClick={() => {
+              setTab("import");
+              onFeatureUsed?.("import_draft");
+            }}
             className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
               tab === "import"
                 ? "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200"

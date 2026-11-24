@@ -34,9 +34,19 @@ import { Module1Assistant } from "./components/Module1Assistant";
 import { Module2Editor } from "./components/Module2Editor";
 import { Module3DataEntry } from "./components/Module3DataEntry";
 import { Module4Presentation } from "./components/Module4Presentation";
+import {
+  FeatureDiscoveryCard,
+  WelcomeTourModal,
+} from "./components/OnboardingGuideOverlay";
+import { FEATURE_GUIDES, type FeatureGuideSpec } from "./data/onboardingGuides";
 import { useLanguage } from "./i18n/LanguageContext";
 import type { AppLang } from "./i18n/translations";
-import type { ModuleKey, TokenResponse, UserMeOut } from "./types/auth";
+import type {
+  ModuleKey,
+  OnboardingStateOut,
+  TokenResponse,
+  UserMeOut,
+} from "./types/auth";
 import type {
   CanvasSectionSpec,
   CoverMetadata,
@@ -117,6 +127,129 @@ export default function App() {
   const [resolvedNotifications, setResolvedNotifications] = useState<ResolvedErrorNotification[]>([]);
   const seenAdminAlertIdsRef = useRef<Set<string>>(new Set());
   const adminAlertsInitializedRef = useRef(false);
+
+  // Onboarding tour & first-click feature discovery state
+  const [tourOpenManual, setTourOpenManual] = useState(false);
+  const [activeFeatureTip, setActiveFeatureTip] = useState<FeatureGuideSpec | null>(null);
+  const [copilotExternalPrompt, setCopilotExternalPrompt] = useState<{
+    id: number;
+    text: string;
+  } | null>(null);
+
+  const localOnboardingFallback = (() => {
+    if (!currentUser || typeof window === "undefined") return null;
+    try {
+      const raw = window.localStorage.getItem(`sr_onboarding_${currentUser.id}`);
+      return raw ? (JSON.parse(raw) as OnboardingStateOut) : null;
+    } catch {
+      return null;
+    }
+  })();
+
+  const onboarding: OnboardingStateOut = currentUser?.onboarding_state ??
+    localOnboardingFallback ?? {
+      welcome_tour_completed: false,
+      welcome_tour_dismissed: false,
+      seen_features: [],
+      tips_enabled: true,
+    };
+
+  const showWelcomeTour = Boolean(
+    currentUser &&
+      !currentUser.must_change_password &&
+      activeView === "studio" &&
+      (tourOpenManual ||
+        (!onboarding.welcome_tour_completed && !onboarding.welcome_tour_dismissed))
+  );
+
+  const patchOnboarding = useCallback(
+    async (patch: {
+      welcome_tour_completed?: boolean;
+      welcome_tour_dismissed?: boolean;
+      mark_feature_seen?: string;
+      tips_enabled?: boolean;
+      reset?: boolean;
+    }) => {
+      if (!currentUser) return;
+      const curState: OnboardingStateOut = currentUser.onboarding_state ?? {
+        welcome_tour_completed: false,
+        welcome_tour_dismissed: false,
+        seen_features: [],
+        tips_enabled: true,
+      };
+      const optimistic: OnboardingStateOut = patch.reset
+        ? {
+            welcome_tour_completed: false,
+            welcome_tour_dismissed: false,
+            seen_features: [],
+            tips_enabled: true,
+          }
+        : {
+            welcome_tour_completed:
+              patch.welcome_tour_completed ?? curState.welcome_tour_completed,
+            welcome_tour_dismissed:
+              patch.welcome_tour_dismissed ?? curState.welcome_tour_dismissed,
+            seen_features:
+              patch.mark_feature_seen &&
+              !curState.seen_features.some(
+                (f) => f.toLowerCase() === patch.mark_feature_seen!.toLowerCase()
+              )
+                ? [...curState.seen_features, patch.mark_feature_seen]
+                : curState.seen_features,
+            tips_enabled: patch.tips_enabled ?? curState.tips_enabled,
+          };
+
+      try {
+        window.localStorage.setItem(
+          `sr_onboarding_${currentUser.id}`,
+          JSON.stringify(optimistic)
+        );
+      } catch {
+        /* ignore storage quota */
+      }
+      setCurrentUser((prev) =>
+        prev ? { ...prev, onboarding_state: optimistic } : prev
+      );
+      try {
+        const updatedUser = await api.updateOnboardingState(patch);
+        setCurrentUser(updatedUser);
+        if (updatedUser.onboarding_state) {
+          try {
+            window.localStorage.setItem(
+              `sr_onboarding_${currentUser.id}`,
+              JSON.stringify(updatedUser.onboarding_state)
+            );
+          } catch {
+            /* ignore */
+          }
+        }
+      } catch {
+        /* optimistic state kept locally if offline */
+      }
+    },
+    [currentUser]
+  );
+
+  const triggerFeatureDiscovery = useCallback(
+    (featureId: string) => {
+      if (!currentUser || showWelcomeTour || !onboarding.tips_enabled) return;
+      const guide = FEATURE_GUIDES[featureId];
+      if (!guide) return;
+      const alreadySeen = onboarding.seen_features.some(
+        (id) => id.toLowerCase() === featureId.toLowerCase()
+      );
+      if (alreadySeen) return;
+      setActiveFeatureTip(guide);
+    },
+    [currentUser, showWelcomeTour, onboarding.tips_enabled, onboarding.seen_features]
+  );
+
+  useEffect(() => {
+    if (!currentUser || activeView !== "studio" || !activeProject || showWelcomeTour) {
+      return;
+    }
+    triggerFeatureDiscovery(activeModule);
+  }, [activeModule, activeView, activeProject, showWelcomeTour, currentUser, triggerFeatureDiscovery]);
 
   // Automatically report any runtime error to backend so admins receive the real error in real time
   useEffect(() => {
@@ -1499,6 +1632,7 @@ export default function App() {
                   saving={saving}
                   isAdmin={isAdmin}
                   isVisible={activeModule === "module1"}
+                  onFeatureUsed={triggerFeatureDiscovery}
                 />
                 {activeModule === "module2" && (
                   <Module2Editor
@@ -1558,6 +1692,55 @@ export default function App() {
             );
           }}
           onNavigateModule={(modKey) => setActiveModule(modKey)}
+          externalPrompt={copilotExternalPrompt}
+          onReplayTour={() => setTourOpenManual(true)}
+          onResetTips={() => {
+            setActiveFeatureTip(null);
+            patchOnboarding({ reset: false, tips_enabled: true });
+            triggerFeatureDiscovery(activeModule);
+          }}
+          onFeatureUsed={triggerFeatureDiscovery}
+        />
+      )}
+
+      {showWelcomeTour && (
+        <WelcomeTourModal
+          lang={lang}
+          onJumpModule={(mk) => setActiveModule(mk)}
+          onComplete={() => {
+            setTourOpenManual(false);
+            patchOnboarding({
+              welcome_tour_completed: true,
+              welcome_tour_dismissed: false,
+            });
+          }}
+          onDismiss={() => {
+            setTourOpenManual(false);
+            patchOnboarding({ welcome_tour_dismissed: true });
+          }}
+        />
+      )}
+
+      {!showWelcomeTour && activeFeatureTip && (
+        <FeatureDiscoveryCard
+          guide={activeFeatureTip}
+          lang={lang}
+          onAcknowledge={() => {
+            const fid = activeFeatureTip.id;
+            setActiveFeatureTip(null);
+            patchOnboarding({ mark_feature_seen: fid });
+          }}
+          onAskAssistant={(prompt) => {
+            const fid = activeFeatureTip.id;
+            setActiveFeatureTip(null);
+            patchOnboarding({ mark_feature_seen: fid });
+            setCopilotExternalPrompt({ id: Date.now(), text: prompt });
+          }}
+          onDisableTips={() => {
+            const fid = activeFeatureTip.id;
+            setActiveFeatureTip(null);
+            patchOnboarding({ tips_enabled: false, mark_feature_seen: fid });
+          }}
         />
       )}
 

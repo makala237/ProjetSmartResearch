@@ -33,6 +33,7 @@ from app.db.datastore import UserRecord
 from app.schemas.auth import (
     ChangePasswordRequest,
     LoginRequest,
+    OnboardingStateUpdateRequest,
     RefreshTokenRequest,
     TokenResponse,
     UserMeOut,
@@ -42,6 +43,7 @@ from app.services.auth_service import (
     build_user_me_out,
     change_user_password,
     logout_user,
+    normalize_onboarding_state,
     refresh_session_tokens,
 )
 from app.services.licensing_service import (
@@ -484,6 +486,35 @@ def auth_me(
     db: Any = Depends(get_db),
 ) -> UserMeOut:
     return build_user_me_out(db, current_user)
+
+
+@app.patch("/api/auth/me/onboarding", response_model=UserMeOut)
+def update_my_onboarding_state(
+    payload: OnboardingStateUpdateRequest,
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
+) -> UserMeOut:
+    from app.db.datastore import as_store
+
+    store = as_store(db)
+    if payload.reset:
+        next_state = normalize_onboarding_state({})
+    else:
+        cur = normalize_onboarding_state(getattr(current_user, "onboarding_state", None))
+        if payload.welcome_tour_completed is not None:
+            cur["welcome_tour_completed"] = bool(payload.welcome_tour_completed)
+        if payload.welcome_tour_dismissed is not None:
+            cur["welcome_tour_dismissed"] = bool(payload.welcome_tour_dismissed)
+        if payload.tips_enabled is not None:
+            cur["tips_enabled"] = bool(payload.tips_enabled)
+        if payload.mark_feature_seen and payload.mark_feature_seen.strip():
+            fid = payload.mark_feature_seen.strip()[:64]
+            if fid.lower() not in {x.lower() for x in cur["seen_features"]}:
+                cur["seen_features"].append(fid)
+        next_state = normalize_onboarding_state(cur)
+
+    updated = store.update_user(current_user.id, onboarding_state=next_state) or current_user
+    return build_user_me_out(db, updated)
 
 
 @app.post("/api/auth/change-password", response_model=TokenResponse)

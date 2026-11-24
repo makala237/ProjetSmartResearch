@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ArrowRight,
   BookmarkCheck,
+  Compass,
   History,
   MessageSquare,
   Mic,
@@ -28,6 +29,10 @@ interface AssistantSmartResearchWidgetProps {
   lang: "fr" | "en";
   onProjectUpdate: (project: ProtocolProject) => void;
   onNavigateModule: (moduleKey: ModuleKey) => void;
+  externalPrompt?: { id: number; text: string } | null;
+  onReplayTour?: () => void;
+  onResetTips?: () => void;
+  onFeatureUsed?: (featureId: string) => void;
 }
 
 const MODULE_LABELS_FR: Record<ModuleKey, string> = {
@@ -52,9 +57,14 @@ export function AssistantSmartResearchWidget({
   lang,
   onProjectUpdate,
   onNavigateModule,
+  externalPrompt,
+  onReplayTour,
+  onResetTips,
+  onFeatureUsed,
 }: AssistantSmartResearchWidgetProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"chat" | "directives" | "versions">("chat");
+  const [showGuideBar, setShowGuideBar] = useState(false);
   const [inputText, setInputText] = useState("");
   const [chatMode, setChatMode] = useState<"auto" | "question" | "edit">("auto");
   const [busyChat, setBusyChat] = useState(false);
@@ -66,6 +76,7 @@ export function AssistantSmartResearchWidget({
   const [activeVoiceModels, setActiveVoiceModels] = useState<string[]>(["gemini-3.8-live"]);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const lastExternalPromptIdRef = useRef<number>(0);
 
   const messages: CopilotMessage[] = project.copilot_messages ?? [];
   const directives = project.supervisor_directives ?? [];
@@ -97,28 +108,41 @@ export function AssistantSmartResearchWidget({
     }
   }, [isOpen, activeTab, messages.length]);
 
-  async function handleSendMessage(overrideText?: string) {
-    const text = (overrideText ?? inputText).trim();
-    if (!text || busyChat) return;
-    setErrorMsg(null);
-    setBusyChat(true);
-    try {
-      const res = await api.copilotChat(project.project_id, {
-        message: text,
-        active_module: activeModule,
-        active_section_id: selectedSectionId || undefined,
-        mode: chatMode,
-      });
-      if (!overrideText) setInputText("");
-      if (res.active_text_models?.length) setActiveTextModels(res.active_text_models);
-      if (res.active_voice_models?.length) setActiveVoiceModels(res.active_voice_models);
-      onProjectUpdate(res.project);
-    } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusyChat(false);
+  const handleSendMessage = useCallback(
+    async (overrideText?: string, overrideMode?: "auto" | "question" | "edit") => {
+      const text = (overrideText ?? inputText).trim();
+      if (!text || busyChat) return;
+      setErrorMsg(null);
+      setBusyChat(true);
+      try {
+        const res = await api.copilotChat(project.project_id, {
+          message: text,
+          active_module: activeModule,
+          active_section_id: selectedSectionId || undefined,
+          mode: overrideMode ?? chatMode,
+        });
+        if (!overrideText) setInputText("");
+        if (res.active_text_models?.length) setActiveTextModels(res.active_text_models);
+        if (res.active_voice_models?.length) setActiveVoiceModels(res.active_voice_models);
+        onProjectUpdate(res.project);
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusyChat(false);
+      }
+    },
+    [inputText, busyChat, project.project_id, activeModule, selectedSectionId, chatMode, onProjectUpdate]
+  );
+
+  useEffect(() => {
+    if (!externalPrompt || externalPrompt.id === lastExternalPromptIdRef.current) {
+      return;
     }
-  }
+    lastExternalPromptIdRef.current = externalPrompt.id;
+    setIsOpen(true);
+    setActiveTab("chat");
+    handleSendMessage(externalPrompt.text, "question");
+  }, [externalPrompt, handleSendMessage]);
 
   async function handleApplyProposal(msg: CopilotMessage) {
     if (!msg.proposal || busyAction) return;
@@ -271,6 +295,20 @@ export function AssistantSmartResearchWidget({
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1">
+              {(onReplayTour || onResetTips) && (
+                <button
+                  type="button"
+                  onClick={() => setShowGuideBar((v) => !v)}
+                  title={lang === "en" ? "Guide & Onboarding" : "Guide & Astuces"}
+                  className={`rounded-lg p-1.5 transition ${
+                    showGuideBar
+                      ? "bg-white/25 text-white"
+                      : "text-blue-100 hover:bg-white/15 hover:text-white"
+                  }`}
+                >
+                  <Compass className="h-3.5 w-3.5" />
+                </button>
+              )}
               {activeTab === "chat" && messages.length > 0 && (
                 <button
                   type="button"
@@ -293,6 +331,35 @@ export function AssistantSmartResearchWidget({
             </div>
           </div>
 
+          {showGuideBar && (
+            <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-blue-100 bg-blue-50 px-3 py-2 text-[11px]">
+              {onReplayTour && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowGuideBar(false);
+                    onReplayTour();
+                  }}
+                  className="rounded-lg border border-blue-200 bg-white px-2 py-1 font-semibold text-[#004A8F] hover:bg-blue-100/60"
+                >
+                  {lang === "en" ? "Replay guided tour" : "Relancer la visite guidée"}
+                </button>
+              )}
+              {onResetTips && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowGuideBar(false);
+                    onResetTips();
+                  }}
+                  className="rounded-lg border border-amber-200 bg-white px-2 py-1 font-semibold text-amber-800 hover:bg-amber-50"
+                >
+                  {lang === "en" ? "Re-enable 1st-click tips" : "Réactiver les astuces 1er clic"}
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Navigation tabs */}
           <div className="grid grid-cols-3 border-b border-slate-200 bg-slate-50 text-[11px] font-semibold">
             <button
@@ -309,7 +376,10 @@ export function AssistantSmartResearchWidget({
             </button>
             <button
               type="button"
-              onClick={() => setActiveTab("directives")}
+              onClick={() => {
+                setActiveTab("directives");
+                onFeatureUsed?.("supervisor_directives");
+              }}
               className={`flex items-center justify-center gap-1 py-2.5 transition ${
                 activeTab === "directives"
                   ? "border-b-2 border-[#004A8F] bg-white text-[#004A8F]"
@@ -326,7 +396,10 @@ export function AssistantSmartResearchWidget({
             </button>
             <button
               type="button"
-              onClick={() => setActiveTab("versions")}
+              onClick={() => {
+                setActiveTab("versions");
+                onFeatureUsed?.("section_versions");
+              }}
               className={`flex items-center justify-center gap-1 py-2.5 transition ${
                 activeTab === "versions"
                   ? "border-b-2 border-[#004A8F] bg-white text-[#004A8F]"

@@ -21,7 +21,11 @@ import type {
   ModelCatalogResponse,
   UsageEventOut,
 } from "../types/admin";
-import type { TokenResponse, UserMeOut } from "../types/auth";
+import type {
+  OnboardingStateUpdateRequest,
+  TokenResponse,
+  UserMeOut,
+} from "../types/auth";
 import type {
   AbbreviationItem,
   AnnexesConfig,
@@ -1389,4 +1393,10 @@ export const api = {
       )}`,
       { method: "DELETE" }
     ),
+
+  updateOnboardingState: (payload: OnboardingStateUpdateRequest) =>
+    request<UserMeOut>("/api/auth/me/onboarding", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
 };

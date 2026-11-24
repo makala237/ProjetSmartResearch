@@ -214,6 +214,10 @@ def _ensure_schema_columns(eng) -> None:
                 col_type = "JSONB" if eng.dialect.name == "postgresql" else "JSON"
                 with eng.begin() as conn:
                     conn.execute(text(f"ALTER TABLE users ADD COLUMN model_routing_config {col_type}"))
+            if "onboarding_state" not in u_cols:
+                col_type = "JSONB" if eng.dialect.name == "postgresql" else "JSON"
+                with eng.begin() as conn:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN onboarding_state {col_type}"))
         if "usage_events" in insp.get_table_names():
             ev_cols = {c["name"] for c in insp.get_columns("usage_events")}
             if "tokens_used" not in ev_cols:

@@ -68,6 +68,7 @@ interface Module1Props {
   saving: boolean;
   isAdmin?: boolean;
   isVisible?: boolean;
+  onFeatureUsed?: (featureId: string) => void;
 }
 
 const ALGORITHMIC_SECTION_IDS = new Set([
@@ -135,6 +136,7 @@ export function Module1Assistant({
   saving,
   isAdmin = false,
   isVisible = true,
+  onFeatureUsed,
 }: Module1Props) {
   const { lang, t } = useLanguage();
   const tracker = usePipelineTracker(lang);
@@ -708,6 +710,7 @@ export function Module1Assistant({
   }
 
   async function handleHumanizeWithAI() {
+    onFeatureUsed?.("humanizer");
     const targetSectionId = activeSpec.id;
     const targetTitle = activeSpec.title;
     setBusyHumanizeBySec((prev) => ({ ...prev, [targetSectionId]: true }));
@@ -742,6 +745,7 @@ export function Module1Assistant({
   }
 
   async function handleHarmonizeSection(targetSectionId: string, alertId?: string) {
+    onFeatureUsed?.("coherence_sentinel");
     const targetTitle = canvas.find((c) => c.id === targetSectionId)?.title ?? activeSpec.title;
     setBusyHarmonize(true);
     onError("");
@@ -856,6 +860,7 @@ export function Module1Assistant({
         onProjectUpdated={onProjectUpdated}
         onError={onError}
         runWithProgress={tracker.runWithProgress}
+        onFeatureUsed={onFeatureUsed}
       />
 
       {/* Mobile Sticky Step Selector Bar (< lg) */}
@@ -1609,7 +1614,10 @@ export function Module1Assistant({
                 <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-3 text-xs text-emerald-950">
                   <button
                     type="button"
-                    onClick={() => setShowInternalLibrary((v) => !v)}
+                    onClick={() => {
+                      setShowInternalLibrary((v) => !v);
+                      onFeatureUsed?.("internal_library");
+                    }}
                     className="flex w-full items-center justify-between gap-2 font-semibold text-emerald-900"
                   >
                     <span className="inline-flex items-center gap-1.5">

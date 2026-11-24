@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 import math
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from fastapi import HTTPException
@@ -16,10 +16,43 @@ from app.core.security import (
     verify_password,
 )
 from app.db.datastore import UserRecord, as_store
-from app.schemas.auth import AIQuotaOut, ModuleEntitlementOut, UserMeOut
+from app.schemas.auth import (
+    AIQuotaOut,
+    ModuleEntitlementOut,
+    OnboardingStateOut,
+    UserMeOut,
+)
 from app.services.licensing_service import get_student_daily_38_usage
 
 MODULE_KEYS = ("module1", "module2", "module3", "module4")
+
+
+def normalize_onboarding_state(raw: Any) -> Dict[str, Any]:
+    """Normalize persisted onboarding preferences safely for SQL and Firestore profiles."""
+    if hasattr(raw, "model_dump"):
+        raw = raw.model_dump()
+    if not isinstance(raw, dict):
+        raw = {}
+
+    raw_seen = raw.get("seen_features")
+    seen_clean: List[str] = []
+    seen_lower: set[str] = set()
+    if isinstance(raw_seen, list):
+        for item in raw_seen:
+            fid = str(item or "").strip()
+            if fid and fid.lower() not in seen_lower:
+                seen_lower.add(fid.lower())
+                seen_clean.append(fid[:64])
+
+    tips_raw = raw.get("tips_enabled")
+    tips_enabled = True if tips_raw is None else bool(tips_raw)
+
+    return {
+        "welcome_tour_completed": bool(raw.get("welcome_tour_completed", False)),
+        "welcome_tour_dismissed": bool(raw.get("welcome_tour_dismissed", False)),
+        "seen_features": seen_clean[-50:],
+        "tips_enabled": tips_enabled,
+    }
 
 
 def create_user_account(
@@ -326,4 +359,7 @@ def build_user_me_out(db: Any, user: Any) -> UserMeOut:
         project_id=first_proj.project_id if first_proj else None,
         entitlements=entitlements,
         ai_quota=ai_quota,
+        onboarding_state=OnboardingStateOut(
+            **normalize_onboarding_state(getattr(user, "onboarding_state", None))
+        ),
     )

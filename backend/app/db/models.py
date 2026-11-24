@@ -51,6 +51,7 @@ class UserORM(Base):
     )
     gemini_api_key_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, default=None)
     model_routing_config: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON_VARIANT, nullable=True, default=None)
+    onboarding_state: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON_VARIANT, nullable=True, default=None)
 
 
 class GeminiApiKeyORM(Base):
