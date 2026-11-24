@@ -1581,7 +1581,7 @@ def apply_reformulation_endpoint(
         if payload.content_html is not None and payload.content_html.strip()
         else markdown_to_clean_html(payload.content_markdown)
     )
-    if sec.status == StepStatus.NOT_STARTED and (sec.content_markdown or "").strip():
+    if sec.status == StepStatus.PENDING and (sec.content_markdown or "").strip():
         sec.status = StepStatus.IN_PROGRESS
     if section_id == "chap3_budget":
         from app.services.budget_engine import sync_budget_from_section
