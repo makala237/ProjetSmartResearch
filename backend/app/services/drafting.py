@@ -865,6 +865,12 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
         current_sec.cited_ref_ids = cited_ref_ids
         current_sec.audit_notes = det_notes
         _append_structured_elements(current_sec, dto)
+        from app.services.vancouver import renumber_and_sync_vancouver_references
+
+        renumber_and_sync_vancouver_references(project)
+        clean_md = current_sec.content_markdown
+        clean_html = current_sec.content_html
+        cited_ref_ids = list(current_sec.cited_ref_ids or [])
 
     wm_update = update_section_working_memory(project, section_id)
     orch_trace["working_memory_update"] = wm_update
@@ -1205,6 +1211,11 @@ Instructions:
             sync_budget_from_section(project, overwrite=True)
             sec.custom_tables = []
             refresh_budget_slide_if_present(project)
+        from app.services.vancouver import renumber_and_sync_vancouver_references
+
+        renumber_and_sync_vancouver_references(project)
+        clean_md = sec.content_markdown
+        clean_html = sec.content_html
 
     wm_update = update_section_working_memory(project, section_id)
     orch_trace["working_memory_update"] = wm_update

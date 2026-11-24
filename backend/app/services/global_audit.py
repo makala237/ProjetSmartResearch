@@ -431,30 +431,29 @@ def run_global_protocol_audit(project: ProtocolProject) -> Dict[str, object]:
             body_text_parts.append(t)
     full_body = "\n".join(body_text_parts)
     cited_nums = _extract_cited_numbers(full_body)
-    ref_sec_text = _section_plain_text(project, "references")
-    ref_lines_count = len(
-        [ln for ln in ref_sec_text.splitlines() if re.match(r"^\s*\d+\.\s+", ln)]
-    )
-    total_refs = max(len(project.references), ref_lines_count)
+    from app.services.vancouver import get_cited_references_in_order
+
+    cited_refs = get_cited_references_in_order(project)
+    cited_count = len(cited_refs)
+    pool_count = len(project.references or [])
     det_cit: List[str] = []
-    out_of_range = sorted(n for n in cited_nums if n > total_refs)
-    uncited = sorted(n for n in range(1, total_refs + 1) if n not in cited_nums) if total_refs > 0 else []
-    if total_refs == 0 and body_text_parts:
+    out_of_range = sorted(n for n in cited_nums if n > pool_count)
+    non_sequential = sorted(n for n in cited_nums if n <= pool_count and n > cited_count)
+    if pool_count == 0 and body_text_parts:
         det_cit.append("Aucune référence Vancouver enregistrée pour le protocole.")
+    elif cited_count == 0 and body_text_parts:
+        det_cit.append("Aucune référence du réservoir n'est encore citée [n] dans les sections rédigées.")
     if out_of_range:
         det_cit.append(
-            "Appels bibliographiques hors liste (numéro supérieur au nombre de références) : "
+            "Appels bibliographiques hors liste (numéro supérieur au réservoir de références) : "
             + ", ".join(f"[{n}]" for n in out_of_range[:10])
         )
-    if uncited:
+    if non_sequential:
         det_cit.append(
-            f"{len(uncited)} référence(s) non citée(s) dans le texte : "
-            + ", ".join(f"[{n}]" for n in uncited[:8])
-            + ("..." if len(uncited) > 8 else "")
+            "Appels non renumérotés par ordre d'apparition (relancer « Valider les références ») : "
+            + ", ".join(f"[{n}]" for n in non_sequential[:10])
         )
-    if total_refs == 0 and cited_nums:
-        st_cit = "error"
-    elif out_of_range:
+    if (pool_count == 0 and cited_nums) or out_of_range:
         st_cit = "error"
     elif det_cit:
         st_cit = "warning"
@@ -463,14 +462,16 @@ def run_global_protocol_audit(project: ProtocolProject) -> Dict[str, object]:
     checks.append(
         {
             "id": "citations_vancouver",
-            "label": "Intégrité des citations Vancouver [1..N]",
+            "label": "Intégrité des citations Vancouver (ordre d'apparition 1..K)",
             "status": st_cit,
             "summary": (
-                f"{len(cited_nums)} appel(s) vérifié(s) sur {total_refs} référence(s)."
+                f"{len(cited_nums)} appel(s) vérifié(s) sur {cited_count} référence(s) citée(s) (réservoir : {pool_count})."
                 if st_cit == "ok"
-                else f"{len(out_of_range)} appel(s) orphelin(s), {len(uncited)} référence(s) non citée(s)."
+                else f"{len(out_of_range)} appel(s) orphelin(s), {len(non_sequential)} hors ordre d'apparition ({cited_count} citée(s) / {pool_count})."
             ),
-            "details": det_cit or ["Tous les appels [n] correspondent aux références Vancouver."],
+            "details": det_cit or [
+                f"Les {cited_count} références citées sont ordonnées 1..{cited_count} par ordre d'apparition (réservoir total : {pool_count})."
+            ],
         }
     )
 

@@ -237,7 +237,10 @@ from app.services.toc_builder import (
     generate_clean_toc_section_content,
     sync_toc_from_exported_docx,
 )
-from app.services.vancouver import build_and_validate_vancouver_references
+from app.services.vancouver import (
+    build_and_validate_vancouver_references,
+    renumber_and_sync_vancouver_references,
+)
 
 settings = get_settings()
 
@@ -929,6 +932,11 @@ def update_section(
 
         sync_budget_from_section(project, overwrite=True)
         refresh_budget_slide_if_present(project)
+
+    if section_id != "references" and (
+        payload.content_markdown is not None or payload.content_html is not None
+    ):
+        renumber_and_sync_vancouver_references(project)
 
     _sync_module2_queue(project)
     evaluate_project_coherence(project, changed_section_id=section_id)
@@ -3029,6 +3037,8 @@ def restore_section_version_endpoint(
         restore_section_version(project, section_id, version_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    if section_id != "references":
+        renumber_and_sync_vancouver_references(project)
     from app.services.working_memory import update_section_working_memory
 
     update_section_working_memory(project, section_id)
@@ -3243,6 +3253,8 @@ def apply_copilot_proposal_endpoint(
             ):
                 msg.proposal.applied = True
     project.updated_at = now
+    if payload.section_id != "references":
+        renumber_and_sync_vancouver_references(project)
     from app.services.working_memory import update_section_working_memory
 
     update_section_working_memory(project, payload.section_id)

@@ -1598,10 +1598,8 @@ export function Module2Editor({
                     );
                     const hasHtml = Boolean(cleanHtml.trim());
                     const hasText = Boolean(cleanMd.trim());
-                    const isRefs =
-                      spec.id === "references" &&
-                      project.references.length > 0 &&
-                      !(st?.status === "validated" && hasText);
+                    const isRefsEmptyFallback =
+                      spec.id === "references" && !hasHtml && !hasText;
                     const matchedAutoAnnex =
                       !hasHtml &&
                       !hasText &&
@@ -1646,12 +1644,12 @@ export function Module2Editor({
                         </div>
 
                         {/* Rich HTML or Plain Markdown */}
-                        {isRefs ? (
-                          <ol className="mt-2 list-decimal space-y-1.5 pl-6 text-left text-sm text-slate-800">
-                            {project.references.map((r) => (
-                              <li key={r.ref_id}>{r.vancouver_citation}</li>
-                            ))}
-                          </ol>
+                        {isRefsEmptyFallback ? (
+                          <p className="mt-2 text-sm italic text-slate-500">
+                            {lang === "en"
+                              ? "No references have been cited in the drafted sections yet (cited references will be numbered here automatically in order of appearance)."
+                              : "Aucune référence n'est encore citée dans les sections rédigées (les références citées apparaîtront ici automatiquement par ordre d'apparition)."}
+                          </p>
                         ) : hasHtml ? (
                           <div
                             className={`mt-2 prose prose-slate max-w-none text-sm text-slate-800 ${

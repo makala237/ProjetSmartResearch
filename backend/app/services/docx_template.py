@@ -48,7 +48,10 @@ from app.services.toc_builder import (
     configure_word_toc_styles,
     insert_word_automatic_toc,
 )
-from app.services.vancouver import build_and_validate_vancouver_references
+from app.services.vancouver import (
+    build_and_validate_vancouver_references,
+    get_cited_references_in_order,
+)
 
 SOURCE_CANVAS_DOCX = WORKSPACE_DIR / "2025_Canevas_protocole.docx"
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -2479,8 +2482,9 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         _set_paragraph_outline(cursor, 1)
         ref_sec = project.sections.get("references")
         ref_paras = []
-        if project.references:
-            for idx, ref in enumerate(project.references, start=1):
+        cited_refs = get_cited_references_in_order(project)
+        if cited_refs:
+            for idx, ref in enumerate(cited_refs, start=1):
                 line = (
                     ref.vancouver_citation
                     or f"{', '.join(ref.authors)}. {ref.title}. {ref.journal}. {ref.year or ''}."

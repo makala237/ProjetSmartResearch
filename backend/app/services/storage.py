@@ -118,17 +118,20 @@ def _build_special_section_markdown(project: ProtocolProject, section_id: str) -
         return "\n".join(entries)
 
     if section_id == "references":
+        from app.services.vancouver import (
+            get_cited_references_in_order,
+            render_vancouver_markdown_list,
+        )
+
         heading = "### REFERENCES (VANCOUVER STYLE)" if lang == "en" else "### RÉFÉRENCES BIBLIOGRAPHIQUES (VANCOUVER)"
-        empty_msg = "No references recorded yet." if lang == "en" else "Aucune référence enregistrée pour le moment."
-        if project.references:
-            lines = [heading, ""]
-            for i, ref in enumerate(project.references, start=1):
-                cit = (
-                    ref.vancouver_citation
-                    or f"{', '.join(ref.authors)}. {ref.title}. {ref.journal}. {ref.year or ''}."
-                )
-                lines.append(f"{i}. {cit}")
-            return "\n".join(lines)
+        empty_msg = (
+            "No references have been cited in the drafted sections yet."
+            if lang == "en"
+            else "Aucune référence n'est encore citée dans les sections rédigées du protocole."
+        )
+        cited_refs = get_cited_references_in_order(project)
+        if cited_refs:
+            return f"{heading}\n\n{render_vancouver_markdown_list(cited_refs)}"
         return f"{heading}\n\n{empty_msg}"
 
     if section_id == "annexes":
