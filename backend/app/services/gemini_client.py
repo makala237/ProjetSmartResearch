@@ -119,6 +119,105 @@ class _VancouverBatchOut(BaseModel):
     summary: str = ""
 
 
+def _repair_and_parse_json(raw_text: str) -> Any:
+    """Parse LLM JSON with multi-stage deterministic repair for open-weights models (e.g. Nemotron).
+
+    Handles:
+      1. Optional markdown ```json fences or leading/trailing prose.
+      2. Raw control characters / unescaped newlines inside JSON strings (strict=False).
+      3. Trailing commas before `}` or `]`.
+      4. Unescaped inner double quotes inside long French/medical string values
+         (the #1 cause of `Expecting ',' delimiter` at char 40k+).
+      5. Truncated JSON tails (closes open string/arrays/objects cleanly).
+    """
+    clean = (raw_text or "").strip()
+    if not clean:
+        raise ValueError("Réponse JSON structurée vide")
+
+    fence_match = re.search(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", clean, flags=re.DOTALL)
+    if fence_match:
+        clean = fence_match.group(1).strip()
+    else:
+        first_brace = clean.find("{")
+        last_brace = clean.rfind("}")
+        if first_brace >= 0 and last_brace > first_brace:
+            clean = clean[first_brace : last_brace + 1].strip()
+
+    # Fast path 1: strict or lenient json.loads
+    try:
+        return json.loads(clean)
+    except json.JSONDecodeError:
+        pass
+    try:
+        return json.loads(clean, strict=False)
+    except json.JSONDecodeError:
+        pass
+
+    # Stage 2: strip trailing commas before } or ]
+    repaired = re.sub(r",\s*([}\]])", r"\1", clean)
+    try:
+        return json.loads(repaired, strict=False)
+    except json.JSONDecodeError:
+        pass
+
+    # Stage 3: iteratively escape unescaped inner double quotes inside string values
+    # using JSONDecodeError.pos (bounded to 40 fixes so it always terminates fast).
+    work = repaired
+    for _ in range(40):
+        try:
+            return json.loads(work, strict=False)
+        except json.JSONDecodeError as exc:
+            pos = exc.pos
+            if pos <= 0 or pos >= len(work):
+                break
+            # Look backward from error position for an unescaped `"` that prematurely closed a string
+            if "Expecting ',' delimiter" in exc.msg or "Expecting ':' delimiter" in exc.msg:
+                q_idx = work.rfind('"', 0, pos)
+                if q_idx > 0 and work[q_idx - 1] != "\\":
+                    work = work[:q_idx] + '\\"' + work[q_idx + 1 :]
+                    continue
+            # Invalid backslash escape (e.g. \alpha, \frac in LaTeX inside JSON)
+            if "Invalid \\escape" in exc.msg:
+                b_idx = work.rfind("\\", 0, pos + 1)
+                if b_idx >= 0:
+                    work = work[:b_idx] + "\\\\" + work[b_idx + 1 :]
+                    continue
+            break
+
+    # Stage 4: close truncated JSON tail cleanly (open quote + open brackets/braces)
+    tail = work.rstrip()
+    in_str = False
+    escaped = False
+    stack: List[str] = []
+    for ch in tail:
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                stack.append("}")
+            elif ch == "[":
+                stack.append("]")
+            elif ch in ("}", "]") and stack and stack[-1] == ch:
+                stack.pop()
+    if in_str:
+        if tail.endswith("\\"):
+            tail = tail[:-1]
+        tail += '"'
+    tail = re.sub(r",\s*$", "", tail)
+    tail = re.sub(r":\s*$", ": null", tail)
+    if stack:
+        tail += "".join(reversed(stack))
+    tail = re.sub(r",\s*([}\]])", r"\1", tail)
+    return json.loads(tail, strict=False)
+
+
 class GeminiRouter:
     """Wrapper around Google GenAI SDK with per-role model chains and automatic fallback."""
 
@@ -568,7 +667,12 @@ class GeminiRouter:
             clean = (text or "").strip()
             if not clean:
                 raise ValueError("Réponse JSON structurée vide")
-            return schema.model_validate(json.loads(clean))
+            parsed = _repair_and_parse_json(clean)
+            if isinstance(parsed, dict):
+                # Fill safe defaults for optional/commentary fields if truncated off tail
+                if "assistant_commentary" in schema.model_fields and "assistant_commentary" not in parsed:
+                    parsed["assistant_commentary"] = ""
+            return schema.model_validate(parsed)
 
         res = self.generate_with_fallback(
             role=role,
