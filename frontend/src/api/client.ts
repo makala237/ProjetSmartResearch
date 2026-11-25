@@ -793,6 +793,23 @@ export const api = {
       }
     ),
 
+  moveSectionMedia: (
+    projectId: string,
+    sectionId: string,
+    payload: {
+      media_kind: "table" | "image" | "diagram";
+      media_id: string;
+      direction: "up" | "down";
+    }
+  ) =>
+    request<ProtocolProject>(
+      `/api/projects/${projectId}/sections/${sectionId}/move-media`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
+
   diagramSvgUrl: (
     projectId: string,
     sectionId: string,

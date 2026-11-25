@@ -308,8 +308,89 @@ def _merge_pair(
     store[ac_norm] = (best_ac, best_ff)
 
 
-def _extract_inline_acronyms_from_text(text: str) -> List[Tuple[str, str]]:
-    """Conservatively detect explicit 'Full Meaning (SIGLE)' and 'SIGLE (Full Meaning)' definitions."""
+# Curated medical, epidemiological, statistical & FMSB/CAMES acronyms (FR / EN)
+# Used to resolve bare acronyms that appear in protocol prose without an inline parenthetical definition.
+_KNOWN_MEDICAL_ABBREVIATIONS: Dict[str, Tuple[str, str]] = {
+    "VIH": ("Virus de l'Immunodéficience Humaine", "Human Immunodeficiency Virus"),
+    "HIV": ("Virus de l'Immunodéficience Humaine", "Human Immunodeficiency Virus"),
+    "SIDA": ("Syndrome d'Immunodéficience Acquise", "Acquired Immunodeficiency Syndrome"),
+    "AIDS": ("Syndrome d'Immunodéficience Acquise", "Acquired Immunodeficiency Syndrome"),
+    "PVVIH": ("Personnes Vivant avec le VIH", "People Living with HIV"),
+    "PLHIV": ("Personnes Vivant avec le VIH", "People Living with HIV"),
+    "TARV": ("Traitement Antirétroviral", "Antiretroviral Therapy"),
+    "ARV": ("Antirétroviral", "Antiretroviral"),
+    "ART": ("Traitement Antirétroviral", "Antiretroviral Therapy"),
+    "OMS": ("Organisation Mondiale de la Santé", "World Health Organization"),
+    "WHO": ("Organisation Mondiale de la Santé", "World Health Organization"),
+    "FMSB": ("Faculté de Médecine et des Sciences Biomédicales", "Faculty of Medicine and Biomedical Sciences"),
+    "UY1": ("Université de Yaoundé I", "University of Yaoundé I"),
+    "CAMES": ("Conseil Africain et Malgache pour l'Enseignement Supérieur", "African and Malagasy Council for Higher Education"),
+    "CIER": ("Comité Institutionnel d'Éthique de la Recherche", "Institutional Research Ethics Committee"),
+    "CIERFMSB": ("Comité Institutionnel d'Éthique et de la Recherche de la FMSB", "Institutional Research Ethics Committee of FMSB"),
+    "CNERSH": ("Comité National d'Éthique de la Recherche pour la Santé Humaine", "National Ethics Committee for Human Health Research"),
+    "MINSANTE": ("Ministère de la Santé Publique", "Ministry of Public Health"),
+    "CHUY": ("Centre Hospitalier et Universitaire de Yaoundé", "Yaoundé University Teaching Hospital"),
+    "HGY": ("Hôpital Général de Yaoundé", "Yaoundé General Hospital"),
+    "HCY": ("Hôpital Central de Yaoundé", "Yaoundé Central Hospital"),
+    "HGOPY": ("Hôpital Gynéco-Obstétrique et Pédiatrique de Yaoundé", "Yaoundé Gynaeco-Obstetric and Pediatric Hospital"),
+    "HGD": ("Hôpital Général de Douala", "Douala General Hospital"),
+    "HLD": ("Hôpital Laquintinie de Douala", "Laquintinie Hospital of Douala"),
+    "CRF": ("Fiche de Collecte des Données (Case Report Form)", "Case Report Form"),
+    "IMC": ("Indice de Masse Corporelle", "Body Mass Index"),
+    "BMI": ("Indice de Masse Corporelle (Body Mass Index)", "Body Mass Index"),
+    "HTA": ("Hypertension Artérielle", "Arterial Hypertension"),
+    "DT2": ("Diabète de Type 2", "Type 2 Diabetes Mellitus"),
+    "ECG": ("Électrocardiogramme", "Electrocardiogram"),
+    "TDM": ("Tomodensitométrie", "Computed Tomography"),
+    "IRM": ("Imagerie par Résonance Magnétique", "Magnetic Resonance Imaging"),
+    "NFS": ("Numération Formule Sanguine", "Complete Blood Count"),
+    "CRP": ("Protéine C-Réactive", "C-Reactive Protein"),
+    "PCR": ("Réaction en Chaîne par Polymérase", "Polymerase Chain Reaction"),
+    "CD4": ("Lymphocytes T CD4+", "CD4+ T Lymphocytes"),
+    "IC": ("Intervalle de Confiance", "Confidence Interval"),
+    "CI": ("Intervalle de Confiance (Confidence Interval)", "Confidence Interval"),
+    "OR": ("Rapport des Cotes (Odds Ratio)", "Odds Ratio"),
+    "ORA": ("Odds Ratio Ajusté", "Adjusted Odds Ratio"),
+    "AOR": ("Odds Ratio Ajusté (Adjusted Odds Ratio)", "Adjusted Odds Ratio"),
+    "RR": ("Risque Relatif", "Relative Risk"),
+    "HR": ("Rapport de Risque (Hazard Ratio)", "Hazard Ratio"),
+    "ET": ("Écart-Type", "Standard Deviation"),
+    "SD": ("Écart-Type (Standard Deviation)", "Standard Deviation"),
+    "IQR": ("Écart Interquartile (Interquartile Range)", "Interquartile Range"),
+    "EIQ": ("Écart Interquartile", "Interquartile Range"),
+    "SPSS": ("Statistical Package for the Social Sciences", "Statistical Package for the Social Sciences"),
+    "ANOVA": ("Analyse de la Variance", "Analysis of Variance"),
+    "ROC": ("Receiver Operating Characteristic", "Receiver Operating Characteristic"),
+    "AUC": ("Aire Sous la Courbe (Area Under the Curve)", "Area Under the Curve"),
+    "CONSORT": ("Consolidated Standards of Reporting Trials", "Consolidated Standards of Reporting Trials"),
+    "PRISMA": ("Preferred Reporting Items for Systematic Reviews and Meta-Analyses", "Preferred Reporting Items for Systematic Reviews and Meta-Analyses"),
+    "STROBE": ("Strengthening the Reporting of Observational Studies in Epidemiology", "Strengthening the Reporting of Observational Studies in Epidemiology"),
+    "FCFA": ("Franc de la Coopération Financière en Afrique Centrale", "Central African CFA Franc"),
+    "IST": ("Infection Sexuellement Transmissible", "Sexually Transmitted Infection"),
+    "VHB": ("Virus de l'Hépatite B", "Hepatitis B Virus"),
+    "VHC": ("Virus de l'Hépatite C", "Hepatitis C Virus"),
+    "HBA1C": ("Hémoglobine Glyquée", "Glycated Hemoglobin"),
+    "DFG": ("Débit de Filtration Glomérulaire", "Glomerular Filtration Rate"),
+    "IRC": ("Insuffisance Rénale Chronique", "Chronic Kidney Disease"),
+    "IRA": ("Insuffisance Rénale Aiguë", "Acute Kidney Injury"),
+    "AVC": ("Accident Vasculaire Cérébral", "Cerebrovascular Accident / Stroke"),
+    "IDM": ("Infarctus du Myocarde", "Myocardial Infarction"),
+    "BPCO": ("Bronchopneumopathie Chronique Obstructive", "Chronic Obstructive Pulmonary Disease"),
+    "GCS": ("Score de Glasgow (Glasgow Coma Scale)", "Glasgow Coma Scale"),
+    "EVA": ("Échelle Visuelle Analogique", "Visual Analog Scale"),
+    "IA": ("Intelligence Artificielle", "Artificial Intelligence"),
+    "AI": ("Intelligence Artificielle (Artificial Intelligence)", "Artificial Intelligence"),
+    "LLM": ("Grand Modèle de Langage (Large Language Model)", "Large Language Model"),
+}
+
+_LEADING_ARTICLES_RE = re.compile(
+    r"^(?:l['’]|d['’]|le|la|les|un|une|des|du|de|au|aux|en|et|ou|par|pour|sur|dans|chez|avec|the|a|an|of|for|in|by)\s+",
+    re.IGNORECASE,
+)
+
+
+def _extract_inline_acronyms_from_text(text: str, lang: str = "fr") -> List[Tuple[str, str]]:
+    """Detect explicit 'Full Meaning (SIGLE)', 'SIGLE (Full Meaning)', and known bare medical acronyms."""
     results: List[Tuple[str, str]] = []
     if not text:
         return results
@@ -317,25 +398,41 @@ def _extract_inline_acronyms_from_text(text: str) -> List[Tuple[str, str]]:
     plain = re.sub(r"\*\*|\*|__", "", plain)
     plain = re.sub(r"\s+", " ", plain)
 
-    # Pattern 1: "Faculté de Médecine ... (FMSB)" — 2..7 capitalized/connecting words before (ACRONYM)
+    # Pattern 1: "personnes vivant avec le VIH (PVVIH)" OR "Faculté de Médecine ... (FMSB)"
+    # Accepts BOTH capitalized and lowercase French/English multi-word definitions (2..10 words)
     p_def_then_sigle = re.compile(
-        r"\b([A-ZÀ-Ö][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+(?:\s+(?:de|du|des|d'|l'|et|en|of|the|for|pour|la|le|les|à|au|[A-ZÀ-Öa-zà-ö][A-Za-zÀ-ÖØ-öø-ÿ'’\-]*)){1,7})\s*\(([A-Z][A-Z0-9\-/]{1,8})\)"
+        r"\b([A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'’\-]+){1,9})\s*\(([A-Z][A-Za-z0-9\-/]{1,11})\)"
     )
     for m in p_def_then_sigle.finditer(plain):
-        phrase = m.group(1).strip()
+        raw_phrase = m.group(1).strip()
         sigle = m.group(2).strip()
-        words = [w for w in re.split(r"[\s'’\-]+", phrase) if w]
-        # Verify at least 2 meaningful initial matches or >=2 uppercase letters in sigle matching content words
-        initials = "".join(w[0].upper() for w in words if len(w) > 2 or w[0].isupper())
-        sigle_letters = re.sub(r"[^A-Z]", "", sigle)
-        if len(sigle_letters) >= 2 and any(ch in initials for ch in sigle_letters):
-            # Ensure first letter of sigle appears early in phrase
-            if any(w[0].upper() == sigle_letters[0] for w in words[:4]):
-                results.append((sigle, phrase))
+        sigle_letters = re.sub(r"[^A-Z]", "", sigle.upper())
+        if len(sigle_letters) < 2:
+            continue
+        # Trim sentence-prefix words until we align with the first letter of the acronym
+        words = [w for w in raw_phrase.split() if w]
+        start_idx = None
+        for idx_w, w in enumerate(words):
+            clean_w = re.sub(r"^(?:[ldLD]['’])", "", w)
+            if clean_w and clean_w[0].upper() == sigle_letters[0]:
+                start_idx = idx_w
+                break
+        if start_idx is None:
+            continue
+        trimmed_phrase = " ".join(words[start_idx:]).strip()
+        while _LEADING_ARTICLES_RE.match(trimmed_phrase):
+            nxt = _LEADING_ARTICLES_RE.sub("", trimmed_phrase, count=1).strip()
+            if len(nxt.split()) >= 2:
+                trimmed_phrase = nxt
+            else:
+                break
+        if len(trimmed_phrase) >= 5 and len(trimmed_phrase.split()) >= 2:
+            pretty = trimmed_phrase[0].upper() + trimmed_phrase[1:]
+            results.append((sigle, pretty))
 
     # Pattern 2: "WHO (World Health Organization)"
     p_sigle_then_def = re.compile(
-        r"\b([A-Z][A-Z0-9\-/]{1,8})\s*\(([A-ZÀ-Ö][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'’\-]+){1,7})\)"
+        r"\b([A-Z][A-Z0-9\-/]{1,10})\s*\(([A-Za-zÀ-ÖØ-öø-ÿ][A-Za-zÀ-ÖØ-öø-ÿ'’\-]+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'’\-]+){1,9})\)"
     )
     for m in p_sigle_then_def.finditer(plain):
         sigle = m.group(1).strip()
@@ -343,7 +440,16 @@ def _extract_inline_acronyms_from_text(text: str) -> List[Tuple[str, str]]:
         words = [w for w in re.split(r"[\s'’\-]+", phrase) if w]
         sigle_letters = re.sub(r"[^A-Z]", "", sigle)
         if len(words) >= 2 and len(sigle_letters) >= 2 and any(w[0].upper() == sigle_letters[0] for w in words[:3]):
-            results.append((sigle, phrase))
+            pretty = phrase[0].upper() + phrase[1:]
+            results.append((sigle, pretty))
+
+    # Pattern 3: Known bare medical/statistical/FMSB acronyms appearing as standalone tokens
+    is_en = normalize_lang(lang) == "en"
+    for tok in set(re.findall(r"\b([A-Z][A-Za-z0-9\-]{1,11})\b", plain)):
+        norm_k = _normalize_abbr_key(tok)
+        if norm_k in _KNOWN_MEDICAL_ABBREVIATIONS:
+            fr_def, en_def = _KNOWN_MEDICAL_ABBREVIATIONS[norm_k]
+            results.append((tok, en_def if is_en else fr_def))
 
     return results
 
@@ -399,22 +505,44 @@ def collect_deduplicated_abbreviations(project: ProtocolProject) -> List[Abbrevi
             except Exception:
                 pass
 
-    # 3. Scan body sections & custom tables/diagrams for explicit 'Full Meaning (SIGLE)' definitions
+    # 3. Scan cover metadata, body sections, custom tables & diagrams for explicit & known acronyms
+    proj_lang = getattr(project, "language", "fr") or "fr"
+    cover_blob = " ".join(
+        [
+            project.cover.title or "",
+            project.cover.faculty_fr or "",
+            project.cover.university_fr or "",
+            " ".join(project.cover.host_institutions or []),
+            " ".join(project.cover.ethics_committees or []),
+        ]
+    )
+    for ac, ff in _extract_inline_acronyms_from_text(cover_blob, lang=proj_lang):
+        if _normalize_abbr_key(ac) not in merged:
+            _merge_pair(merged, ac, ff)
+
     for spec in FMSB_SECTIONS:
         if spec.id in _FRONT_MATTER_SECTION_IDS:
             continue
         sec = project.sections.get(spec.id)
         if not sec:
             continue
-        for ac, ff in _extract_inline_acronyms_from_text(sec.content_markdown):
+        for ac, ff in _extract_inline_acronyms_from_text(sec.content_markdown, lang=proj_lang):
             if _normalize_abbr_key(ac) not in merged:
                 _merge_pair(merged, ac, ff)
         for ct in getattr(sec, "custom_tables", None) or []:
             for row in ct.rows:
                 for cell in row:
-                    for ac, ff in _extract_inline_acronyms_from_text(str(cell)):
+                    for ac, ff in _extract_inline_acronyms_from_text(str(cell), lang=proj_lang):
                         if _normalize_abbr_key(ac) not in merged:
                             _merge_pair(merged, ac, ff)
+        for dg in getattr(sec, "custom_diagrams", None) or []:
+            dg_blob = " ".join(
+                [dg.title or "", dg.caption or ""]
+                + [f"{n.title} {' '.join(n.items or [])}" for n in (dg.nodes or [])]
+            )
+            for ac, ff in _extract_inline_acronyms_from_text(dg_blob, lang=proj_lang):
+                if _normalize_abbr_key(ac) not in merged:
+                    _merge_pair(merged, ac, ff)
 
     sorted_items = [
         AbbreviationItem(acronym=ac, full_form=ff)

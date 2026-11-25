@@ -2198,6 +2198,106 @@ def delete_section_diagram(
     return project_storage.save(project)
 
 
+class MoveSectionMediaRequest(BaseModel):
+    media_kind: str  # "table" | "image" | "diagram"
+    media_id: str
+    direction: str  # "up" | "down"
+
+
+@app.post("/api/projects/{project_id}/sections/{section_id}/move-media", response_model=ProtocolProject)
+def move_section_media(
+    project_id: str,
+    section_id: str,
+    payload: MoveSectionMediaRequest,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    """Move a table, image figure, or diagram upward/downward within a section (order + anchor_hint)."""
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+    sec = project.sections[section_id]
+    direction = (payload.direction or "").strip().lower()
+    if direction not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="Direction invalide ('up' ou 'down').")
+    delta = -1 if direction == "up" else 1
+
+    # Build ordered paragraph anchor slots: [para_0, para_1, ..., para_{n-1}, "" (end of section)]
+    raw_paras = [
+        re.sub(r"\s+", " ", p.strip())[:140]
+        for p in re.split(r"\n\s*\n", sec.content_markdown or "")
+        if p.strip() and not p.strip().startswith("#")
+    ]
+    anchor_slots = raw_paras + [""]
+
+    def _step_anchor(current_hint: str) -> str:
+        if len(anchor_slots) <= 1:
+            return current_hint
+        cur = (current_hint or "").strip()
+        cur_idx = len(anchor_slots) - 1  # default = end of section ("")
+        if cur:
+            cur_low = cur.lower()
+            for idx_s, slot in enumerate(anchor_slots[:-1]):
+                if slot.lower().startswith(cur_low[:40]) or cur_low[:40] in slot.lower():
+                    cur_idx = idx_s
+                    break
+        next_idx = max(0, min(len(anchor_slots) - 1, cur_idx + delta))
+        return anchor_slots[next_idx]
+
+    kind = (payload.media_kind or "").strip().lower()
+    if kind == "table":
+        idx = next((i for i, t in enumerate(sec.custom_tables) if t.table_id == payload.media_id), None)
+        if idx is None:
+            return project
+        target_idx = idx + delta
+        if 0 <= target_idx < len(sec.custom_tables):
+            sec.custom_tables[idx], sec.custom_tables[target_idx] = (
+                sec.custom_tables[target_idx],
+                sec.custom_tables[idx],
+            )
+            moved = sec.custom_tables[target_idx]
+        else:
+            moved = sec.custom_tables[idx]
+        moved.anchor_hint = _step_anchor(moved.anchor_hint)
+    elif kind == "diagram":
+        idx = next((i for i, d in enumerate(sec.custom_diagrams) if d.diagram_id == payload.media_id), None)
+        if idx is None:
+            return project
+        target_idx = idx + delta
+        if 0 <= target_idx < len(sec.custom_diagrams):
+            sec.custom_diagrams[idx], sec.custom_diagrams[target_idx] = (
+                sec.custom_diagrams[target_idx],
+                sec.custom_diagrams[idx],
+            )
+            moved = sec.custom_diagrams[target_idx]
+        else:
+            moved = sec.custom_diagrams[idx]
+        moved.anchor_hint = _step_anchor(moved.anchor_hint)
+    elif kind == "image":
+        sec_img_indices = [
+            i for i, im in enumerate(project.images)
+            if im.target_section_id == section_id and im.approved
+        ]
+        pos_in_sec = next(
+            (pos for pos, global_i in enumerate(sec_img_indices) if project.images[global_i].asset_id == payload.media_id),
+            None,
+        )
+        if pos_in_sec is None:
+            return project
+        target_pos = pos_in_sec + delta
+        if 0 <= target_pos < len(sec_img_indices):
+            g1, g2 = sec_img_indices[pos_in_sec], sec_img_indices[target_pos]
+            project.images[g1], project.images[g2] = project.images[g2], project.images[g1]
+            moved_img = project.images[g2]
+        else:
+            moved_img = project.images[sec_img_indices[pos_in_sec]]
+        moved_img.anchor_hint = _step_anchor(moved_img.anchor_hint)
+    else:
+        raise HTTPException(status_code=400, detail="Type de média invalide.")
+
+    _sync_module2_queue(project)
+    return project_storage.save(project)
+
+
 @app.post("/api/projects/{project_id}/import")
 async def import_existing_protocol(
     project_id: str,
