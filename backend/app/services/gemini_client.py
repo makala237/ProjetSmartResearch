@@ -403,6 +403,50 @@ class GeminiRouter:
         return healthy + cooled
 
     @staticmethod
+    def _build_concrete_json_template(schema_cls: Any) -> str:
+        """Convert a Pydantic model into a clean concrete JSON example skeleton (never raw JSON Schema)
+        so open-weights models like NVIDIA Nemotron populate real values instead of echoing JSON Schema metadata.
+        """
+        raw = schema_cls.model_json_schema()
+        defs = raw.get("$defs") or raw.get("definitions") or {}
+
+        def _resolve(node: Any, depth: int = 0) -> Any:
+            if depth > 5 or not isinstance(node, dict):
+                return "<string>"
+            if "$ref" in node:
+                ref_name = str(node["$ref"]).rsplit("/", 1)[-1]
+                return _resolve(defs.get(ref_name, {}), depth + 1)
+            if "anyOf" in node:
+                non_null = [o for o in node["anyOf"] if isinstance(o, dict) and o.get("type") != "null"]
+                if non_null:
+                    return _resolve(non_null[0], depth + 1)
+                return None
+            if "enum" in node and isinstance(node["enum"], list) and node["enum"]:
+                return " | ".join(str(v) for v in node["enum"])
+            if "const" in node:
+                return node["const"]
+            t = node.get("type")
+            if t == "object" or "properties" in node:
+                props = node.get("properties") or {}
+                if not props:
+                    return {}
+                return {k: _resolve(v, depth + 1) for k, v in props.items()}
+            if t == "array":
+                items = node.get("items") or {}
+                return [_resolve(items, depth + 1)]
+            if t == "boolean":
+                return True
+            if t == "integer":
+                return 0
+            if t == "number":
+                return 0.0
+            desc = str(node.get("description") or "").strip()
+            return f"<{desc[:70]}>" if desc else "<string>"
+
+        template_obj = _resolve(raw, 0)
+        return json.dumps(template_obj, ensure_ascii=False, indent=2)
+
+    @staticmethod
     def _is_nvidia_direct_model(model_id: str) -> bool:
         mid = (model_id or "").strip().lower()
         return mid.startswith("nvidia/") and not mid.endswith(":free")
@@ -454,11 +498,13 @@ class GeminiRouter:
         )
         if schema_cls is not None and hasattr(schema_cls, "model_json_schema"):
             try:
-                schema_json = json.dumps(schema_cls.model_json_schema(), ensure_ascii=False)
+                template_json = self._build_concrete_json_template(schema_cls)
                 sys_parts.append(
-                    "CRITICAL OUTPUT FORMAT: Return ONLY a single flat JSON object whose TOP-LEVEL keys match the "
-                    "schema properties directly (NO markdown fences, NO commentary outside JSON, and NEVER wrap your "
-                    "response inside a 'properties' or 'schema' envelope):\n" + schema_json
+                    "CRITICAL OUTPUT FORMAT: Return ONLY a single valid JSON object populated with real values "
+                    "matching the exact keys and types in the template below.\n"
+                    "- Replace every placeholder like '<string>' or 'a | b | c' with an actual concrete value (pick ONE valid choice for 'a | b | c').\n"
+                    "- Output NO markdown fences, NO commentary outside JSON, and NEVER output JSON Schema metadata ('properties', 'type', 'default', '$defs').\n"
+                    "JSON TEMPLATE:\n" + template_json
                 )
             except Exception:
                 pass
