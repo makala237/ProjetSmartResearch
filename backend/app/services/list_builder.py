@@ -118,6 +118,7 @@ _FRONT_MATTER_SECTION_IDS = {
     "abbreviations",
     "list_of_tables",
     "list_of_figures",
+    "references",
 }
 
 
@@ -260,6 +261,21 @@ def _is_valid_acronym_candidate(ac: str, ff: str) -> bool:
     return True
 
 
+def _strip_leading_def_articles(val: str) -> str:
+    """Strip leading French/English articles ('Le ', 'La ', 'Les ', 'L\\'', 'Un ', 'Une ', 'The ') and capitalize."""
+    s = (val or "").strip()
+    article_re = re.compile(r"^(?:l['’]|le|la|les|un|une|des|du|the|a|an)\s+", re.IGNORECASE)
+    while article_re.match(s):
+        nxt = article_re.sub("", s, count=1).strip()
+        if len(nxt) >= 3:
+            s = nxt
+        else:
+            break
+    if s and s[0].islower():
+        s = s[0].upper() + s[1:]
+    return s
+
+
 def _merge_pair(
     store: Dict[str, Tuple[str, str]],
     acronym: str,
@@ -269,7 +285,7 @@ def _merge_pair(
     ac = _clean_abbr_text(acronym)
     if ac.upper() == "UYI":
         ac = "UY1"
-    ff = _clean_abbr_text(full_form)
+    ff = _strip_leading_def_articles(_clean_abbr_text(full_form))
     prec = _clean_abbr_text(precision)
 
     # Reject table header phrases
@@ -389,6 +405,21 @@ _LEADING_ARTICLES_RE = re.compile(
 )
 
 
+# Cross-language twin acronyms: never auto-inject English twins in FR protocols (or FR twins in EN protocols)
+_EN_TO_FR_TWIN_ACRONYMS: Dict[str, str] = {
+    "HIV": "VIH",
+    "AIDS": "SIDA",
+    "PLHIV": "PVVIH",
+    "WHO": "OMS",
+    "ART": "TARV",
+    "BMI": "IMC",
+    "CI": "IC",
+    "SD": "ET",
+    "AI": "IA",
+}
+_FR_TO_EN_TWIN_ACRONYMS: Dict[str, str] = {v: k for k, v in _EN_TO_FR_TWIN_ACRONYMS.items()}
+
+
 def _extract_inline_acronyms_from_text(text: str, lang: str = "fr") -> List[Tuple[str, str]]:
     """Detect explicit 'Full Meaning (SIGLE)', 'SIGLE (Full Meaning)', and known bare medical acronyms."""
     results: List[Tuple[str, str]] = []
@@ -445,8 +476,11 @@ def _extract_inline_acronyms_from_text(text: str, lang: str = "fr") -> List[Tupl
 
     # Pattern 3: Known bare medical/statistical/FMSB acronyms appearing as standalone tokens
     is_en = normalize_lang(lang) == "en"
+    skip_bare = _FR_TO_EN_TWIN_ACRONYMS if is_en else _EN_TO_FR_TWIN_ACRONYMS
     for tok in set(re.findall(r"\b([A-Z][A-Za-z0-9\-]{1,11})\b", plain)):
         norm_k = _normalize_abbr_key(tok)
+        if norm_k in skip_bare:
+            continue
         if norm_k in _KNOWN_MEDICAL_ABBREVIATIONS:
             fr_def, en_def = _KNOWN_MEDICAL_ABBREVIATIONS[norm_k]
             results.append((tok, en_def if is_en else fr_def))
@@ -543,6 +577,13 @@ def collect_deduplicated_abbreviations(project: ProtocolProject) -> List[Abbrevi
             for ac, ff in _extract_inline_acronyms_from_text(dg_blob, lang=proj_lang):
                 if _normalize_abbr_key(ac) not in merged:
                     _merge_pair(merged, ac, ff)
+
+    # Prune stale cross-language twin duplicates (e.g., drop HIV/AIDS/WHO in FR protocols when VIH/SIDA/OMS exist)
+    is_en_proj = normalize_lang(proj_lang) == "en"
+    twin_map = _FR_TO_EN_TWIN_ACRONYMS if is_en_proj else _EN_TO_FR_TWIN_ACRONYMS
+    for foreign_key, native_key in twin_map.items():
+        if foreign_key in merged and native_key in merged:
+            merged.pop(foreign_key, None)
 
     sorted_items = [
         AbbreviationItem(acronym=ac, full_form=ff)
