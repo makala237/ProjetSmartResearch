@@ -456,8 +456,9 @@ class GeminiRouter:
             try:
                 schema_json = json.dumps(schema_cls.model_json_schema(), ensure_ascii=False)
                 sys_parts.append(
-                    "CRITICAL OUTPUT FORMAT: Return ONLY a valid JSON object strictly conforming to this JSON Schema "
-                    "(no markdown fences, no commentary outside JSON):\n" + schema_json
+                    "CRITICAL OUTPUT FORMAT: Return ONLY a single flat JSON object whose TOP-LEVEL keys match the "
+                    "schema properties directly (NO markdown fences, NO commentary outside JSON, and NEVER wrap your "
+                    "response inside a 'properties' or 'schema' envelope):\n" + schema_json
                 )
             except Exception:
                 pass
@@ -699,6 +700,15 @@ class GeminiRouter:
                 raise ValueError("Réponse JSON structurée vide")
             parsed = _repair_and_parse_json(clean)
             if isinstance(parsed, dict):
+                schema_fields = set(schema.model_fields.keys())
+                # Unwrap accidental {"properties": {...}} / {"data": {...}} / {"result": {...}} envelopes
+                # occasionally emitted by open-weights models when shown a JSON Schema.
+                if not (schema_fields & set(parsed.keys())):
+                    for wrapper_key in ("properties", "data", "result", "output", "response"):
+                        inner = parsed.get(wrapper_key)
+                        if isinstance(inner, dict) and (schema_fields & set(inner.keys())):
+                            parsed = inner
+                            break
                 # Fill safe defaults for optional/commentary fields if truncated off tail
                 if "assistant_commentary" in schema.model_fields and "assistant_commentary" not in parsed:
                     parsed["assistant_commentary"] = ""
