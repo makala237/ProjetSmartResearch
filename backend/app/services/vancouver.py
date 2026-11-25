@@ -56,16 +56,19 @@ def _strip_leading_number(text: str) -> str:
 
 
 def _normalize_vancouver_punctuation(text: str) -> str:
-    """Normalize spacing, 'et al.', incomplete hyphenated page ranges, and terminal period."""
+    """Normalize spacing, italics, 'et al.', NLM page ranges, and terminal period."""
     s = _strip_leading_number(text)
     if not s:
         return ""
+    # Strict NLM/Vancouver uses NO italics (strip Markdown *...* or _..._)
+    s = re.sub(r"\*+([^*]+)\*+", r"\1", s)
     s = re.sub(r"\s+", " ", s).strip()
     # Protect URLs before tightening punctuation spacing
     urls: List[str] = []
 
     def _stash_url(match: re.Match) -> str:
-        urls.append(match.group(0))
+        # Never keep a trailing period attached to a URL
+        urls.append(match.group(0).rstrip(".,;)"))
         return f"__URL_{len(urls) - 1}__"
 
     s = _URL_RE.sub(_stash_url, s)
@@ -73,8 +76,16 @@ def _normalize_vancouver_punctuation(text: str) -> str:
     s = re.sub(r"([12]\d{3})\s*;\s*", r"\1;", s)
     s = re.sub(r"(\w|\))\s*:\s*(\d)", r"\1:\2", s)
     s = re.sub(r"\bet\s+al\b(?!\.)", "et al.", s, flags=re.IGNORECASE)
+    # Collapse accidental double periods like 'et al..'
+    s = re.sub(r"\.{2,}", ".", s)
     # Repair truncated trailing page ranges like '215-' or '215–.'
-    s = re.sub(r"(:\s*\d+)\s*[-–]+\.?$", r"\1.", s)
+    s = re.sub(r"(:\s*[A-Za-z]?\d+)\s*[-–]+\.?$", r"\1.", s)
+    # Apply NLM page-range elision to numeric ranges after ':' (e.g. ':284-287' -> ':284-7')
+    s = re.sub(
+        r":([A-Za-z]?\d+\s*[-–]\s*[A-Za-z]?\d+)",
+        lambda m: ":" + _abbreviate_page_range_nlm(m.group(1)),
+        s,
+    )
     s = s.rstrip(" ,;")
     if s and s[-1] not in ".!?":
         if not s.endswith("__"):
@@ -84,61 +95,162 @@ def _normalize_vancouver_punctuation(text: str) -> str:
     return s.strip()
 
 
+_CORPORATE_AUTHOR_RE = re.compile(
+    r"\b(organization|organisation|who|oms|minsante|minist[eè]re|ministry|cdc|inserm|unaids|onusida|"
+    r"unicef|unesco|nih|nlm|nice|has|haute\s+autorit[eé]|institut|institute|committee|comit[eé]|"
+    r"consortium|collaborat|group|groupe|society|soci[eé]t[eé]|association|college|coll[eè]ge|"
+    r"university|universit[eé]|academy|acad[eé]mie|foundation|fondation|center|centre|network|r[eé]seau|"
+    r"working\s+party|task\s+force|guidelines?|department|d[eé]partement|fmsb|cames)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def _abbreviate_page_range_nlm(pages: str) -> str:
+    """Apply official NLM Citing Medicine page-range elision (e.g. 284-287 -> 284-7, 112-119 -> 112-19)."""
+    raw = (pages or "").strip().rstrip("-–.")
+    if not raw:
+        return ""
+    m = re.fullmatch(r"([A-Za-z]?)(\d+)\s*[-–]\s*([A-Za-z]?)(\d+)", raw)
+    if not m:
+        return raw
+    p1, s1, p2, s2 = m.group(1), m.group(2), m.group(3), m.group(4)
+    if p1.upper() != p2.upper():
+        return f"{p1}{s1}-{p2}{s2}"
+    if len(s1) != len(s2) or int(s2) <= int(s1):
+        return f"{p1}{s1}-{s2}"
+    # Find first differing digit
+    diff_idx = 0
+    while diff_idx < len(s1) and s1[diff_idx] == s2[diff_idx]:
+        diff_idx += 1
+    # Keep last two digits if penultimate digit is '1' (teens 10-19 rule in NLM/Chicago)
+    if diff_idx == len(s1) - 1 and len(s1) >= 2 and s1[-2] == "1":
+        diff_idx = len(s1) - 2
+    return f"{p1}{s1}-{s2[diff_idx:]}"
+
+
+def _clean_journal_nlm(journal: str) -> str:
+    """Format NLM journal title: upright (no italics) and no internal periods in abbreviations."""
+    j = (journal or "").strip()
+    if not j:
+        return ""
+    j = re.sub(r"\*+([^*]+)\*+", r"\1", j)
+    # Remove periods after abbreviated words (e.g., 'N. Engl. J. Med.' -> 'N Engl J Med')
+    j = re.sub(r"\.(?=\s|$)", "", j)
+    j = re.sub(r"\s+", " ", j).strip(" .")
+    return j
+
+
+def _normalize_single_author_vancouver(raw_author: str) -> str:
+    """Normalize an individual author to strict NLM 'Surname Initials' while preserving corporate authors."""
+    a = re.sub(r"^\s*(?:and|et|&)\s+", "", (raw_author or "").strip(), flags=re.IGNORECASE)
+    a = re.sub(r"\s+", " ", a).strip(" ,.;")
+    if not a or a.lower() in {"anonymous", "anonyme", "unknown", "inconnu", "auteurs non précisés"}:
+        return ""
+    if _CORPORATE_AUTHOR_RE.search(a) or len(a.split()) >= 5:
+        return a
+    # Format 1: "Surname, First Middle" or "Surname, J. A."
+    if "," in a:
+        surname, given = [p.strip() for p in a.split(",", 1)]
+        initials = "".join(tok[0].upper() for tok in re.split(r"[\s.\-]+", given) if tok and tok[0].isalpha())
+        return f"{surname} {initials}".strip() if initials else surname
+    tokens = a.split()
+    if len(tokens) == 1:
+        return tokens[0]
+    # Format 2: Already "Surname AB" or "Surname A.B." (last token(s) are initials)
+    if re.fullmatch(r"(?:[A-Z]\.?){1,4}", tokens[-1]) and not re.fullmatch(r"(?:[A-Z]\.?){1,4}", tokens[0]):
+        surname_parts = []
+        init_parts = []
+        for tok in tokens:
+            if re.fullmatch(r"(?:[A-Z]\.?){1,4}", tok) and surname_parts:
+                init_parts.append(tok.replace(".", ""))
+            else:
+                surname_parts.append(tok)
+        if surname_parts and init_parts:
+            return f"{' '.join(surname_parts)} {''.join(init_parts)}"
+    # Format 3: "First Middle Surname" (e.g., "John A. Smith" -> "Smith JA")
+    if len(tokens) in (2, 3) and not tokens[-1].endswith(".") and len(tokens[-1]) >= 2:
+        surname = tokens[-1]
+        given_tokens = tokens[:-1]
+        # Only flip if first token looks like a given name or initial (not all-caps surname)
+        if not tokens[0].isupper() or len(tokens[0].rstrip(".")) == 1:
+            initials = "".join(t[0].upper() for t in given_tokens if t and t[0].isalpha())
+            if initials:
+                return f"{surname} {initials}"
+    return a.replace(".", "")
+
+
 def _format_authors_vancouver(authors: List[str]) -> str:
-    cleaned = [a.strip().rstrip(".") for a in authors if a and a.strip()]
+    """Format authors per NLM Citing Medicine: Surname Initials, max 6 then ', et al.'; empty if no author."""
+    cleaned = [a.strip().rstrip(".") for a in (authors or []) if a and a.strip()]
     if not cleaned:
-        return "Auteurs non précisés"
-    # Remove any trailing 'et al' inside list if already truncated upstream
-    filtered = [a for a in cleaned if a.lower() not in {"et al", "et al."}]
-    had_et_al = len(filtered) < len(cleaned)
-    if len(filtered) > 6:
-        return ", ".join(filtered[:6]) + ", et al."
-    if had_et_al and filtered:
+        return ""
+    had_et_al = any(a.lower() in {"et al", "et al."} for a in cleaned)
+    filtered = [
+        _normalize_single_author_vancouver(a)
+        for a in cleaned
+        if a.lower() not in {"et al", "et al."}
+    ]
+    filtered = [a for a in filtered if a]
+    if not filtered:
+        return ""
+    if len(filtered) > 6 or had_et_al:
         return ", ".join(filtered[:6]) + ", et al."
     return ", ".join(filtered)
 
 
-def format_vancouver_citation(ref: ReferenceItem) -> str:
-    """Deterministically format a ReferenceItem according to Vancouver ICMJE style."""
-    if ref.source_platform == "web" and not ref.journal:
+def format_vancouver_citation(ref: ReferenceItem, lang: str = "fr") -> str:
+    """Deterministically format a ReferenceItem according to full NLM / ICMJE / FMSB Vancouver rules."""
+    is_en = (lang or "fr").lower().startswith("en")
+    authors_str = _format_authors_vancouver(ref.authors)
+    title_str = re.sub(r"\*+([^*]+)\*+", r"\1", (ref.title or "").strip()).rstrip(".")
+    journal_str = _clean_journal_nlm(ref.journal or "")
+
+    if ref.source_platform == "web" and not journal_str:
         parts = []
-        if ref.authors:
-            parts.append(_format_authors_vancouver(ref.authors) + ".")
-        parts.append(ref.title.rstrip(".") + ".")
+        if authors_str:
+            parts.append(f"{authors_str}.")
+        if title_str:
+            t_internet = title_str if "[internet]" in title_str.lower() else f"{title_str} [Internet]"
+            parts.append(f"{t_internet}.")
         if ref.year:
             parts.append(f"{ref.year}.")
         if ref.url:
-            parts.append(f"Disponible sur : {ref.url}")
+            clean_url = ref.url.strip().rstrip(".,;)")
+            avail_label = "Available from:" if is_en else "Disponible sur :"
+            parts.append(f"{avail_label} {clean_url}")
         return _normalize_vancouver_punctuation(" ".join(parts).strip())
-
-    authors_str = _format_authors_vancouver(ref.authors)
-    title_str = ref.title.strip().rstrip(".")
-    journal_str = ref.journal.strip().rstrip(".")
 
     pub_parts = []
     if ref.year:
         pub_parts.append(str(ref.year))
+    elided_pages = _abbreviate_page_range_nlm(ref.pages or "")
     if ref.volume:
-        vol_issue = ref.volume
+        vol_issue = ref.volume.strip()
         if ref.issue:
-            vol_issue += f"({ref.issue})"
-        if ref.pages:
-            vol_issue += f":{ref.pages}"
+            vol_issue += f"({ref.issue.strip()})"
+        if elided_pages:
+            vol_issue += f":{elided_pages}"
         pub_parts.append(vol_issue)
-    elif ref.pages:
-        pub_parts.append(f":{ref.pages}")
+    elif elided_pages:
+        pub_parts.append(f":{elided_pages}")
 
     pub_block = ";".join(pub_parts) if len(pub_parts) > 1 else "".join(pub_parts)
 
-    segments = [f"{authors_str}.", f"{title_str}."]
+    segments: List[str] = []
+    if authors_str:
+        segments.append(f"{authors_str}.")
+    if title_str:
+        segments.append(f"{title_str}.")
     if journal_str:
         segments.append(f"{journal_str}.")
     if pub_block:
         segments.append(f"{pub_block}.")
     if ref.doi:
-        segments.append(f"doi:{ref.doi}.")
+        clean_doi = re.sub(r"^(?:doi\s*:\s*|https?://doi\.org/)", "", ref.doi.strip(), flags=re.IGNORECASE).rstrip(".")
+        if clean_doi:
+            segments.append(f"doi:{clean_doi}.")
     if ref.pmid:
-        segments.append(f"PMID:{ref.pmid}.")
+        segments.append(f"PMID:{ref.pmid.strip()}.")
 
     return _normalize_vancouver_punctuation(" ".join(segments).strip())
 
@@ -329,22 +441,22 @@ def _format_citation_numbers(nums: List[int]) -> str:
         tokens.extend([str(start), str(prev)])
     else:
         tokens.append(str(start))
-    return "[" + ", ".join(tokens) + "]"
+    # Strict NLM/ICMJE bracket style: no spaces after commas (e.g. [1,4,6], [1–3], [1,3–5])
+    return "[" + ",".join(tokens) + "]"
 
 
 def _remap_citations_in_text(text: str, old_to_new: Dict[int, int]) -> str:
-    """Remap all [n] / [a, b] / [a-b] citations in plain/markdown text without touching years or links."""
-    if not text or not old_to_new:
+    """Remap and NLM-normalize all [n] / [a, b] / [a-b] citations without touching years or links."""
+    if not text:
         return text
 
     def _repl(match: re.Match) -> str:
         nums = _expand_citation_group(match.group(1))
         if not nums:
             return match.group(0)
-        remapped = [old_to_new.get(n, n) for n in nums]
-        if remapped == nums:
-            return match.group(0)
-        return _format_citation_numbers(remapped)
+        remapped = [old_to_new.get(n, n) for n in nums] if old_to_new else nums
+        formatted = _format_citation_numbers(remapped)
+        return formatted if formatted else match.group(0)
 
     return _CITATION_GROUP_RE.sub(_repl, text)
 
@@ -390,14 +502,34 @@ def _section_text_for_citation_scan(sec: SectionState) -> str:
     return ""
 
 
-def _extract_ordered_citations_from_section(sec: SectionState) -> List[int]:
-    """Return citation indices referenced in sec in exact left-to-right appearance order."""
+def _extract_ordered_citations_from_section(
+    sec: SectionState,
+    section_images: Optional[List[Any]] = None,
+) -> List[int]:
+    """Return citation indices referenced in sec prose, tables, diagrams & figure captions in appearance order."""
+    chunks: List[str] = []
     txt = _section_text_for_citation_scan(sec)
-    if not txt:
+    if txt:
+        chunks.append(txt)
+    for ct in getattr(sec, "custom_tables", None) or []:
+        if getattr(ct, "title", None):
+            chunks.append(str(ct.title))
+        for row in getattr(ct, "rows", None) or []:
+            chunks.extend(str(c) for c in row if c)
+    for dg in getattr(sec, "custom_diagrams", None) or []:
+        if getattr(dg, "title", None):
+            chunks.append(str(dg.title))
+        if getattr(dg, "caption", None):
+            chunks.append(str(dg.caption))
+    for img in section_images or []:
+        if getattr(img, "caption", None):
+            chunks.append(str(img.caption))
+    if not chunks:
         return []
+    combined = "\n".join(chunks)
     seen: set[int] = set()
     ordered: List[int] = []
-    for match in _CITATION_GROUP_RE.finditer(txt):
+    for match in _CITATION_GROUP_RE.finditer(combined):
         for n in _expand_citation_group(match.group(1)):
             if n not in seen:
                 seen.add(n)
@@ -470,6 +602,10 @@ def renumber_and_sync_vancouver_references(project: ProtocolProject) -> Dict[str
         }
 
     by_old_idx = _assign_stable_pool_indices(refs)
+    imgs_by_sec: Dict[str, List[Any]] = {}
+    for img in getattr(project, "images", None) or []:
+        if getattr(img, "section_id", None):
+            imgs_by_sec.setdefault(img.section_id, []).append(img)
 
     cited_old_order: List[int] = []
     seen_old: set[int] = set()
@@ -477,7 +613,7 @@ def renumber_and_sync_vancouver_references(project: ProtocolProject) -> Dict[str
         sec = project.sections.get(sid)
         if sec is None:
             continue
-        for old_idx in _extract_ordered_citations_from_section(sec):
+        for old_idx in _extract_ordered_citations_from_section(sec, imgs_by_sec.get(sid)):
             if old_idx in by_old_idx and old_idx not in seen_old:
                 seen_old.add(old_idx)
                 cited_old_order.append(old_idx)
@@ -496,10 +632,11 @@ def renumber_and_sync_vancouver_references(project: ProtocolProject) -> Dict[str
             old_to_new[prev_idx] = offset
         ref.order_index = offset
 
+    lang = getattr(project, "language", "fr")
     project.references = cited_refs + uncited_refs
     for ref in project.references:
         if not ref.vancouver_citation:
-            ref.vancouver_citation = format_vancouver_citation(ref)
+            ref.vancouver_citation = format_vancouver_citation(ref, lang=lang)
         else:
             ref.vancouver_citation = _normalize_vancouver_punctuation(ref.vancouver_citation)
 
@@ -510,17 +647,32 @@ def renumber_and_sync_vancouver_references(project: ProtocolProject) -> Dict[str
         sec = project.sections.get(sid)
         if sec is None:
             continue
+        if sec.content_markdown:
+            sec.content_markdown = _remap_citations_in_text(sec.content_markdown, old_to_new)
+        if sec.content_html:
+            sec.content_html = _remap_citations_in_html(sec.content_html, old_to_new)
         if remapped_indices:
-            if sec.content_markdown:
-                sec.content_markdown = _remap_citations_in_text(sec.content_markdown, old_to_new)
-            if sec.content_html:
-                sec.content_html = _remap_citations_in_html(sec.content_html, old_to_new)
-        sec_new_nums = _extract_ordered_citations_from_section(sec)
+            for ct in getattr(sec, "custom_tables", None) or []:
+                if getattr(ct, "title", None):
+                    ct.title = _remap_citations_in_text(ct.title, old_to_new)
+                if getattr(ct, "rows", None):
+                    ct.rows = [
+                        [_remap_citations_in_text(str(c), old_to_new) for c in row]
+                        for row in ct.rows
+                    ]
+            for dg in getattr(sec, "custom_diagrams", None) or []:
+                if getattr(dg, "title", None):
+                    dg.title = _remap_citations_in_text(dg.title, old_to_new)
+                if getattr(dg, "caption", None):
+                    dg.caption = _remap_citations_in_text(dg.caption, old_to_new)
+            for img in imgs_by_sec.get(sid, []):
+                if getattr(img, "caption", None):
+                    img.caption = _remap_citations_in_text(img.caption, old_to_new)
+        sec_new_nums = _extract_ordered_citations_from_section(sec, imgs_by_sec.get(sid))
         sec.cited_ref_ids = [
             new_idx_to_ref_id[n] for n in sec_new_nums if n in new_idx_to_ref_id
         ]
 
-    lang = getattr(project, "language", "fr")
     ref_sec = project.sections.get("references")
     if ref_sec is None:
         ref_sec = SectionState(section_id="references", status=StepStatus.IN_PROGRESS)

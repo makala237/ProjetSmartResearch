@@ -950,6 +950,11 @@ def update_section(
     ):
         renumber_and_sync_vancouver_references(project)
 
+    if payload.content_markdown is not None or payload.content_html is not None:
+        from app.services.drafting import refresh_section_audit_notes
+
+        refresh_section_audit_notes(project, section_id, clear_ai_notes=False)
+
     _sync_module2_queue(project)
     evaluate_project_coherence(project, changed_section_id=section_id)
     saved = project_storage.save(project)
@@ -1622,6 +1627,9 @@ def apply_reformulation_endpoint(
         sync_timeline_from_section(project, overwrite=True)
     if section_id != "references":
         renumber_and_sync_vancouver_references(project)
+    from app.services.drafting import refresh_section_audit_notes
+
+    refresh_section_audit_notes(project, section_id, clear_ai_notes=True)
     _sync_module2_queue(project)
     evaluate_project_coherence(project, changed_section_id=section_id)
     saved = project_storage.save(project)

@@ -120,7 +120,7 @@ def _format_cames_granularity_block(spec, lang: str = "fr") -> str:
     if normalize_lang(lang) == "en":
         parts = [
             f"CAMES / FMSB BENCHMARK FOR '{spec.title}':",
-            f"- Target length: {c.min_pages or '?'} to {c.max_pages or '?'} page(s) ({c.min_words or '?'} to {c.max_words or '?'} words).",
+            f"- Target prose length (STRICT CEILING — structured tables excluded): {c.min_pages or '?'} to {c.max_pages or '?'} page(s) ({c.min_words or '?'} to {c.max_words or '?'} prose words; DO NOT exceed {c.max_words} words)." if c.max_words else f"- Target length: {c.min_pages or '?'} to {c.max_pages or '?'} page(s) ({c.min_words or '?'} to {c.max_words or '?'} words).",
             f"- Allowed references in this section: min={c.min_references if c.min_references is not None else 0}, max={c.max_references if c.max_references is not None else 'unlimited'}.",
             f"- TABLE policy: {c.table_policy}" + (f" ({c.table_guidance})" if c.table_guidance else ""),
             f"- FIGURE policy: {c.figure_policy}" + (f" ({c.figure_guidance})" if c.figure_guidance else ""),
@@ -135,7 +135,7 @@ def _format_cames_granularity_block(spec, lang: str = "fr") -> str:
 
     parts = [
         f"REFERENTIEL CAMES / FMSB POUR '{spec.title}' :",
-        f"- Volume cible : {c.min_pages or '?'} à {c.max_pages or '?'} page(s) ({c.min_words or '?'} à {c.max_words or '?'} mots).",
+        f"- Volume cible en prose (PLAFOND STRICT — hors tableaux structurés) : {c.min_pages or '?'} à {c.max_pages or '?'} page(s) ({c.min_words or '?'} à {c.max_words or '?'} mots ; NE PAS dépasser {c.max_words} mots)." if c.max_words else f"- Volume cible : {c.min_pages or '?'} à {c.max_pages or '?'} page(s) ({c.min_words or '?'} à {c.max_words or '?'} mots).",
         f"- Références autorisées dans cette section : min={c.min_references if c.min_references is not None else 0}, max={c.max_references if c.max_references is not None else 'libre'}.",
         f"- Politique TABLEAUX : {c.table_policy}" + (f" ({c.table_guidance})" if c.table_guidance else ""),
         f"- Politique FIGURES : {c.figure_policy}" + (f" ({c.figure_guidance})" if c.figure_guidance else ""),
@@ -149,15 +149,41 @@ def _format_cames_granularity_block(spec, lang: str = "fr") -> str:
     return "\n".join(parts)
 
 
+def _count_prose_words(text: str) -> int:
+    """Count real prose words, excluding Markdown pipe tables, HTML tables, and formatting noise."""
+    if not text or not text.strip():
+        return 0
+    cleaned = re.sub(r"(?is)<table\b[^>]*>[\s\S]*?</table>", " ", text)
+    cleaned = re.sub(r"(?s)```[\s\S]*?```", " ", cleaned)
+    # Exclude Markdown pipe-table rows so structured tables (e.g. Budget, Gantt) never inflate prose word count
+    prose_lines = [
+        ln for ln in cleaned.splitlines()
+        if not re.match(r"^\s*\|.*\|\s*$", ln) and not re.match(r"^\s*\|?[\s:\-|]+\|?\s*$", ln)
+    ]
+    prose = "\n".join(prose_lines)
+    prose = re.sub(r"<[^>]+>", " ", prose)
+    prose = re.sub(r"[#*_`~>|]", " ", prose)
+    return len(prose.split())
+
+
 def deterministic_section_checks(project: ProtocolProject, section_id: str, text: str) -> List[str]:
     """Run hard-coded CAMES/FMSB methodological, volume, reference, and table-policy rules."""
     lang = normalize_lang(getattr(project, "language", "fr"))
     notes: List[str] = []
     spec = _get_section_spec(section_id, lang)
     c = spec.constraints
-    words = len(text.split()) if text.strip() else 0
+    words = _count_prose_words(text)
+    sec_obj = project.sections.get(section_id)
+    has_structured_budget = section_id == "chap3_budget" and bool(
+        getattr(project, "budget", None) or (sec_obj and getattr(sec_obj, "custom_tables", None))
+    )
+    has_structured_gantt = section_id == "chap3_chronogramme" and bool(
+        (getattr(project, "timeline_grid", None) and getattr(project.timeline_grid, "rows", None))
+        or (sec_obj and getattr(sec_obj, "custom_tables", None))
+    )
+    has_structured_table_content = has_structured_budget or has_structured_gantt
 
-    if c.required and words == 0:
+    if c.required and words == 0 and not has_structured_table_content:
         notes.append(
             "Empty section: content is required by CAMES/FMSB guidelines."
             if lang == "en"
@@ -165,7 +191,7 @@ def deterministic_section_checks(project: ProtocolProject, section_id: str, text
         )
 
     if words > 0:
-        if c.min_words and words < c.min_words:
+        if c.min_words and words < c.min_words and not has_structured_table_content:
             notes.append(
                 f"Insufficient length per CAMES/FMSB: {words} words (recommended minimum: {c.min_words} words)."
                 if lang == "en"
@@ -227,7 +253,7 @@ def deterministic_section_checks(project: ProtocolProject, section_id: str, text
             other = project.sections.get("intro_contexte").content_markdown if project.sections.get("intro_contexte") else ""
             intro_text = f"{other} {text}"
 
-        intro_words = len(intro_text.split())
+        intro_words = _count_prose_words(intro_text)
         if intro_words > 900:
             notes.append(
                 f"Introduction length alert: ~{intro_words} words total (target <= 2 pages ≈ 800–900 words)."
@@ -250,6 +276,61 @@ def deterministic_section_checks(project: ProtocolProject, section_id: str, text
         )
 
     return notes
+
+
+_STALE_DETERMINISTIC_NOTE_PREFIXES = (
+    "Empty section:",
+    "Section vide :",
+    "Insufficient length per CAMES/FMSB:",
+    "Volume insuffisant selon CAMES/FMSB :",
+    "Word limit exceeded per CAMES/FMSB:",
+    "Dépassement de volume CAMES/FMSB :",
+    "Insufficient citations (",
+    "Citations insuffisantes (",
+    "Too many citations (",
+    "Trop de citations (",
+    "CAMES policy: no tables",
+    "Politique CAMES : aucun tableau",
+    "Introduction length alert:",
+    "Alerte volume Introduction :",
+    "FMSB Introduction alert:",
+    "Alerte FMSB Introduction :",
+    "Primary hypothesis must be phrased",
+    "L'hypothèse principale doit être formulée",
+)
+
+
+def refresh_section_audit_notes(
+    project: ProtocolProject,
+    section_id: str,
+    clear_ai_notes: bool = False,
+) -> List[str]:
+    """Recompute deterministic audit notes after any edit/reformulation so stale warnings vanish immediately."""
+    sec = project.sections.get(section_id)
+    if sec is None:
+        return []
+    fresh_det = deterministic_section_checks(project, section_id, sec.content_markdown or "")
+    if clear_ai_notes:
+        sec.audit_notes = fresh_det
+    else:
+        kept_ai = [
+            n
+            for n in (sec.audit_notes or [])
+            if n and not any(n.strip().startswith(pref) for pref in _STALE_DETERMINISTIC_NOTE_PREFIXES)
+        ]
+        # Deduplicate while preserving order (fresh deterministic checks first)
+        combined: List[str] = []
+        seen: set[str] = set()
+        for note in fresh_det + kept_ai:
+            key = note.strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                combined.append(note)
+        sec.audit_notes = combined
+
+    if sec.status == StepStatus.NEEDS_REVISION and not sec.audit_notes:
+        sec.status = StepStatus.IN_PROGRESS
+    return list(sec.audit_notes)
 
 
 def _ordered_unique_citations(text: str) -> List[str]:
@@ -377,8 +458,8 @@ def _reconcile_intro_citation_cap(
 
 
 def _count_words(text: str) -> int:
-    """Exact word counter aligned with deterministic_section_checks."""
-    return len((text or "").split()) if (text or "").strip() else 0
+    """Exact prose word counter aligned with deterministic_section_checks (tables excluded)."""
+    return _count_prose_words(text)
 
 
 def _extract_continuation_anchor(text: str) -> Dict[str, Any]:
@@ -568,6 +649,79 @@ STRICT CONTINUATION RULES:
 
     trace["final_words"] = current_words
     return current_md, trace
+
+
+def _ensure_max_word_count(
+    project: ProtocolProject,
+    section_id: str,
+    spec: Any,
+    content_md: str,
+    lang: str,
+) -> Tuple[str, Dict[str, Any]]:
+    """Auto-condense an over-length draft BEFORE returning it so the user never receives a word-limit fault."""
+    c = getattr(spec, "constraints", None)
+    max_words = int(getattr(c, "max_words", 0) or 0) if c else 0
+    min_words = int(getattr(c, "min_words", 0) or 0) if c else 0
+    initial_words = _count_prose_words(content_md)
+    trace: Dict[str, Any] = {
+        "triggered": False,
+        "max_words_allowed": max_words,
+        "initial_words": initial_words,
+        "final_words": initial_words,
+    }
+    if (
+        not max_words
+        or section_id in ("intro_contexte", "intro_interet", "chap3_budget", "chap3_chronogramme")
+        or initial_words <= max_words
+    ):
+        return content_md, trace
+
+    target_words = max(min_words or 40, int(max_words * 0.90))
+    emit_pipeline_step(
+        "llm_draft",
+        f"Ajustement automatique du volume ({initial_words} → ≤ {max_words} mots CAMES)...",
+        f"Auto-tightening length ({initial_words} → ≤ {max_words} CAMES words)...",
+        progress_pct=82,
+    )
+    is_en = normalize_lang(lang) == "en"
+    condense_prompt = (
+        f"You are an FMSB/CAMES academic medical editor. The following draft for section '{spec.title}' "
+        f"is {initial_words} words long, which exceeds the strict CAMES maximum of {max_words} words.\n"
+        f"Rewrite and tighten it to approximately {target_words} words (STRICTLY <= {max_words} words).\n"
+        f"RULES:\n"
+        f"- Preserve 100% of core methodological facts, numbers, definitions, and ALL [n] Vancouver citations.\n"
+        f"- Keep the exact same Markdown heading/paragraph structure and academic tone.\n"
+        f"- Output ONLY the tightened Markdown text (no commentary, no code fences).\n\n"
+        f"DRAFT TO TIGHTEN:\n{content_md}"
+        if is_en
+        else f"Tu es un éditeur médical académique FMSB/CAMES. Le texte ci-dessous pour la section « {spec.title} » "
+        f"compte {initial_words} mots, ce qui dépasse le plafond strict CAMES de {max_words} mots.\n"
+        f"Condense-le autour de {target_words} mots (STRICTEMENT ≤ {max_words} mots).\n"
+        f"RÈGLES IMPÉRATIVES :\n"
+        f"- Conserve 100 % des faits méthodologiques, chiffres, définitions et TOUTES les citations Vancouver [n].\n"
+        f"- Conserve la même structure Markdown et le style académique médical.\n"
+        f"- Renvoie UNIQUEMENT le texte Markdown condensé (aucun commentaire, aucune balise ```).\n\n"
+        f"TEXTE À CONDENSER :\n{content_md}"
+    )
+    try:
+        res = gemini_router.generate_text(
+            role="drafting",
+            contents=condense_prompt,
+            temperature=0.2,
+        )
+        candidate = (res.get("text") or "").strip()
+        candidate = re.sub(r"^```(?:markdown|md)?\s*\n?", "", candidate, flags=re.IGNORECASE)
+        candidate = re.sub(r"\n?```\s*$", "", candidate).strip()
+        candidate = strip_ascii_diagrams(candidate)
+        candidate, _ = sanitize_llm_typography(candidate, lang=lang)
+        new_words = _count_prose_words(candidate)
+        if candidate and new_words < initial_words and (not min_words or new_words >= int(min_words * 0.8)):
+            trace["triggered"] = True
+            trace["final_words"] = new_words
+            return candidate, trace
+    except Exception:
+        pass
+    return content_md, trace
 
 
 def draft_section_with_ai(
@@ -894,6 +1048,16 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
                     rows=list(lt["rows"]),
                 )
             )
+
+    # Auto-enforce CAMES max_words ceiling on prose BEFORE returning so the draft is compliant out of the box
+    clean_md, max_wc_trace = _ensure_max_word_count(
+        project=project,
+        section_id=section_id,
+        spec=spec,
+        content_md=clean_md,
+        lang=lang,
+    )
+    orch_trace["word_count_tightening"] = max_wc_trace
 
     clean_html = markdown_to_clean_html(clean_md)
     det_notes = deterministic_section_checks(project, section_id, clean_md)

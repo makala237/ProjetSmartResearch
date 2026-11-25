@@ -1218,12 +1218,15 @@ class GeminiRouter:
 
             # 2. Structured rewrite normalization pass
             prompt = (
-                "You are an FMSB medical bibliography formatter for strict Vancouver (ICMJE / NLM) style.\n"
+                "You are an FMSB/CAMES medical bibliography formatter enforcing the FULL official NLM Citing Medicine / ICMJE Vancouver standard.\n"
                 "For each object in INPUT, return a strictly compliant `vancouver_citation` string:\n"
-                "1. Journal article: Authors (Surname Initials, no periods/spaces in initials, max 6 authors then ', et al.'). Article Title. Medline Abbrev Journal. Year;Vol(Issue):Pages.\n"
-                "2. Book/Report: Authors/Org. Title. Edition (if not 1st). Place: Publisher; Year.\n"
-                "3. Fix punctuation defects, missing period after 'et al.', spaces before ';' or ':', and repair truncated trailing page hyphens like '215-' (complete exact known page range if certain or close cleanly as '215.').\n"
-                "4. NEVER include a leading '1.' or '[1]' inside `vancouver_citation`, and NEVER invent different articles.\n"
+                "1. Authors: 'Surname Initials' with NO comma between surname and initials, NO periods or spaces between initials, NO '&'. Max 6 authors, then ', et al.'. Preserve corporate/institutional authors (e.g. World Health Organization, MINSANTE). If NO author is given, start directly with the title (never write 'Anonymous' or 'Auteurs non précisés').\n"
+                "2. Journal article: Authors. Sentence-case article title. NLM Abbrev Journal (NO italics, NO internal periods in abbreviations). Year;Vol(Issue):ElidedPages. doi:...\n"
+                "   - Use NLM page elision (284-287 -> 284-7; 112-119 -> 112-19; S14-S20 -> S14-20). Support supplements like 93(11 Suppl):S14-20 and Epub ahead of print.\n"
+                "3. Book / Chapter / Thesis: Authors/Org. Title. Edition (if >1st). Place: Publisher; Year. (Chapters: In: Editors, editors. Book. Place: Publisher; Year. p. Pages. Theses: Title [thesis type]. City: University; Year.)\n"
+                "4. Web / Institutional Report: Org/Author. Title [Internet]. Place: Publisher; Year [cité le YYYY-MM-DD / cited YYYY Mon DD]. Disponible sur : URL (or Available from: URL) — NEVER put a trailing period after a URL.\n"
+                "5. Fix punctuation defects, missing period after 'et al.', spaces before ';' or ':', strip Markdown italics, repair truncated trailing page hyphens like '215-'.\n"
+                "6. NEVER include a leading '1.' or '[1]' inside `vancouver_citation`, and NEVER invent different articles.\n"
                 f"INPUT:\n{json.dumps(chunk, ensure_ascii=False)}"
             )
             try:
