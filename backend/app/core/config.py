@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     app_version: str = "1.0.0"
 
     gemini_api_key: str = ""
+    nvidia_api_key: str = ""
+    nvidia_emergency_fallback_model: str = "nvidia/nemotron-3.5-super-vl-120b-a12b"
     openrouter_api_key: str = ""
     openrouter_emergency_fallback_model: str = "nvidia/nemotron-3.5-super-vl:free"
 
@@ -77,6 +79,11 @@ class Settings(BaseSettings):
 
     def model_chains(self) -> Dict[str, List[str]]:
         """Return ordered model fallback chains per pipeline role."""
+        nv_backup = (
+            (self.nvidia_emergency_fallback_model or "").strip()
+            if (self.nvidia_api_key or "").strip()
+            else ""
+        )
         or_backup = (
             (self.openrouter_emergency_fallback_model or "").strip()
             if (self.openrouter_api_key or "").strip()
@@ -85,6 +92,8 @@ class Settings(BaseSettings):
 
         def parse(raw: str) -> List[str]:
             items = [m.strip() for m in raw.split(",") if m.strip()]
+            if nv_backup and nv_backup not in items:
+                items.append(nv_backup)
             if or_backup and or_backup not in items:
                 items.append(or_backup)
             return items

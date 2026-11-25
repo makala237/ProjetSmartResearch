@@ -316,6 +316,10 @@ class GeminiRouter:
                 "gemini-3.5-flash-lite",
                 "gemini-3.1-flash-lite",
             ]
+            if (self.settings.nvidia_api_key or "").strip() and (
+                self.settings.nvidia_emergency_fallback_model or ""
+            ).strip():
+                candidates.append(self.settings.nvidia_emergency_fallback_model.strip())
             if (self.settings.openrouter_api_key or "").strip() and (
                 self.settings.openrouter_emergency_fallback_model or ""
             ).strip():
@@ -326,6 +330,10 @@ class GeminiRouter:
                 "gemini-3.1-flash-lite",
                 "gemini-3.5-flash",
             ]
+            if (self.settings.nvidia_api_key or "").strip() and (
+                self.settings.nvidia_emergency_fallback_model or ""
+            ).strip():
+                candidates.append(self.settings.nvidia_emergency_fallback_model.strip())
             if (self.settings.openrouter_api_key or "").strip() and (
                 self.settings.openrouter_emergency_fallback_model or ""
             ).strip():
@@ -395,6 +403,11 @@ class GeminiRouter:
         return healthy + cooled
 
     @staticmethod
+    def _is_nvidia_direct_model(model_id: str) -> bool:
+        mid = (model_id or "").strip().lower()
+        return mid.startswith("nvidia/") and not mid.endswith(":free")
+
+    @staticmethod
     def _is_openrouter_model(model_id: str) -> bool:
         return "/" in (model_id or "")
 
@@ -404,10 +417,30 @@ class GeminiRouter:
         contents: Any,
         config: Optional[types.GenerateContentConfig] = None,
     ) -> Tuple[str, int, Any]:
-        """Execute a chat completion against OpenRouter (OpenAI-compatible) for cross-provider models."""
-        api_key = (self.settings.openrouter_api_key or "").strip()
-        if not api_key:
-            raise ValueError("OPENROUTER_API_KEY non configurée.")
+        """Execute a chat completion against Direct NVIDIA NIM or OpenRouter (OpenAI-compatible)."""
+        is_nvidia_direct = self._is_nvidia_direct_model(model_id)
+        if is_nvidia_direct:
+            api_key = (self.settings.nvidia_api_key or "").strip()
+            if not api_key:
+                raise ValueError("NVIDIA_API_KEY non configurée.")
+            endpoint_url = "https://integrate.api.nvidia.com/v1/chat/completions"
+            provider_label = "NVIDIA NIM"
+            req_headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            }
+        else:
+            api_key = (self.settings.openrouter_api_key or "").strip()
+            if not api_key:
+                raise ValueError("OPENROUTER_API_KEY non configurée.")
+            endpoint_url = "https://openrouter.ai/api/v1/chat/completions"
+            provider_label = "OpenRouter"
+            req_headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "https://smart-research-fmsb.web.app",
+                "X-Title": "Smart Research FMSB",
+            }
 
         messages: List[Dict[str, Any]] = []
         sys_parts: List[str] = []
@@ -473,10 +506,13 @@ class GeminiRouter:
             "model": model_id,
             "messages": messages,
             "max_tokens": 12288,
-            # Disable hidden chain-of-thought reasoning on OpenRouter reasoning models (e.g. Nemotron 3.5)
-            # so reasoning tokens never exhaust max_tokens and leave `message.content` empty.
-            "reasoning": {"enabled": False},
         }
+        if is_nvidia_direct:
+            # Direct NVIDIA NIM disables hidden thinking cleanly via chat_template_kwargs
+            payload["chat_template_kwargs"] = {"enable_thinking": False}
+        else:
+            # OpenRouter disables hidden reasoning via `reasoning: {enabled: false}`
+            payload["reasoning"] = {"enabled": False}
         if temperature is not None:
             payload["temperature"] = float(temperature)
         if wants_json:
@@ -484,31 +520,25 @@ class GeminiRouter:
 
         timeout_s = max(25.0, float(getattr(self.settings, "gemini_request_timeout_ms", 60_000) or 60_000) / 1000.0)
         resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "https://smart-research-fmsb.web.app",
-                "X-Title": "Smart Research FMSB",
-            },
+            endpoint_url,
+            headers=req_headers,
             json=payload,
             timeout=timeout_s,
         )
         if not resp.ok:
-            raise RuntimeError(f"HTTP {resp.status_code} - {resp.text[:240]}")
+            raise RuntimeError(f"HTTP {resp.status_code} ({provider_label}) - {resp.text[:240]}")
 
         body = resp.json()
         choices = body.get("choices") or []
         msg = (choices[0].get("message") or {}) if choices else {}
         text = str(msg.get("content") or "").strip()
         if not text and wants_json:
-            # Safety net: if a reasoning model still wrote JSON into `reasoning` / `reasoning_content`
             reasoning_fallback = str(msg.get("reasoning") or msg.get("reasoning_content") or "").strip()
             if reasoning_fallback and "{" in reasoning_fallback and "}" in reasoning_fallback:
                 text = reasoning_fallback
         if not text:
             finish_reason = (choices[0].get("finish_reason") or "") if choices else ""
-            raise ValueError(f"Réponse vide du modèle OpenRouter (finish_reason={finish_reason or 'unknown'}).")
+            raise ValueError(f"Réponse vide du modèle {provider_label} (finish_reason={finish_reason or 'unknown'}).")
         if wants_json:
             # Strip optional ```json ... ``` fences if present
             fence_match = re.search(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", text, flags=re.DOTALL)

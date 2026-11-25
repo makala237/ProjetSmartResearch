@@ -191,6 +191,13 @@ export function Module1Assistant({
 
   const [pendingReformulation, setPendingReformulation] = useState<PendingReformulationPreview | null>(null);
   const [busyReformulate, setBusyReformulate] = useState(false);
+  const [assistantActionMode, setAssistantActionMode] = useState<
+    "auto" | "delegate_reformulate" | "create_table" | "create_diagram" | "search_image"
+  >("auto");
+  const [assistantActionFeedback, setAssistantActionFeedback] = useState<{
+    actionType: string;
+    message: string;
+  } | null>(null);
   const [busyApplyReformulation, setBusyApplyReformulation] = useState(false);
 
   const [showVersionHistory, setShowVersionHistory] = useState(false);
@@ -597,6 +604,63 @@ export function Module1Assistant({
       onError(err instanceof Error ? err.message : String(err));
     } finally {
       setRestoringVersionId(null);
+    }
+  }
+
+  async function handleAssistantCommandOrReformulate(hasContentNow: boolean) {
+    const instr = aiInstruction.trim();
+    if (assistantActionMode === "delegate_reformulate") {
+      if (hasContentNow) {
+        await handleSmartReformulate("auto", instr);
+      } else {
+        await handleDraftWithAI(instr || undefined);
+      }
+      return;
+    }
+    if (!instr && assistantActionMode === "auto") {
+      if (hasContentNow) {
+        await handleSmartReformulate("auto");
+      } else {
+        await handleDraftWithAI(undefined);
+      }
+      return;
+    }
+
+    const targetSectionId = activeSpec.id;
+    setBusyReformulate(true);
+    setAssistantActionFeedback(null);
+    onError("");
+    try {
+      const cmdRes = await api.runSectionAssistantCommand(
+        project.project_id,
+        targetSectionId,
+        {
+          instruction: instr || activeSpec.title,
+          current_markdown: draftRef.current,
+          action: assistantActionMode,
+        }
+      );
+      if (cmdRes.action_type === "delegate_reformulate") {
+        setBusyReformulate(false);
+        if (hasContentNow) {
+          await handleSmartReformulate("auto", instr);
+        } else {
+          await handleDraftWithAI(instr);
+        }
+        return;
+      }
+      if (cmdRes.project) {
+        onProjectUpdated(cmdRes.project);
+      }
+      setAssistantActionFeedback({
+        actionType: cmdRes.action_type,
+        message: cmdRes.message,
+      });
+      setAiInstruction("");
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyReformulate(false);
     }
   }
 
@@ -1792,45 +1856,94 @@ export function Module1Assistant({
                     onSubmit={(e) => {
                       e.preventDefault();
                       if (busyDraft || busyReformulate) return;
-                      if (hasContent && hasInstruction) {
+                      if (hasInstruction || assistantActionMode !== "auto") {
+                        void handleAssistantCommandOrReformulate(hasContent);
+                      } else if (hasContent) {
                         void handleSmartReformulate("auto");
                       } else {
-                        void handleDraftWithAI(aiInstruction.trim() || undefined);
+                        void handleDraftWithAI(undefined);
                       }
                     }}
                     className="flex flex-wrap items-center gap-2"
                   >
+                    <select
+                      value={assistantActionMode}
+                      onChange={(e) =>
+                        setAssistantActionMode(
+                          e.target.value as
+                            | "auto"
+                            | "delegate_reformulate"
+                            | "create_table"
+                            | "create_diagram"
+                            | "search_image"
+                        )
+                      }
+                      aria-label={lang === "en" ? "AI Action" : "Action IA"}
+                      className="shrink-0 rounded-lg border border-indigo-200 bg-indigo-50/70 px-2.5 py-2 text-xs font-semibold text-indigo-900 focus:border-indigo-500 focus:outline-none"
+                    >
+                      <option value="auto">
+                        {lang === "en" ? "✨ Auto (Smart)" : "✨ Auto (Intelligent)"}
+                      </option>
+                      <option value="delegate_reformulate">
+                        {lang === "en" ? "✏️ Edit / Reformulate text" : "✏️ Reformuler / Compléter"}
+                      </option>
+                      <option value="create_table">
+                        {lang === "en" ? "📊 Create structured table" : "📊 Créer un tableau"}
+                      </option>
+                      <option value="create_diagram">
+                        {lang === "en" ? "📐 Create diagram / flowchart" : "📐 Créer un schéma"}
+                      </option>
+                      <option value="search_image">
+                        {lang === "en" ? "🖼️ Search & insert image" : "🖼️ Chercher une image"}
+                      </option>
+                    </select>
                     <input
                       type="text"
                       value={aiInstruction}
                       onChange={(e) => setAiInstruction(e.target.value)}
-                      placeholder={aiPlaceholder}
-                      className="min-w-[220px] flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
+                      placeholder={
+                        assistantActionMode === "create_table"
+                          ? lang === "en"
+                            ? "Describe table columns/rows (e.g. 8-month activity timeline, budget items, variables...)"
+                            : "Précisez le tableau voulu (ex: chronogramme sur 8 mois, variables clés, budget détaillé...)"
+                          : assistantActionMode === "create_diagram"
+                          ? lang === "en"
+                            ? "Describe the diagram (e.g. PRISMA exclusion flow, conceptual model, decision flowchart...)"
+                            : "Précisez le schéma voulu (ex: flux PRISMA d'inclusion, modèle conceptuel, organigramme...)"
+                          : assistantActionMode === "search_image"
+                          ? lang === "en"
+                            ? "Describe the medical figure to search & insert (e.g. skin layers anatomy, HIV cycle...)"
+                            : "Précisez la figure médicale à chercher & insérer (ex: anatomie de la peau, cycle du VIH...)"
+                          : lang === "en"
+                          ? "Specify details for the action or ask AI freely (table, diagram, image, or text edit)..."
+                          : "Précisez les détails de l'action (tableau, schéma, image ou passage à reformuler)..."
+                      }
+                      className="min-w-[200px] flex-1 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900 placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
                     />
 
                     {!hasContent ? (
                       <button
                         type="submit"
-                        disabled={busyDraft}
+                        disabled={busyDraft || busyReformulate}
                         className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50"
                       >
-                        {busyDraft ? (
+                        {busyDraft || busyReformulate ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         ) : (
                           <Sparkles className="h-3.5 w-3.5" />
                         )}
-                        {busyDraft ? t("m1.drafting") : t("m1.generate_ai")}
+                        {busyDraft || busyReformulate ? t("m1.drafting") : t("m1.generate_ai")}
                       </button>
                     ) : (
                       <>
                         <button
                           type="button"
                           disabled={busyReformulate || busyDraft}
-                          onClick={() => void handleSmartReformulate("auto")}
+                          onClick={() => void handleAssistantCommandOrReformulate(true)}
                           title={
                             lang === "en"
-                              ? "Intelligently reformulate ONLY the targeted part or complement existing text, with colored diff preview before validating"
-                              : "Reformuler intelligemment UNIQUEMENT la partie concernée ou compléter le texte existant (avec aperçu coloré avant validation)"
+                              ? "Execute your instruction (create table, diagram, search & insert image, or selectively reformulate text)"
+                              : "Exécuter votre demande (créer un tableau, un schéma, insérer une image, ou reformuler sélectivement le texte)"
                           }
                           className="inline-flex shrink-0 items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-indigo-700 disabled:opacity-50"
                         >
@@ -1841,11 +1954,11 @@ export function Module1Assistant({
                           )}
                           {busyReformulate
                             ? lang === "en"
-                              ? "Analyzing..."
-                              : "Analyse..."
+                              ? "Working..."
+                              : "Exécution..."
                             : lang === "en"
-                            ? "Smart Reformulate"
-                            : "Reformulation sélective"}
+                            ? "Smart Action / Reformulate"
+                            : "Exécuter / Reformuler"}
                         </button>
                         <button
                           type="button"
@@ -1874,6 +1987,18 @@ export function Module1Assistant({
                       </>
                     )}
                   </form>
+                  {assistantActionFeedback && (
+                    <div className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-900">
+                      <span className="font-medium">{assistantActionFeedback.message}</span>
+                      <button
+                        type="button"
+                        onClick={() => setAssistantActionFeedback(null)}
+                        className="shrink-0 text-[11px] font-semibold text-emerald-700 hover:underline"
+                      >
+                        OK
+                      </button>
+                    </div>
+                  )}
                   {activeSpec.id === "annexe_fiche_collecte" && (
                     <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs text-emerald-950">
                       <div className="min-w-0 flex-1 text-[11px]">

@@ -990,6 +990,8 @@ def update_structured_data(
         project.timeline_grid = payload.timeline_grid
         if payload.timeline_grid.rows and "chap3_chronogramme" in project.sections:
             project.sections["chap3_chronogramme"].suppress_structured_table = False
+            # Single source of truth: clear any stale Module 1 custom_tables so only the synced Gantt grid renders
+            project.sections["chap3_chronogramme"].custom_tables = []
     if payload.budget is not None:
         from app.services.budget_engine import normalize_budget_items, sync_section_from_budget
         from app.services.presentation_orchestrator import refresh_budget_slide_if_present
@@ -1245,7 +1247,8 @@ def delete_image_asset(
         else:
             remaining.append(img)
     if not found:
-        raise HTTPException(status_code=404, detail="Image introuvable.")
+        # Idempotent DELETE: rapid double-clicks return the current project cleanly instead of 404
+        return project
     project.images = remaining
     _sync_module2_queue(project)
     return project_storage.save(project)
@@ -1613,6 +1616,10 @@ def apply_reformulation_endpoint(
 
         sync_budget_from_section(project, overwrite=True)
         refresh_budget_slide_if_present(project)
+    if section_id == "chap3_chronogramme":
+        from app.services.drafting import sync_timeline_from_section
+
+        sync_timeline_from_section(project, overwrite=True)
     if section_id != "references":
         renumber_and_sync_vancouver_references(project)
     _sync_module2_queue(project)
@@ -1620,6 +1627,79 @@ def apply_reformulation_endpoint(
     saved = project_storage.save(project)
     update_section_working_memory(saved, section_id)
     return scope_project_copilot_for_user(saved, current_user.id)
+
+
+class SectionAssistantCommandRequest(BaseModel):
+    instruction: str
+    current_markdown: Optional[str] = None
+    action: Optional[str] = None  # "auto" | "create_table" | "create_diagram" | "search_image" | "delegate_reformulate"
+
+
+@app.post("/api/projects/{project_id}/sections/{section_id}/assistant-command")
+def section_assistant_command_endpoint(
+    project_id: str,
+    section_id: str,
+    payload: SectionAssistantCommandRequest,
+    request: Request,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Conversational Section AI Router: creates tables, diagrams, inserts images, or delegates to reformulation."""
+    if section_id == "cover_page":
+        assert_cover_admin_only(current_user)
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+
+    from app.services.section_assistant_router import (
+        classify_section_command_intent,
+        execute_section_assistant_command,
+    )
+
+    override = (payload.action or "").strip().lower()
+    effective_intent = (
+        override
+        if override in ("create_table", "create_diagram", "search_image", "delegate_reformulate")
+        else classify_section_command_intent(payload.instruction)
+    )
+    if effective_intent == "delegate_reformulate":
+        return {"action_type": "delegate_reformulate", "message": ""}
+
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="suggest_table")
+    try:
+        res = execute_section_assistant_command(
+            project=project,
+            section_id=section_id,
+            instruction=payload.instruction,
+            lang=getattr(project, "language", "fr") or "fr",
+            mirror_upload_cb=_mirror_upload_to_blob,
+            action_override=effective_intent,
+        )
+        saved_proj = project
+        if res.get("mutated"):
+            _sync_module2_queue(project)
+            saved_proj = project_storage.save(project)
+            update_section_working_memory(saved_proj, section_id)
+            record_usage_and_debit(
+                db=db,
+                user=current_user,
+                module_key="module1",
+                action=f"section_cmd_{res.get('action_type', 'action')}",
+                credits_cost=cost,
+                project_id=project_id,
+                model_used=str(res.get("model_used") or ""),
+                ip_address=get_client_ip(request),
+            )
+        return {
+            "action_type": res.get("action_type", "info"),
+            "message": res.get("message", ""),
+            "model_used": res.get("model_used", ""),
+            "project": scope_project_copilot_for_user(saved_proj, current_user.id).model_dump(mode="json")
+            if res.get("mutated")
+            else None,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 class HumanizeRequest(BaseModel):
@@ -2112,7 +2192,8 @@ def delete_section_diagram(
     before = len(sec.custom_diagrams)
     sec.custom_diagrams = [d for d in sec.custom_diagrams if d.diagram_id != diagram_id]
     if len(sec.custom_diagrams) == before:
-        raise HTTPException(status_code=404, detail="Schéma introuvable.")
+        # Idempotent DELETE: rapid double-clicks return the current project cleanly instead of 404
+        return project
     _sync_module2_queue(project)
     return project_storage.save(project)
 

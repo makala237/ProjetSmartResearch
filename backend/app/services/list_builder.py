@@ -553,16 +553,16 @@ def deduplicate_project_media_and_tables(project: ProtocolProject) -> None:
                 dedup_diags.append(dg)
             sec.custom_diagrams = dedup_diags
 
-    # Clean approved image titles
-    seen_img_keys: set[str] = set()
+    # Clean approved image titles (preserve all distinct user-uploaded figures; never silently unapprove!)
+    seen_img_titles: Dict[str, int] = {}
     for img in project.images:
         if img.approved:
             img.title = clean_caption_title(img.title, "Figure") or img.title
             ikey = f"{img.target_section_id}::{_normalize_dedup_key(img.title)}"
-            if ikey in seen_img_keys:
-                img.approved = False
-            else:
-                seen_img_keys.add(ikey)
+            count = seen_img_titles.get(ikey, 0) + 1
+            seen_img_titles[ikey] = count
+            if count > 1 and not re.search(r"\(\d+\)$", img.title):
+                img.title = f"{img.title} ({count})"
 
 
 def _render_caption_list_markdown_and_html(

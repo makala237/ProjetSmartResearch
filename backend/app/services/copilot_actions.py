@@ -350,6 +350,7 @@ def _action_update_structured_data(
         project.timeline_grid = TimelineGrid(**params["timeline_grid"])
         if project.timeline_grid.rows and "chap3_chronogramme" in project.sections:
             project.sections["chap3_chronogramme"].suppress_structured_table = False
+            project.sections["chap3_chronogramme"].custom_tables = []
         changed.append("timeline_grid")
 
     if isinstance(params.get("annexes_config"), dict):

@@ -1553,6 +1553,35 @@ export const api = {
       }
     ),
 
+  runSectionAssistantCommand: (
+    projectId: string,
+    sectionId: string,
+    payload: {
+      instruction: string;
+      current_markdown?: string;
+      action?: "auto" | "create_table" | "create_diagram" | "search_image" | "delegate_reformulate";
+    }
+  ) =>
+    request<{
+      action_type:
+        | "table_created"
+        | "diagram_created"
+        | "image_inserted"
+        | "info"
+        | "delegate_reformulate";
+      message: string;
+      model_used?: string;
+      project?: ProtocolProject | null;
+    }>(
+      `/api/projects/${encodeURIComponent(projectId)}/sections/${encodeURIComponent(
+        sectionId
+      )}/assistant-command`,
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
+
   transformSectionSelection: (
     projectId: string,
     sectionId: string,

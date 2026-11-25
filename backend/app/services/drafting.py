@@ -93,13 +93,7 @@ class DraftSectionOutput(BaseModel):
 STRUCTURED_TOOLS_INSTRUCTIONS = """
 OUTILS DE MISE EN FORME & SCHEMAS DISPONIBLES :
 1. FORMULES MATHEMATIQUES : Pour toute équation ou symbole, utilise uniquement les opérateurs standards entre $...$ (en ligne) ou $$...$$ (centré) : \\frac{num}{den}, ^{exp}, _{ind}, \\cdot, \\times, \\pm, \\leq, \\geq, \\neq, \\approx, \\sqrt{...}, \\alpha, \\beta, \\sigma, \\mu. Ils seront automatiquement convertis en équations natives Word et HTML.
-2. SCHEMAS / MODELES CONCEPTUELS / FLUX : N'écris JAMAIS de schéma en texte ASCII (+---+, |, v). Utilise exclusivement le champ structuré `suggested_diagrams` en choisissant le `layout` le plus adapté :
-   - `"horizontal_flow"` : modèle conceptuel / justification en 2–4 étapes gauche→droite (ex: Lacune → Étude → Objectif) avec étiquettes courtes sur les flèches (`Justifie`, `Vise à`).
-   - `"prisma_exclusion"` : diagramme de flux PRISMA/CONSORT d'inclusion/exclusion avec colonne principale à gauche et boîtes d'exclusion à droite (`N=...`).
-   - `"decision_flowchart"` : algorithme ou procédure de collecte avec nœuds `shape: "pill"` (début/fin), `"rounded"` (étapes), `"diamond"` (décisions) et flèches `"Oui"`/`"Non"` (boucles de retour possibles).
-   - `"branching_tree"` : arbre décisionnel ou clinique à plusieurs branches.
-   - `"parallel_converge"` : flux multi-bras qui se séparent puis convergent vers une synthèse finale.
-   Utilise des `shape` sémantiques (`"pill"`, `"rounded"`, `"rectangle"`, `"diamond"`, `"oval"`, `"cylinder"`), des titres courts, 2–3 items concis max par nœud, et des `label` de flèches très courts (1–3 mots).
+2. SCHEMAS / MODELES CONCEPTUELS / FLUX (SUR DEMANDE EXPLICITE UNIQUEMENT) : N'écris JAMAIS de schéma en texte ASCII (+---+, |, v). Laisse `suggested_diagrams=[]` par défaut lors de la rédaction standard. Ne remplis `suggested_diagrams` QUE si l'utilisateur demande explicitement un schéma, diagramme, organigramme ou modèle conceptuel dans son instruction (auquel cas choisis parmi `"horizontal_flow"`, `"prisma_exclusion"`, `"decision_flowchart"`, `"branching_tree"`, `"parallel_converge"` avec des formes sémantiques `"pill"`, `"rounded"`, `"rectangle"`, `"diamond"`, `"oval"`, `"cylinder"`).
 3. TABLEAUX (USAGE STRICTEMENT JUSTIFIE) : N'écris JAMAIS de tableau Markdown (| col |) dans `content_markdown`, et N'INSERE PAS de tableau superflu dans `suggested_tables` (`suggested_tables=[]`) sauf si cette section l'exige méthodologiquement (variables, synthèse d'études, chronogramme, budget, critères d'éligibilité) ou si l'étudiant en fait la demande explicite.
 """
 
@@ -823,6 +817,15 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
     if spec.constraints.table_policy == "forbidden" and "tableau" not in (user_instruction or "").lower() and "table" not in (user_instruction or "").lower():
         dto.suggested_tables = []
 
+    # Do NOT auto-inject unsolicited diagrams/flowcharts unless the user explicitly requested one
+    _instr_low = (user_instruction or "").lower()
+    _user_asked_diagram = any(
+        kw in _instr_low
+        for kw in ("schéma", "schema", "diagramme", "diagram", "organigramme", "flowchart", "prisma", "consort", "modèle conceptuel", "modele conceptuel")
+    )
+    if not _user_asked_diagram:
+        dto.suggested_diagrams = []
+
     emit_pipeline_step(
         "postprocess",
         "Contrôle typographique, normes CAMES & mémoire de travail...",
@@ -905,6 +908,8 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
         current_sec.cited_ref_ids = cited_ref_ids
         current_sec.audit_notes = det_notes
         _append_structured_elements(current_sec, dto)
+        if section_id == "chap3_chronogramme":
+            sync_timeline_from_section(project, overwrite=True)
         from app.services.vancouver import renumber_and_sync_vancouver_references
 
         renumber_and_sync_vancouver_references(project)
@@ -927,6 +932,82 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
         "internal_library_entries_used": int(orch.get("internal_library_entries_used", 0) or 0),
         "can_enrich_externally": bool(orch.get("can_enrich_externally", False)),
     }
+
+
+def sync_timeline_from_section(project: ProtocolProject, overwrite: bool = True) -> bool:
+    """Convert any `chap3_chronogramme` custom_table into `project.timeline_grid` (single source of truth).
+
+    Eliminates dual unsynchronized chronogram tables between Module 1 and Module 2.
+    """
+    from app.schemas.protocol import TimelineGrid, TimelineGridRow
+
+    sec = project.sections.get("chap3_chronogramme")
+    if sec is None or not sec.custom_tables:
+        return False
+
+    best_tbl = next(
+        (t for t in sec.custom_tables if len(t.headers or []) >= 2 and len(t.rows or []) >= 1),
+        None,
+    )
+    if best_tbl is None:
+        return False
+
+    if project.timeline_grid and project.timeline_grid.rows and not overwrite:
+        sec.custom_tables = []
+        sec.suppress_structured_table = False
+        return True
+
+    headers = [str(h or "").strip() for h in best_tbl.headers]
+    raw_rows = best_tbl.rows or []
+
+    # Case A: Matrix/Gantt table (Activity | M1 | M2 | M3 ... or Activity | Jan | Fév | Mar ...)
+    if len(headers) >= 3:
+        periods = [h for h in headers[1:] if h]
+        tl_rows: List[TimelineGridRow] = []
+        for r in raw_rows:
+            if not r:
+                continue
+            act = str(r[0] or "").strip()
+            if not act:
+                continue
+            active: List[str] = []
+            for idx_p, per in enumerate(periods):
+                cell_val = str(r[idx_p + 1] if idx_p + 1 < len(r) else "").strip()
+                if cell_val and cell_val.lower() not in ("-", "—", "0", "non", "no", "false", "vide"):
+                    active.append(per)
+            tl_rows.append(TimelineGridRow(activity=act, active_periods=active))
+        if periods and tl_rows:
+            project.timeline_grid = TimelineGrid(periods=periods, rows=tl_rows)
+            sec.custom_tables = []
+            sec.suppress_structured_table = False
+            return True
+
+    # Case B: 2-column table (Activité | Période)
+    if len(headers) == 2:
+        seen_p: List[str] = []
+        parsed_pairs: List[tuple[str, List[str]]] = []
+        for r in raw_rows:
+            if not r:
+                continue
+            act = str(r[0] or "").strip()
+            per_raw = str(r[1] if len(r) > 1 else "").strip()
+            if not act:
+                continue
+            per_tokens = [p.strip() for p in re.split(r"[,;/]+", per_raw) if p.strip()]
+            for pt in per_tokens:
+                if pt not in seen_p:
+                    seen_p.append(pt)
+            parsed_pairs.append((act, per_tokens))
+        if seen_p and parsed_pairs:
+            project.timeline_grid = TimelineGrid(
+                periods=seen_p[:16],
+                rows=[TimelineGridRow(activity=a, active_periods=[p for p in ps if p in seen_p[:16]]) for a, ps in parsed_pairs],
+            )
+            sec.custom_tables = []
+            sec.suppress_structured_table = False
+            return True
+
+    return False
 
 
 def _append_structured_elements(sec, dto: DraftSectionOutput) -> None:
@@ -1206,6 +1287,8 @@ Instructions:
     dto: DraftSectionOutput = res["data"]
     if spec.constraints.table_policy == "forbidden":
         dto.suggested_tables = []
+    # Never auto-inject unsolicited diagrams during audit fixes
+    dto.suggested_diagrams = []
 
     emit_pipeline_step(
         "postprocess",
@@ -1259,6 +1342,8 @@ Instructions:
             sec.status = StepStatus.IN_PROGRESS
             sec.audit_notes = det_notes
         _append_structured_elements(sec, dto)
+        if section_id == "chap3_chronogramme":
+            sync_timeline_from_section(project, overwrite=True)
         if section_id == "chap3_budget":
             from app.services.budget_engine import sync_budget_from_section
             from app.services.presentation_orchestrator import refresh_budget_slide_if_present

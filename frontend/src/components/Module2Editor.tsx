@@ -3,9 +3,11 @@ import {
   AlertTriangle,
   CheckCircle2,
   Download,
+  Eye,
   Feather,
   FileCheck2,
   FileText,
+  Loader2,
   RefreshCw,
   ShieldCheck,
   Sliders,
@@ -188,7 +190,9 @@ export function Module2Editor({
 }: Module2Props) {
   const { lang, t } = useLanguage();
   const [fmt, setFmt] = useState<FormattingRules>(project.formatting);
-  const [viewMode, setViewMode] = useState<"preview" | "tables">("preview");
+  const [viewMode, setViewMode] = useState<"preview" | "true_render" | "tables">("preview");
+  const [truePdfUrl, setTruePdfUrl] = useState<string | null>(null);
+  const [loadingTruePdf, setLoadingTruePdf] = useState(false);
   const [exportingDocx, setExportingDocx] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [generatingToc, setGeneratingToc] = useState(false);
@@ -212,6 +216,7 @@ export function Module2Editor({
     project.timeline_grid
   );
   const [savingTimeline, setSavingTimeline] = useState(false);
+  const [deletingMediaId, setDeletingMediaId] = useState<string | null>(null);
   const [previewAnnexes, setPreviewAnnexes] = useState<Array<Record<string, any>>>([]);
 
   const syncedTransportProjectRef = useRef<string | null>(null);
@@ -352,6 +357,57 @@ export function Module2Editor({
       onError(e instanceof Error ? e.message : "Échec de l'export DOCX");
     } finally {
       setExportingDocx(false);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      if (truePdfUrl) {
+        URL.revokeObjectURL(truePdfUrl);
+      }
+    };
+  }, [truePdfUrl]);
+
+  useEffect(() => {
+    setTruePdfUrl((prev) => {
+      if (prev) URL.revokeObjectURL(prev);
+      return null;
+    });
+  }, [project.project_id]);
+
+  const handleLoadTruePdf = async (switchToTab = true) => {
+    setLoadingTruePdf(true);
+    if (switchToTab) setViewMode("true_render");
+    onError("");
+    try {
+      if (isFormattingDirty) {
+        const saved = await api.updateFormatting(project.project_id, fmt);
+        onProjectUpdated(saved);
+      }
+      const res = await fetch(api.exportPdfUrl(project.project_id), {
+        method: "POST",
+        headers: authHeaders(),
+      });
+      if (!res.ok) {
+        const msg = await res.text();
+        throw new Error(msg || `Erreur HTTP ${res.status}`);
+      }
+      const blob = await res.blob();
+      const nextUrl = URL.createObjectURL(blob);
+      setTruePdfUrl((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return nextUrl;
+      });
+    } catch (e) {
+      onError(
+        e instanceof Error
+          ? e.message
+          : lang === "en"
+          ? "Failed to compile true PDF render."
+          : "Échec de la compilation du vrai rendu PDF."
+      );
+    } finally {
+      setLoadingTruePdf(false);
     }
   };
 
@@ -1338,8 +1394,74 @@ export function Module2Editor({
         </div>
       </aside>
 
-      {/* Right Column: Live Document Preview OR Structured Tables Editor */}
-      <section className="lg:col-span-8">
+      {/* Right Column: Live Document Preview OR True PDF Render OR Structured Tables Editor */}
+      <section className="lg:col-span-8 space-y-3">
+        {/* Top Mode Toggle Bar (Structured Preview | Vrai Rendu PDF | Tables & Appendices) */}
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200 bg-white px-3.5 py-2 shadow-xs">
+          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 text-xs font-semibold">
+            <button
+              type="button"
+              onClick={() => setViewMode("preview")}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 transition ${
+                viewMode === "preview"
+                  ? "bg-white text-slate-900 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <FileText className="h-3.5 w-3.5" />
+              {lang === "en" ? "Structured Preview" : "Aperçu structuré"}
+            </button>
+            <button
+              type="button"
+              data-testid="m2-true-render-toggle"
+              onClick={() => {
+                if (!truePdfUrl) {
+                  void handleLoadTruePdf(true);
+                } else {
+                  setViewMode("true_render");
+                }
+              }}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 transition ${
+                viewMode === "true_render"
+                  ? "bg-white text-[#6C2826] shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <Eye className="h-3.5 w-3.5" />
+              {lang === "en" ? "True PDF Render" : "Vrai Rendu PDF"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("tables")}
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 transition ${
+                viewMode === "tables"
+                  ? "bg-white text-slate-900 shadow-xs"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <TableProperties className="h-3.5 w-3.5" />
+              {lang === "en" ? "Tables & Appendices" : "Tableaux & Annexes"}
+            </button>
+          </div>
+          {viewMode === "true_render" && (
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={loadingTruePdf}
+                onClick={() => void handleLoadTruePdf(true)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+              >
+                {loadingTruePdf ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="h-3.5 w-3.5" />
+                )}
+                {lang === "en" ? "Refresh True Render" : "Actualiser le vrai rendu"}
+              </button>
+            </div>
+          )}
+        </div>
+
         {viewMode === "tables" ? (
           <StructuredTablesEditor
             project={project}
@@ -1347,6 +1469,47 @@ export function Module2Editor({
             onProjectUpdated={onProjectUpdated}
             onError={onError}
           />
+        ) : viewMode === "true_render" ? (
+          <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+            {loadingTruePdf ? (
+              <div className="flex min-h-[620px] flex-col items-center justify-center gap-3 p-8 text-center">
+                <Loader2 className="h-8 w-8 animate-spin text-[#6C2826]" />
+                <p className="text-sm font-semibold text-slate-800">
+                  {lang === "en"
+                    ? "Compiling faithful Word → PDF render (LibreOffice)..."
+                    : "Compilation du vrai rendu Word → PDF fidèle (LibreOffice)…"}
+                </p>
+                <p className="max-w-md text-xs text-slate-500">
+                  {lang === "en"
+                    ? "Exact A4 pagination, cover borders, headers/footers, equations, tables, and HiDPI figures."
+                    : "Pagination A4 exacte, page de garde, en-têtes/pieds de page, équations, tableaux et figures HD."}
+                </p>
+              </div>
+            ) : truePdfUrl ? (
+              <iframe
+                title={lang === "en" ? "True PDF Render" : "Vrai Rendu PDF"}
+                src={`${truePdfUrl}#view=FitH`}
+                className="h-[82vh] min-h-[680px] w-full border-0 bg-slate-100"
+              />
+            ) : (
+              <div className="flex min-h-[420px] flex-col items-center justify-center gap-3 p-8 text-center">
+                <Eye className="h-8 w-8 text-slate-400" />
+                <p className="text-sm text-slate-600">
+                  {lang === "en"
+                    ? "Click Refresh True Render to generate the exact compiled PDF preview."
+                    : "Cliquez sur Actualiser le vrai rendu pour générer l'aperçu PDF compilé exact."}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void handleLoadTruePdf(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-4 py-2 text-xs font-semibold text-white hover:bg-[#58201e]"
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  {lang === "en" ? "Generate True PDF Render" : "Générer le Vrai Rendu PDF"}
+                </button>
+              </div>
+            )}
+          </div>
         ) : (
           <div className="space-y-4">
             {chapterGroups.length > 0 && (
@@ -2198,13 +2361,15 @@ export function Module2Editor({
                                     {img.caption}
                                   </div>
                                 )}
-                                <div className="mt-1.5 flex items-center justify-center gap-3 text-[11px]">
+                                <div className="mt-1.5 flex flex-wrap items-center justify-center gap-3 text-[11px]">
                                   {img.license_info && (
                                     <span className="text-slate-500">{img.license_info}</span>
                                   )}
                                   <button
                                     type="button"
+                                    disabled={deletingMediaId === img.asset_id}
                                     onClick={async () => {
+                                      setDeletingMediaId(img.asset_id);
                                       try {
                                         const updated = await api.toggleImage(
                                           project.project_id,
@@ -2214,11 +2379,36 @@ export function Module2Editor({
                                         onProjectUpdated(updated);
                                       } catch (err) {
                                         onError(err instanceof Error ? err.message : String(err));
+                                      } finally {
+                                        setDeletingMediaId(null);
                                       }
                                     }}
-                                    className="text-rose-600 hover:underline font-sans"
+                                    className="font-sans text-amber-700 hover:underline disabled:opacity-50"
                                   >
-                                    {lang === "en" ? "Exclude from export" : "Exclure du rendu"}
+                                    {lang === "en" ? "Hide from export" : "Masquer du rendu"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={deletingMediaId === img.asset_id}
+                                    onClick={async () => {
+                                      setDeletingMediaId(img.asset_id);
+                                      try {
+                                        const updated = await api.deleteImage(
+                                          project.project_id,
+                                          img.asset_id
+                                        );
+                                        onProjectUpdated(updated);
+                                      } catch (err) {
+                                        onError(err instanceof Error ? err.message : String(err));
+                                      } finally {
+                                        setDeletingMediaId(null);
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-sans font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+                                    title={lang === "en" ? "Delete this figure" : "Supprimer cette figure"}
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                    {lang === "en" ? "Remove" : "Retirer"}
                                   </button>
                                 </div>
                               </div>
@@ -2238,9 +2428,35 @@ export function Module2Editor({
                               alt={dg.title}
                               className="mx-auto max-h-80 w-full max-w-2xl rounded border border-slate-200 bg-white p-1.5 object-contain"
                             />
-                            <div className="mt-1 text-[11px] italic text-slate-600">
-                              Figure. {dg.title}
-                              {dg.caption ? ` — ${dg.caption}` : ""}
+                            <div className="mt-1 flex flex-wrap items-center justify-center gap-2 text-[11px] italic text-slate-600">
+                              <span>
+                                Figure. {dg.title}
+                                {dg.caption ? ` — ${dg.caption}` : ""}
+                              </span>
+                              <button
+                                type="button"
+                                disabled={deletingMediaId === dg.diagram_id}
+                                onClick={async () => {
+                                  setDeletingMediaId(dg.diagram_id);
+                                  try {
+                                    const updated = await api.deleteSectionDiagram(
+                                      project.project_id,
+                                      spec.id,
+                                      dg.diagram_id
+                                    );
+                                    onProjectUpdated(updated);
+                                  } catch (err) {
+                                    onError(err instanceof Error ? err.message : String(err));
+                                  } finally {
+                                    setDeletingMediaId(null);
+                                  }
+                                }}
+                                className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-sans not-italic font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+                                title={lang === "en" ? "Delete this figure" : "Supprimer ce schéma"}
+                              >
+                                <Trash2 className="h-3 w-3" />
+                                {lang === "en" ? "Remove" : "Retirer"}
+                              </button>
                             </div>
                           </div>
                         ))}
