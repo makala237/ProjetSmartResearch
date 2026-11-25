@@ -766,6 +766,12 @@ def _build_layout_blocks(
         # Approved figures (>= 12pt minimum legibility + caption locked together)
         for img in approved_images_by_section.get(spec.id, []):
             img_path = Path(img.local_path) if getattr(img, "local_path", None) else None
+            if not img_path or not img_path.exists():
+                from app.services.media_transport import restore_image_from_blob
+
+                restored = restore_image_from_blob(project.project_id, img)
+                if restored is not None:
+                    img_path = restored
             sz = compute_minimum_legible_figure_size_cm(
                 diagram=None,
                 image_path=img_path if (img_path and img_path.exists()) else None,

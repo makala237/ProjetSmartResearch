@@ -238,6 +238,7 @@ def save_materialized_image_bytes(
                 rec_w_cm = 14.5
 
             sha1 = hashlib.sha1(dest.read_bytes()).hexdigest()[:12]
+            mirror_image_to_blob(project_id, dest)
             return {
                 "asset_id": asset_id,
                 "local_path": str(dest),
@@ -251,6 +252,56 @@ def save_materialized_image_bytes(
     except Exception as exc:
         logger.debug("Pillow normalization skipped for image bytes: %s", exc)
         return None
+
+
+def mirror_image_to_blob(project_id: str, local_path: Path) -> None:
+    """Persist an image file to configured cloud blob storage (GCS/S3) so it survives Cloud Run restarts."""
+    try:
+        from app.services.blob_storage import build_object_key, get_blob_storage
+
+        blob = get_blob_storage()
+        if blob.backend_name != "local" and local_path.exists() and local_path.stat().st_size > 0:
+            blob.upload_file(build_object_key("uploads", project_id, local_path.name), local_path)
+    except Exception as exc:
+        logger.warning("GCS mirror skipped for %s/%s: %s", project_id, local_path.name, exc)
+
+
+def restore_image_from_blob(project_id: str, img: ImageAsset) -> Optional[Path]:
+    """Restore an ImageAsset's binary file from cloud blob storage (GCS/S3) onto local disk if missing."""
+    try:
+        from app.services.blob_storage import build_object_key, get_blob_storage
+
+        blob = get_blob_storage()
+        if blob.backend_name == "local":
+            return None
+
+        upload_dir = get_settings().storage_dir / "uploads" / project_id
+        upload_dir.mkdir(parents=True, exist_ok=True)
+
+        candidate_names: List[str] = []
+        if getattr(img, "local_path", None):
+            lp_name = Path(img.local_path).name
+            if lp_name:
+                candidate_names.append(lp_name)
+        aid = (getattr(img, "asset_id", None) or "").strip()
+        if aid:
+            for ext in (".png", ".jpg", ".jpeg", ".webp"):
+                cand = f"{aid}{ext}"
+                if cand not in candidate_names:
+                    candidate_names.append(cand)
+
+        for fname in candidate_names:
+            dest = upload_dir / fname
+            if dest.exists() and dest.stat().st_size > 500:
+                img.local_path = str(dest)
+                return dest
+            key = build_object_key("uploads", project_id, fname)
+            if blob.download_file(key, dest) and dest.exists() and dest.stat().st_size > 500:
+                img.local_path = str(dest)
+                return dest
+    except Exception as exc:
+        logger.warning("GCS restore failed for %s/%s: %s", project_id, getattr(img, "asset_id", ""), exc)
+    return None
 
 
 def download_and_materialize_pmc_figure(
@@ -377,6 +428,12 @@ def _wikimedia_fallback_bytes(query_text: str) -> Optional[bytes]:
 def materialize_image_asset(project: ProtocolProject, img: ImageAsset) -> bool:
     """Guarantee that an ImageAsset from Module 1 / Antigravity / Europe PMC is materialized on disk."""
     local_ok = bool(img.local_path and Path(img.local_path).exists() and Path(img.local_path).stat().st_size > 500)
+    if not local_ok:
+        restored = restore_image_from_blob(project.project_id, img)
+        if restored is not None and restored.exists() and restored.stat().st_size > 500:
+            img.local_path = str(restored)
+            local_ok = True
+
     pmcid, href = _extract_pmcid_and_href(f"{img.source_url} {img.title}")
     if not pmcid and img.source_ref_id:
         ref = next((r for r in project.references if r.ref_id == img.source_ref_id), None)
@@ -458,8 +515,9 @@ def materialize_image_asset(project: ProtocolProject, img: ImageAsset) -> bool:
         except Exception as exc:
             logger.debug("Direct image fetch failed (%s): %s", cleaned_url, exc)
 
-    # Attempt 3: Wikimedia Open Access medical diagram fallback so pipeline figures never vanish
-    if saved_meta is None:
+    # Attempt 3: Wikimedia Open Access medical diagram fallback (NEVER replace a user's own uploaded image!)
+    is_user_local_asset = bool((img.source_url or "").startswith("/api/projects/"))
+    if saved_meta is None and not is_user_local_asset:
         wm_bytes = _wikimedia_fallback_bytes(f"{img.title} {img.caption} {project.cover.title}")
         if wm_bytes:
             saved_meta = save_materialized_image_bytes(
@@ -497,6 +555,10 @@ def transport_and_repair_project_images(project: ProtocolProject) -> Dict[str, A
         was_local = bool(img.local_path and Path(img.local_path).exists())
         ok = materialize_image_asset(project, img)
         if not ok:
+            # Never silently delete a user-uploaded / previously stored project image on transient storage errors
+            if (img.source_url or "").startswith("/api/projects/"):
+                valid_images.append(img)
+                continue
             removed_broken += 1
             continue
 

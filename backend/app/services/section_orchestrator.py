@@ -477,6 +477,9 @@ def _download_figure_locally(
                 fname = f"{asset.asset_id}{ext}"
                 fpath = upload_dir / fname
                 fpath.write_bytes(r.content)
+                from app.services.media_transport import mirror_image_to_blob
+
+                mirror_image_to_blob(project_id, fpath)
                 asset.local_path = str(fpath)
                 asset.source_url = f"/api/projects/{project_id}/images/{asset.asset_id}/file"
     except Exception as exc:
