@@ -673,6 +673,24 @@ def get_localized_section_spec(section_id: str, lang: Optional[str]) -> CanvasSe
     raise ValueError(f"Section inconnue : {section_id}")
 
 
+def get_project_canvas(project: Any) -> List[CanvasSectionSpec]:
+    """Return the effective chapter/section canvas for a project (custom_canvas if set, else default FMSB canvas)."""
+    custom = getattr(project, "custom_canvas", None)
+    if custom and len(custom) > 0:
+        return sorted(custom, key=lambda s: (s.order, s.id))
+    lang = getattr(project, "language", "fr")
+    return get_localized_canvas(lang)
+
+
+def get_project_section_spec(project: Any, section_id: str) -> CanvasSectionSpec:
+    """Return the CanvasSectionSpec for section_id from the project's effective canvas."""
+    for spec in get_project_canvas(project):
+        if spec.id == section_id:
+            return spec
+    # Fallback to default localized canvas if section_id is a known built-in not in custom_canvas
+    return get_localized_section_spec(section_id, getattr(project, "language", "fr"))
+
+
 def get_language_prompt_directive(lang: Optional[str]) -> str:
     """Return strict LLM output-language instruction injected into drafting, research, audit, and PPTX prompts."""
     if normalize_lang(lang) == "en":

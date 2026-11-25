@@ -525,6 +525,7 @@ class ProtocolProject(BaseModel):
     research_idea: str = ""
     study_type: str = ""
     cover: CoverMetadata = Field(default_factory=CoverMetadata)
+    custom_canvas: Optional[List[CanvasSectionSpec]] = None
     sections: Dict[str, SectionState] = Field(default_factory=dict)
     coherence_alerts: List[CoherenceAlert] = Field(default_factory=list)
     references: List[ReferenceItem] = Field(default_factory=list)

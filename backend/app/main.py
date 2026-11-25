@@ -92,6 +92,7 @@ from app.services.selective_reformulation import (
 from app.services.supervisor_media import extract_directives_from_media
 from app.services.gemini_client import gemini_router
 from app.schemas.protocol import (
+    CanvasSectionSpec,
     CoverMetadata,
     CreateProjectRequest,
     CRFFieldSpec,
@@ -2304,6 +2305,201 @@ def move_section_media(
 
     _sync_module2_queue(project)
     return project_storage.save(project)
+
+
+class ProjectStructureActionRequest(BaseModel):
+    action: str  # "add_chapter" | "rename_chapter" | "delete_chapter" | "add_section" | "update_section" | "delete_section" | "reset_structure"
+    chapter_id: Optional[str] = None
+    chapter_title: Optional[str] = None
+    section_id: Optional[str] = None
+    title: Optional[str] = None
+    description: Optional[str] = None
+    target_chapter_id: Optional[str] = None
+    direction: Optional[str] = None  # "up" | "down"
+
+
+_PROTECTED_STRUCTURE_SECTION_IDS = frozenset({"cover_page", "references"})
+
+
+def _ensure_mutable_custom_canvas(project: ProtocolProject) -> List[CanvasSectionSpec]:
+    from app.data.i18n import get_project_canvas
+
+    if not project.custom_canvas:
+        project.custom_canvas = [s.model_copy(deep=True) for s in get_project_canvas(project)]
+    return project.custom_canvas
+
+
+def _reindex_custom_canvas(canvas_list: List[CanvasSectionSpec]) -> None:
+    for idx, spec in enumerate(canvas_list, start=1):
+        spec.order = idx
+
+
+@app.post("/api/projects/{project_id}/structure", response_model=ProtocolProject)
+def manage_project_structure(
+    project_id: str,
+    payload: ProjectStructureActionRequest,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    """Add, edit, delete chapters/sections and switch sections between chapters for a project."""
+    project = get_authorized_project(project_id, current_user)
+    action = (payload.action or "").strip().lower()
+    lang = getattr(project, "language", "fr") or "fr"
+    is_en = lang.lower().startswith("en")
+
+    if action == "reset_structure":
+        project.custom_canvas = None
+        for spec in FMSB_SECTIONS:
+            if spec.id not in project.sections:
+                project.sections[spec.id] = SectionState(section_id=spec.id)
+        renumber_and_sync_vancouver_references(project)
+        _sync_module2_queue(project)
+        return scope_project_copilot_for_user(project_storage.save(project), current_user.id)
+
+    canvas_list = _ensure_mutable_custom_canvas(project)
+
+    if action == "add_chapter":
+        chap_title = (payload.chapter_title or "").strip()
+        if not chap_title:
+            raise HTTPException(status_code=400, detail="Titre du chapitre requis.")
+        sec_title = (payload.title or "").strip() or ("New section" if is_en else "Nouvelle section")
+        chap_id = f"custom_chap_{uuid.uuid4().hex[:8]}"
+        sec_id = f"custom_sec_{uuid.uuid4().hex[:8]}"
+        new_spec = CanvasSectionSpec(
+            id=sec_id,
+            chapter_id=chap_id,
+            chapter_title=chap_title,
+            title=sec_title,
+            order=len(canvas_list) + 1,
+            description=(payload.description or "").strip()
+            or ("Custom section added by investigator." if is_en else "Section personnalisée ajoutée par l'investigateur."),
+        )
+        # Insert before references/annexes chapter if present, otherwise at end
+        ref_idx = next((i for i, s in enumerate(canvas_list) if s.id == "references"), len(canvas_list))
+        canvas_list.insert(ref_idx, new_spec)
+        _reindex_custom_canvas(canvas_list)
+        project.sections[sec_id] = SectionState(section_id=sec_id)
+
+    elif action == "rename_chapter":
+        chap_id = (payload.chapter_id or "").strip()
+        chap_title = (payload.chapter_title or "").strip()
+        if not chap_id or not chap_title:
+            raise HTTPException(status_code=400, detail="Identifiant et nouveau titre du chapitre requis.")
+        matched = False
+        for spec in canvas_list:
+            if spec.chapter_id == chap_id:
+                spec.chapter_title = chap_title
+                matched = True
+        if not matched:
+            raise HTTPException(status_code=404, detail="Chapitre introuvable.")
+
+    elif action == "delete_chapter":
+        chap_id = (payload.chapter_id or "").strip()
+        if not chap_id:
+            raise HTTPException(status_code=400, detail="Identifiant du chapitre requis.")
+        chap_secs = [s for s in canvas_list if s.chapter_id == chap_id]
+        if not chap_secs:
+            raise HTTPException(status_code=404, detail="Chapitre introuvable.")
+        removable = [s for s in chap_secs if s.id not in _PROTECTED_STRUCTURE_SECTION_IDS]
+        if not removable:
+            raise HTTPException(
+                status_code=400,
+                detail="Ce chapitre contient uniquement des sections système protégées (Page de garde / Références).",
+            )
+        remove_ids = {s.id for s in removable}
+        project.custom_canvas = [s for s in canvas_list if s.id not in remove_ids]
+        _reindex_custom_canvas(project.custom_canvas)
+        for sid in remove_ids:
+            project.sections.pop(sid, None)
+
+    elif action == "add_section":
+        chap_id = (payload.chapter_id or "").strip()
+        sec_title = (payload.title or "").strip()
+        if not chap_id or not sec_title:
+            raise HTTPException(status_code=400, detail="Chapitre et titre de section requis.")
+        chap_indices = [i for i, s in enumerate(canvas_list) if s.chapter_id == chap_id]
+        if not chap_indices:
+            raise HTTPException(status_code=404, detail="Chapitre introuvable.")
+        chap_title = canvas_list[chap_indices[0]].chapter_title
+        sec_id = f"custom_sec_{uuid.uuid4().hex[:8]}"
+        new_spec = CanvasSectionSpec(
+            id=sec_id,
+            chapter_id=chap_id,
+            chapter_title=chap_title,
+            title=sec_title,
+            order=len(canvas_list) + 1,
+            description=(payload.description or "").strip()
+            or ("Custom section added by investigator." if is_en else "Section personnalisée ajoutée par l'investigateur."),
+        )
+        canvas_list.insert(chap_indices[-1] + 1, new_spec)
+        _reindex_custom_canvas(canvas_list)
+        project.sections[sec_id] = SectionState(section_id=sec_id)
+
+    elif action == "update_section":
+        sec_id = (payload.section_id or "").strip()
+        idx = next((i for i, s in enumerate(canvas_list) if s.id == sec_id), None)
+        if idx is None:
+            raise HTTPException(status_code=404, detail="Section introuvable.")
+        spec = canvas_list[idx]
+        if payload.title is not None and payload.title.strip():
+            spec.title = payload.title.strip()
+        if payload.description is not None:
+            spec.description = payload.description.strip()
+
+        # Switch section to another chapter
+        target_chap = (payload.target_chapter_id or "").strip()
+        if target_chap and target_chap != spec.chapter_id:
+            if sec_id in _PROTECTED_STRUCTURE_SECTION_IDS:
+                raise HTTPException(
+                    status_code=400,
+                    detail="La Page de garde et les Références ne peuvent pas être déplacées hors de leur chapitre.",
+                )
+            target_indices = [i for i, s in enumerate(canvas_list) if s.chapter_id == target_chap]
+            if not target_indices:
+                raise HTTPException(status_code=404, detail="Chapitre de destination introuvable.")
+            target_chap_title = canvas_list[target_indices[0]].chapter_title
+            moved_spec = canvas_list.pop(idx)
+            moved_spec.chapter_id = target_chap
+            moved_spec.chapter_title = target_chap_title
+            # Recompute last index of target chapter after pop
+            new_target_indices = [i for i, s in enumerate(canvas_list) if s.chapter_id == target_chap]
+            insert_at = (new_target_indices[-1] + 1) if new_target_indices else len(canvas_list)
+            canvas_list.insert(insert_at, moved_spec)
+            _reindex_custom_canvas(canvas_list)
+
+        # Optional reorder up/down within the section's current chapter
+        direction = (payload.direction or "").strip().lower()
+        if direction in ("up", "down"):
+            cur_idx = next((i for i, s in enumerate(canvas_list) if s.id == sec_id), None)
+            if cur_idx is not None:
+                chap_id = canvas_list[cur_idx].chapter_id
+                chap_indices = [i for i, s in enumerate(canvas_list) if s.chapter_id == chap_id]
+                pos = chap_indices.index(cur_idx)
+                swap_pos = pos - 1 if direction == "up" else pos + 1
+                if 0 <= swap_pos < len(chap_indices):
+                    a, b = chap_indices[pos], chap_indices[swap_pos]
+                    canvas_list[a], canvas_list[b] = canvas_list[b], canvas_list[a]
+                    _reindex_custom_canvas(canvas_list)
+
+    elif action == "delete_section":
+        sec_id = (payload.section_id or "").strip()
+        if sec_id in _PROTECTED_STRUCTURE_SECTION_IDS:
+            raise HTTPException(
+                status_code=400,
+                detail="La Page de garde et les Références sont protégées et ne peuvent pas être supprimées.",
+            )
+        if not any(s.id == sec_id for s in canvas_list):
+            raise HTTPException(status_code=404, detail="Section introuvable.")
+        project.custom_canvas = [s for s in canvas_list if s.id != sec_id]
+        _reindex_custom_canvas(project.custom_canvas)
+        project.sections.pop(sec_id, None)
+
+    else:
+        raise HTTPException(status_code=400, detail=f"Action de structure inconnue : {action}")
+
+    renumber_and_sync_vancouver_references(project)
+    _sync_module2_queue(project)
+    saved = project_storage.save(project)
+    return scope_project_copilot_for_user(saved, current_user.id)
 
 
 @app.post("/api/projects/{project_id}/import")

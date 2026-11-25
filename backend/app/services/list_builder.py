@@ -13,7 +13,7 @@ from docx.shared import Pt, RGBColor
 from pydantic import BaseModel
 
 from app.data.fmsb_canvas import FMSB_SECTIONS
-from app.data.i18n import get_doc_labels, get_localized_canvas, normalize_lang
+from app.data.i18n import get_doc_labels, get_localized_canvas, get_project_canvas, normalize_lang
 from app.schemas.protocol import (
     AbbreviationItem,
     FormattingRules,
@@ -520,7 +520,7 @@ def collect_deduplicated_abbreviations(project: ProtocolProject) -> List[Abbrevi
         if _normalize_abbr_key(ac) not in merged:
             _merge_pair(merged, ac, ff)
 
-    for spec in FMSB_SECTIONS:
+    for spec in get_project_canvas(project):
         if spec.id in _FRONT_MATTER_SECTION_IDS:
             continue
         sec = project.sections.get(spec.id)
@@ -642,7 +642,7 @@ def deduplicate_project_media_and_tables(project: ProtocolProject) -> None:
         psec.custom_tables = []
         psec.custom_diagrams = []
 
-    for spec in FMSB_SECTIONS:
+    for spec in get_project_canvas(project):
         if spec.id in _FRONT_MATTER_SECTION_IDS:
             continue
         sec = project.sections.get(spec.id)

@@ -19,7 +19,7 @@ from PIL import Image as PILImage
 
 from app.core.config import WORKSPACE_DIR, get_settings
 from app.data.fmsb_canvas import FMSB_SECTIONS
-from app.data.i18n import get_chapter_titles, get_doc_labels, get_localized_canvas, normalize_lang
+from app.data.i18n import get_chapter_titles, get_doc_labels, get_localized_canvas, get_project_canvas, normalize_lang
 from app.schemas.protocol import FormattingRules, ProtocolProject, StepStatus
 from app.services.annexes_generator import build_annexes_pack
 from app.services.cover_builder import build_fmsb_cover_page
@@ -1676,7 +1676,7 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
     lang = normalize_lang(getattr(project, "language", "fr"))
     chap_titles = get_chapter_titles(lang)
     labels = get_doc_labels(lang)
-    localized_canvas = get_localized_canvas(lang)
+    localized_canvas = get_project_canvas(project)
 
     for section in doc.sections:
         section.page_width = Cm(21.0)

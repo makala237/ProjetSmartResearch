@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowDown,
   ArrowRight,
+  ArrowUp,
   BookOpen,
   CheckCircle2,
   ChevronDown,
@@ -11,15 +13,20 @@ import {
   Clock,
   Feather,
   FileText,
+  FolderPlus,
   Globe,
   History,
   Loader2,
   Menu,
+  Pencil,
+  Plus,
   RefreshCw,
   RotateCcw,
   Save,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
+  Trash2,
   Wand2,
   X,
 } from "lucide-react";
@@ -208,6 +215,20 @@ export function Module1Assistant({
   const [showMethodGuide, setShowMethodGuide] = useState(false);
   const [showCamesRequirements, setShowCamesRequirements] = useState(false);
   const [showAssignedSegments, setShowAssignedSegments] = useState(false);
+
+  // Interactive Chapter & Section Structure Manager state
+  const [structureEditMode, setStructureEditMode] = useState(false);
+  const [busyStructure, setBusyStructure] = useState(false);
+  const [addingChapter, setAddingChapter] = useState(false);
+  const [newChapterTitle, setNewChapterTitle] = useState("");
+  const [newChapterFirstSection, setNewChapterFirstSection] = useState("");
+  const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
+  const [editingChapterTitle, setEditingChapterTitle] = useState("");
+  const [addingSectionChapterId, setAddingSectionChapterId] = useState<string | null>(null);
+  const [newSectionTitle, setNewSectionTitle] = useState("");
+  const [editingSectionId, setEditingSectionId] = useState<string | null>(null);
+  const [editingSectionTitle, setEditingSectionTitle] = useState("");
+  const [editingSectionChapterId, setEditingSectionChapterId] = useState("");
   const [showInternalLibrary, setShowInternalLibrary] = useState(false);
   const [showPersonalNotes, setShowPersonalNotes] = useState(() =>
     Boolean(activeState?.user_notes?.trim())
@@ -1168,74 +1189,487 @@ export function Module1Assistant({
     }
   }
 
+  const PROTECTED_STRUCTURE_IDS = new Set(["cover_page", "references"]);
+
+  async function runStructureAction(
+    payload: Parameters<typeof api.manageProjectStructure>[1],
+    selectSectionAfter?: string
+  ) {
+    setBusyStructure(true);
+    onError("");
+    try {
+      const updated = await api.manageProjectStructure(project.project_id, payload);
+      onProjectUpdated(updated);
+      const nextCanvas =
+        updated.custom_canvas && updated.custom_canvas.length > 0
+          ? updated.custom_canvas
+          : canvas;
+      if (selectSectionAfter && nextCanvas.some((s) => s.id === selectSectionAfter)) {
+        onSelectSection(selectSectionAfter);
+      } else if (!nextCanvas.some((s) => s.id === activeSpec.id) && nextCanvas.length > 0) {
+        onSelectSection(nextCanvas[0].id);
+      }
+      return updated;
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+      return null;
+    } finally {
+      setBusyStructure(false);
+    }
+  }
+
   const renderStepsList = (closeDrawer?: () => void) => (
     <div className="space-y-4">
-      {chapters.map((chap) => (
-        <div key={chap.chapterId}>
-          <div className="mb-1.5 text-xs font-bold uppercase tracking-wider text-slate-500">
-            {chap.chapterTitle}
+      {structureEditMode && (
+        <div className="space-y-2 rounded-lg border border-indigo-200 bg-indigo-50/70 p-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-1.5">
+            <button
+              type="button"
+              disabled={busyStructure}
+              onClick={() => setAddingChapter((v) => !v)}
+              className="inline-flex items-center gap-1 rounded-md bg-indigo-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+            >
+              <FolderPlus className="h-3.5 w-3.5" />
+              {lang === "en" ? "+ New Chapter" : "+ Nouveau chapitre"}
+            </button>
+            {project.custom_canvas && project.custom_canvas.length > 0 && (
+              <button
+                type="button"
+                disabled={busyStructure}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      lang === "en"
+                        ? "Reset chapters and sections back to the default FMSB 5-chapter template? (Custom section content will be hidden.)"
+                        : "Réinitialiser les chapitres et sections vers le canevas FMSB par défaut ?"
+                    )
+                  ) {
+                    void runStructureAction({ action: "reset_structure" });
+                  }
+                }}
+                className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+              >
+                <RotateCcw className="h-3 w-3" />
+                {lang === "en" ? "Reset FMSB" : "Réinitialiser"}
+              </button>
+            )}
           </div>
-          <div className="space-y-1">
-            {chap.items.map((item) => {
-              const st = project.sections[item.id]?.status ?? "pending";
-              const segCount = project.article_segments.filter(
-                (s) => s.approved && s.target_section_ids.includes(item.id)
-              ).length;
-              const hasCoherenceAlert = allCoherenceAlerts.some(
-                (a) => a.target_section_id === item.id
-              );
-              const isSelected = item.id === activeSpec.id;
-              return (
+          {addingChapter && (
+            <div className="space-y-1.5 rounded-md border border-indigo-200 bg-white p-2">
+              <input
+                type="text"
+                value={newChapterTitle}
+                onChange={(e) => setNewChapterTitle(e.target.value)}
+                placeholder={
+                  lang === "en"
+                    ? "Chapter title (e.g. CHAPTER VI: DISCUSSION)"
+                    : "Titre du chapitre (ex. CHAPITRE VI : DISCUSSION)"
+                }
+                className="w-full rounded border border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:outline-none"
+              />
+              <input
+                type="text"
+                value={newChapterFirstSection}
+                onChange={(e) => setNewChapterFirstSection(e.target.value)}
+                placeholder={
+                  lang === "en"
+                    ? "First section title (optional)"
+                    : "Titre de la 1re section (optionnel)"
+                }
+                className="w-full rounded border border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:outline-none"
+              />
+              <div className="flex justify-end gap-1.5">
                 <button
-                  key={item.id}
                   type="button"
                   onClick={() => {
-                    void handleSelectSectionSafe(item.id);
-                    closeDrawer?.();
+                    setAddingChapter(false);
+                    setNewChapterTitle("");
+                    setNewChapterFirstSection("");
                   }}
-                  className={`flex min-h-[42px] w-full items-start justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition ${
-                    isSelected
-                      ? "bg-indigo-50 font-medium text-indigo-900 ring-1 ring-indigo-200"
-                      : "text-slate-700 hover:bg-slate-50"
-                  }`}
+                  className="rounded px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100"
                 >
-                  <span className="flex items-start gap-2">
-                    <span className="mt-0.5 shrink-0">
-                      {isSectionBusy(item.id) ? (
-                        <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
-                      ) : st === "validated" ? (
-                        <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-                      ) : st === "in_progress" ? (
-                        <Clock className="h-4 w-4 text-amber-500" />
-                      ) : st === "needs_revision" ? (
-                        <AlertCircle className="h-4 w-4 text-rose-500" />
-                      ) : (
-                        <Circle className="h-4 w-4 text-slate-300" />
-                      )}
-                    </span>
-                    <span className="line-clamp-2 leading-snug">{item.title}</span>
-                  </span>
-                  <span className="flex shrink-0 items-center gap-1">
-                    {hasCoherenceAlert && (
-                      <span
-                        className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800"
-                        title="Des modifications dans une autre section impactent cette rubrique"
-                      >
-                        À harmoniser
-                      </span>
-                    )}
-                    {segCount > 0 && (
-                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
-                        {segCount}
-                      </span>
-                    )}
-                  </span>
+                  {lang === "en" ? "Cancel" : "Annuler"}
                 </button>
-              );
-            })}
-          </div>
+                <button
+                  type="button"
+                  disabled={busyStructure || !newChapterTitle.trim()}
+                  onClick={async () => {
+                    const updated = await runStructureAction({
+                      action: "add_chapter",
+                      chapter_title: newChapterTitle.trim(),
+                      title: newChapterFirstSection.trim() || undefined,
+                    });
+                    if (updated) {
+                      setAddingChapter(false);
+                      setNewChapterTitle("");
+                      setNewChapterFirstSection("");
+                    }
+                  }}
+                  className="rounded bg-indigo-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {lang === "en" ? "Create" : "Créer"}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
-      ))}
+      )}
+
+      {chapters.map((chap) => {
+        const chapHasOnlyProtected = chap.items.every((it) =>
+          PROTECTED_STRUCTURE_IDS.has(it.id)
+        );
+        return (
+          <div key={chap.chapterId}>
+            <div className="mb-1.5 flex items-center justify-between gap-1">
+              {editingChapterId === chap.chapterId ? (
+                <div className="flex w-full items-center gap-1">
+                  <input
+                    type="text"
+                    value={editingChapterTitle}
+                    onChange={(e) => setEditingChapterTitle(e.target.value)}
+                    className="min-w-0 flex-1 rounded border border-indigo-400 px-1.5 py-0.5 text-xs font-semibold text-slate-800 focus:outline-none"
+                  />
+                  <button
+                    type="button"
+                    disabled={busyStructure || !editingChapterTitle.trim()}
+                    onClick={async () => {
+                      const updated = await runStructureAction({
+                        action: "rename_chapter",
+                        chapter_id: chap.chapterId,
+                        chapter_title: editingChapterTitle.trim(),
+                      });
+                      if (updated) setEditingChapterId(null);
+                    }}
+                    className="rounded bg-indigo-600 px-1.5 py-0.5 text-[10px] font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    OK
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditingChapterId(null)}
+                    className="rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-700"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="min-w-0 flex-1 truncate text-xs font-bold uppercase tracking-wider text-slate-500">
+                    {chap.chapterTitle}
+                  </div>
+                  {structureEditMode && (
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      <button
+                        type="button"
+                        disabled={busyStructure}
+                        onClick={() => {
+                          setAddingSectionChapterId(
+                            addingSectionChapterId === chap.chapterId ? null : chap.chapterId
+                          );
+                          setNewSectionTitle("");
+                        }}
+                        title={lang === "en" ? "Add section to this chapter" : "Ajouter une section à ce chapitre"}
+                        className="rounded p-1 text-emerald-700 hover:bg-emerald-50 disabled:opacity-40"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={busyStructure}
+                        onClick={() => {
+                          setEditingChapterId(chap.chapterId);
+                          setEditingChapterTitle(chap.chapterTitle);
+                        }}
+                        title={lang === "en" ? "Rename chapter" : "Renommer le chapitre"}
+                        className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-indigo-700 disabled:opacity-40"
+                      >
+                        <Pencil className="h-3 w-3" />
+                      </button>
+                      {!chapHasOnlyProtected && (
+                        <button
+                          type="button"
+                          disabled={busyStructure}
+                          onClick={() => {
+                            if (
+                              window.confirm(
+                                lang === "en"
+                                  ? `Delete chapter "${chap.chapterTitle}" and its sections?`
+                                  : `Supprimer le chapitre « ${chap.chapterTitle} » et ses sections ?`
+                              )
+                            ) {
+                              void runStructureAction({
+                                action: "delete_chapter",
+                                chapter_id: chap.chapterId,
+                              });
+                            }
+                          }}
+                          title={lang === "en" ? "Delete chapter" : "Supprimer le chapitre"}
+                          className="rounded p-1 text-rose-500 hover:bg-rose-50 disabled:opacity-40"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      )}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {structureEditMode && addingSectionChapterId === chap.chapterId && (
+              <div className="mb-2 flex items-center gap-1 rounded-md border border-emerald-200 bg-emerald-50/70 p-1.5">
+                <input
+                  type="text"
+                  value={newSectionTitle}
+                  onChange={(e) => setNewSectionTitle(e.target.value)}
+                  placeholder={lang === "en" ? "New section title..." : "Titre de la nouvelle section..."}
+                  className="min-w-0 flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs focus:border-emerald-500 focus:outline-none"
+                />
+                <button
+                  type="button"
+                  disabled={busyStructure || !newSectionTitle.trim()}
+                  onClick={async () => {
+                    const updated = await runStructureAction({
+                      action: "add_section",
+                      chapter_id: chap.chapterId,
+                      title: newSectionTitle.trim(),
+                    });
+                    if (updated) {
+                      setAddingSectionChapterId(null);
+                      setNewSectionTitle("");
+                    }
+                  }}
+                  className="rounded bg-emerald-600 px-2 py-1 text-[11px] font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                >
+                  {lang === "en" ? "Add" : "Ajouter"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAddingSectionChapterId(null)}
+                  className="rounded p-1 text-slate-400 hover:bg-white hover:text-slate-700"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            )}
+
+            <div className="space-y-1">
+              {chap.items.map((item, itemIdx) => {
+                const st = project.sections[item.id]?.status ?? "pending";
+                const segCount = project.article_segments.filter(
+                  (s) => s.approved && s.target_section_ids.includes(item.id)
+                ).length;
+                const hasCoherenceAlert = allCoherenceAlerts.some(
+                  (a) => a.target_section_id === item.id
+                );
+                const isSelected = item.id === activeSpec.id;
+                const isProtected = PROTECTED_STRUCTURE_IDS.has(item.id);
+                const isEditingThis = structureEditMode && editingSectionId === item.id;
+                return (
+                  <div key={item.id} className="space-y-1">
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void handleSelectSectionSafe(item.id);
+                          closeDrawer?.();
+                        }}
+                        className={`flex min-h-[42px] min-w-0 flex-1 items-start justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition ${
+                          isSelected
+                            ? "bg-indigo-50 font-medium text-indigo-900 ring-1 ring-indigo-200"
+                            : "text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        <span className="flex min-w-0 items-start gap-2">
+                          <span className="mt-0.5 shrink-0">
+                            {isSectionBusy(item.id) ? (
+                              <Loader2 className="h-4 w-4 animate-spin text-indigo-600" />
+                            ) : st === "validated" ? (
+                              <CheckCircle2 className="h-4 w-4 text-emerald-600" />
+                            ) : st === "in_progress" ? (
+                              <Clock className="h-4 w-4 text-amber-500" />
+                            ) : st === "needs_revision" ? (
+                              <AlertCircle className="h-4 w-4 text-rose-500" />
+                            ) : (
+                              <Circle className="h-4 w-4 text-slate-300" />
+                            )}
+                          </span>
+                          <span className="line-clamp-2 leading-snug">{item.title}</span>
+                        </span>
+                        {!structureEditMode && (
+                          <span className="flex shrink-0 items-center gap-1">
+                            {hasCoherenceAlert && (
+                              <span
+                                className="rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-bold text-amber-800"
+                                title="Des modifications dans une autre section impactent cette rubrique"
+                              >
+                                À harmoniser
+                              </span>
+                            )}
+                            {segCount > 0 && (
+                              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600">
+                                {segCount}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </button>
+
+                      {structureEditMode && (
+                        <div className="flex shrink-0 items-center gap-0.5">
+                          <button
+                            type="button"
+                            disabled={busyStructure || itemIdx === 0}
+                            onClick={() =>
+                              void runStructureAction({
+                                action: "update_section",
+                                section_id: item.id,
+                                direction: "up",
+                              })
+                            }
+                            title={lang === "en" ? "Move up" : "Monter"}
+                            className="rounded p-1 text-slate-500 hover:bg-slate-100 disabled:opacity-30"
+                          >
+                            <ArrowUp className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busyStructure || itemIdx === chap.items.length - 1}
+                            onClick={() =>
+                              void runStructureAction({
+                                action: "update_section",
+                                section_id: item.id,
+                                direction: "down",
+                              })
+                            }
+                            title={lang === "en" ? "Move down" : "Descendre"}
+                            className="rounded p-1 text-slate-500 hover:bg-slate-100 disabled:opacity-30"
+                          >
+                            <ArrowDown className="h-3 w-3" />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busyStructure}
+                            onClick={() => {
+                              if (isEditingThis) {
+                                setEditingSectionId(null);
+                              } else {
+                                setEditingSectionId(item.id);
+                                setEditingSectionTitle(item.title);
+                                setEditingSectionChapterId(item.chapter_id);
+                              }
+                            }}
+                            title={
+                              lang === "en"
+                                ? "Edit title or switch chapter"
+                                : "Modifier le titre ou déplacer vers un autre chapitre"
+                            }
+                            className={`rounded p-1 ${
+                              isEditingThis
+                                ? "bg-indigo-100 text-indigo-700"
+                                : "text-slate-500 hover:bg-slate-100 hover:text-indigo-700"
+                            }`}
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </button>
+                          {!isProtected && (
+                            <button
+                              type="button"
+                              disabled={busyStructure}
+                              onClick={() => {
+                                if (
+                                  window.confirm(
+                                    lang === "en"
+                                      ? `Delete section "${item.title}"?`
+                                      : `Supprimer la section « ${item.title} » ?`
+                                  )
+                                ) {
+                                  void runStructureAction({
+                                    action: "delete_section",
+                                    section_id: item.id,
+                                  });
+                                }
+                              }}
+                              title={lang === "en" ? "Delete section" : "Supprimer la section"}
+                              className="rounded p-1 text-rose-500 hover:bg-rose-50"
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {isEditingThis && (
+                      <div className="space-y-1.5 rounded-lg border border-indigo-200 bg-indigo-50/60 p-2 text-xs">
+                        <div>
+                          <label className="mb-0.5 block text-[10px] font-semibold text-slate-600">
+                            {lang === "en" ? "Section title" : "Titre de la section"}
+                          </label>
+                          <input
+                            type="text"
+                            value={editingSectionTitle}
+                            onChange={(e) => setEditingSectionTitle(e.target.value)}
+                            className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs focus:border-indigo-500 focus:outline-none"
+                          />
+                        </div>
+                        {!isProtected && chapters.length > 1 && (
+                          <div>
+                            <label className="mb-0.5 block text-[10px] font-semibold text-slate-600">
+                              {lang === "en" ? "Chapter (switch chapter)" : "Chapitre (déplacer vers)"}
+                            </label>
+                            <select
+                              value={editingSectionChapterId}
+                              onChange={(e) => setEditingSectionChapterId(e.target.value)}
+                              className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs focus:border-indigo-500 focus:outline-none"
+                            >
+                              {chapters.map((c) => (
+                                <option key={c.chapterId} value={c.chapterId}>
+                                  {c.chapterTitle}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+                        <div className="flex justify-end gap-1.5 pt-0.5">
+                          <button
+                            type="button"
+                            onClick={() => setEditingSectionId(null)}
+                            className="rounded px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-white"
+                          >
+                            {lang === "en" ? "Cancel" : "Annuler"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busyStructure || !editingSectionTitle.trim()}
+                            onClick={async () => {
+                              const updated = await runStructureAction(
+                                {
+                                  action: "update_section",
+                                  section_id: item.id,
+                                  title: editingSectionTitle.trim(),
+                                  target_chapter_id: !isProtected
+                                    ? editingSectionChapterId
+                                    : undefined,
+                                },
+                                item.id
+                              );
+                              if (updated) setEditingSectionId(null);
+                            }}
+                            className="rounded bg-indigo-600 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-indigo-700 disabled:opacity-50"
+                          >
+                            {lang === "en" ? "Save" : "Enregistrer"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 
@@ -1292,14 +1726,40 @@ export function Module1Assistant({
                   {t("m1.validated_count", { done: validatedCount, total: canvas.length })}
                 </span>
               </div>
-              <button
-                type="button"
-                aria-label={t("nav.close")}
-                onClick={() => setMobileStepsOpen(false)}
-                className="flex min-h-[40px] min-w-[40px] items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100"
-              >
-                <X className="h-4 w-4" />
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStructureEditMode((v) => !v);
+                    setEditingChapterId(null);
+                    setEditingSectionId(null);
+                    setAddingChapter(false);
+                    setAddingSectionChapterId(null);
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-semibold transition ${
+                    structureEditMode
+                      ? "border-indigo-600 bg-indigo-600 text-white"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-indigo-300 hover:text-indigo-700"
+                  }`}
+                >
+                  <SlidersHorizontal className="h-3 w-3" />
+                  {structureEditMode
+                    ? lang === "en"
+                      ? "Done"
+                      : "Terminer"
+                    : lang === "en"
+                    ? "Edit plan"
+                    : "Organiser"}
+                </button>
+                <button
+                  type="button"
+                  aria-label={t("nav.close")}
+                  onClick={() => setMobileStepsOpen(false)}
+                  className="flex min-h-[40px] min-w-[40px] items-center justify-center rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-100"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
             </div>
             <div className="h-1.5 w-full bg-slate-100">
               <div
@@ -1318,13 +1778,44 @@ export function Module1Assistant({
         {/* Desktop Sidebar: Step-by-step FMSB Canvas */}
         <aside className="hidden lg:block lg:col-span-4 xl:col-span-3 lg:sticky lg:top-20 lg:self-start">
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <div className="mb-3 flex items-center justify-between">
+            <div className="mb-3 flex items-center justify-between gap-2">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-700">
                 {t("m1.steps_title", { count: canvas.length })}
               </h2>
-              <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-xs font-semibold text-indigo-700">
-                {t("m1.validated_count", { done: validatedCount, total: canvas.length })}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStructureEditMode((v) => !v);
+                    setEditingChapterId(null);
+                    setEditingSectionId(null);
+                    setAddingChapter(false);
+                    setAddingSectionChapterId(null);
+                  }}
+                  title={
+                    lang === "en"
+                      ? "Add, edit, delete chapters & switch sections between chapters"
+                      : "Ajouter, modifier, supprimer des chapitres et déplacer des sections"
+                  }
+                  className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] font-semibold transition ${
+                    structureEditMode
+                      ? "border-indigo-600 bg-indigo-600 text-white"
+                      : "border-slate-200 bg-white text-slate-600 hover:border-indigo-300 hover:text-indigo-700"
+                  }`}
+                >
+                  <SlidersHorizontal className="h-3 w-3" />
+                  {structureEditMode
+                    ? lang === "en"
+                      ? "Done"
+                      : "Terminer"
+                    : lang === "en"
+                    ? "Edit plan"
+                    : "Organiser"}
+                </button>
+                <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-semibold text-indigo-700">
+                  {t("m1.validated_count", { done: validatedCount, total: canvas.length })}
+                </span>
+              </div>
             </div>
             <div className="mb-4 h-2 w-full overflow-hidden rounded-full bg-slate-100">
               <div

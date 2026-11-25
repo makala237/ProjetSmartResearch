@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from app.core.config import get_settings
 from app.data.fmsb_canvas import FMSB_SECTIONS
-from app.data.i18n import get_chapter_titles, get_doc_labels, get_localized_canvas, normalize_lang
+from app.data.i18n import get_chapter_titles, get_doc_labels, get_localized_canvas, get_project_canvas, normalize_lang
 from app.schemas.protocol import FormattingRules, ProtocolProject, StepStatus
 from app.services.annexes_generator import build_annexes_pack
 from app.services.diagram_renderer import compute_minimum_legible_figure_size_cm
@@ -487,7 +487,7 @@ def _build_layout_blocks(
     lang = normalize_lang(getattr(project, "language", "fr"))
     chap_titles = get_chapter_titles(lang)
     doc_labels = get_doc_labels(lang)
-    localized_canvas = get_localized_canvas(lang)
+    localized_canvas = get_project_canvas(project)
 
     # TOC starts on a fresh blank page (p. ii)
     # Calibrated for CAMES executive summary (Niveaux 1 et 2 = exactement 1 page A4)

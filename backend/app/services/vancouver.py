@@ -4,7 +4,7 @@ from html import escape, unescape
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.data.fmsb_canvas import FMSB_SECTIONS
+from app.data.i18n import get_project_canvas
 from app.schemas.protocol import ProtocolProject, ReferenceItem, SectionState, StepStatus
 from app.services.gemini_client import GEMINI_DECISION_1_LABEL, gemini_router
 
@@ -481,7 +481,7 @@ def _ordered_body_section_ids(project: ProtocolProject) -> List[str]:
     """Return all protocol body section IDs in canonical CAMES appearance order."""
     ordered: List[str] = []
     seen: set[str] = set()
-    for spec in FMSB_SECTIONS:
+    for spec in get_project_canvas(project):
         if spec.id not in _NON_BODY_SECTION_IDS and spec.id in project.sections:
             ordered.append(spec.id)
             seen.add(spec.id)

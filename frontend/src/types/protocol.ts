@@ -429,6 +429,7 @@ export interface ProtocolProject {
   research_idea: string;
   study_type: string;
   cover: CoverMetadata;
+  custom_canvas?: CanvasSectionSpec[] | null;
   sections: Record<string, SectionState>;
   coherence_alerts?: CoherenceAlert[];
   references: ReferenceItem[];

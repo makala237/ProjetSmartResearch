@@ -7,6 +7,7 @@ from app.data.fmsb_canvas import FMSB_SECTIONS
 from app.data.i18n import (
     get_language_prompt_directive,
     get_localized_section_spec,
+    get_project_section_spec,
     normalize_lang,
 )
 from app.schemas.protocol import (
@@ -110,7 +111,9 @@ class SuggestedTableOutput(BaseModel):
     rows: List[List[str]] = Field(default_factory=list)
 
 
-def _get_section_spec(section_id: str, lang: str = "fr"):
+def _get_section_spec(section_id: str, lang: str = "fr", project: Optional[ProtocolProject] = None):
+    if project is not None:
+        return get_project_section_spec(project, section_id)
     return get_localized_section_spec(section_id, lang)
 
 
@@ -170,7 +173,7 @@ def deterministic_section_checks(project: ProtocolProject, section_id: str, text
     """Run hard-coded CAMES/FMSB methodological, volume, reference, and table-policy rules."""
     lang = normalize_lang(getattr(project, "language", "fr"))
     notes: List[str] = []
-    spec = _get_section_spec(section_id, lang)
+    spec = _get_section_spec(section_id, lang, project=project)
     c = spec.constraints
     words = _count_prose_words(text)
     sec_obj = project.sections.get(section_id)
@@ -732,7 +735,7 @@ def draft_section_with_ai(
 ) -> Dict[str, object]:
     """Draft or refine a section grounded strictly in approved ArticleSegments and FMSB rules."""
     lang = normalize_lang(getattr(project, "language", "fr"))
-    spec = _get_section_spec(section_id, lang)
+    spec = _get_section_spec(section_id, lang, project=project)
     if section_id == "chap3_budget":
         from app.services.budget_engine import generate_structured_budget_with_ai
         from app.services.presentation_orchestrator import refresh_budget_slide_if_present
@@ -1302,7 +1305,7 @@ def _is_issue_waived(issue: str, waivers: List[Any]) -> bool:
 def audit_section_with_ai(project: ProtocolProject, section_id: str) -> Dict[str, object]:
     """Run Tri-Engine orchestration + deterministic checks + Gemini audit role on a section."""
     lang = normalize_lang(getattr(project, "language", "fr"))
-    spec = _get_section_spec(section_id, lang)
+    spec = _get_section_spec(section_id, lang, project=project)
     sec = project.sections.get(section_id)
     text = sec.content_markdown if sec else ""
 
@@ -1436,7 +1439,7 @@ def fix_section_issues_with_ai(
 ) -> Dict[str, object]:
     """Fix flagged audit notifications in a section after explicit user authorization."""
     lang = normalize_lang(getattr(project, "language", "fr"))
-    spec = _get_section_spec(section_id, lang)
+    spec = _get_section_spec(section_id, lang, project=project)
     sec = project.sections.get(section_id)
     current_text = sec.content_markdown if sec else ""
     issues = sec.audit_notes if sec else []
@@ -1599,7 +1602,7 @@ def suggest_section_diagram_with_ai(
 ) -> Dict[str, object]:
     """Generate a structured node-and-arrow vector diagram tailored to a section."""
     lang = normalize_lang(getattr(project, "language", "fr"))
-    spec = _get_section_spec(section_id, lang)
+    spec = _get_section_spec(section_id, lang, project=project)
     sec = project.sections.get(section_id)
     upstream_mem, _ = get_upstream_and_current_memory(project, section_id)
     lang_dir = get_language_prompt_directive(lang)
@@ -1651,7 +1654,7 @@ def suggest_section_table_with_ai(
 ) -> Dict[str, object]:
     """Generate a structured table (headers + rows) tailored to a specific FMSB section."""
     lang = normalize_lang(getattr(project, "language", "fr"))
-    spec = _get_section_spec(section_id, lang)
+    spec = _get_section_spec(section_id, lang, project=project)
     sec = project.sections.get(section_id)
     upstream_mem, _ = get_upstream_and_current_memory(project, section_id)
     lang_dir = get_language_prompt_directive(lang)

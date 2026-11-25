@@ -1625,7 +1625,11 @@ export default function App() {
               <>
                 <Module1Assistant
                   project={activeProject}
-                  canvas={canvas}
+                  canvas={
+                    activeProject.custom_canvas && activeProject.custom_canvas.length > 0
+                      ? activeProject.custom_canvas
+                      : canvas
+                  }
                   selectedSectionId={selectedSectionId}
                   onSelectSection={setSelectedSectionId}
                   onProjectUpdated={(updated) => {
@@ -1647,7 +1651,11 @@ export default function App() {
                 {activeModule === "module2" && (
                   <Module2Editor
                     project={activeProject}
-                    canvas={canvas}
+                    canvas={
+                      activeProject.custom_canvas && activeProject.custom_canvas.length > 0
+                        ? activeProject.custom_canvas
+                        : canvas
+                    }
                     onProjectUpdated={(updated) => {
                       setActiveProject(updated);
                       setProjects((prev) =>

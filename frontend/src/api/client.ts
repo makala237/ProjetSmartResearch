@@ -810,6 +810,31 @@ export const api = {
       }
     ),
 
+  manageProjectStructure: (
+    projectId: string,
+    payload: {
+      action:
+        | "add_chapter"
+        | "rename_chapter"
+        | "delete_chapter"
+        | "add_section"
+        | "update_section"
+        | "delete_section"
+        | "reset_structure";
+      chapter_id?: string;
+      chapter_title?: string;
+      section_id?: string;
+      title?: string;
+      description?: string;
+      target_chapter_id?: string;
+      direction?: "up" | "down";
+    }
+  ) =>
+    request<ProtocolProject>(`/api/projects/${projectId}/structure`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   diagramSvgUrl: (
     projectId: string,
     sectionId: string,
