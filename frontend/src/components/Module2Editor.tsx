@@ -8,11 +8,13 @@ import {
   FileCheck2,
   FileText,
   Loader2,
+  Maximize2,
   RefreshCw,
   ShieldCheck,
   Sliders,
   TableProperties,
   Trash2,
+  X,
   XCircle,
 } from "lucide-react";
 import { api, authHeaders, withAuthToken } from "../api/client";
@@ -193,6 +195,7 @@ export function Module2Editor({
   const [viewMode, setViewMode] = useState<"preview" | "true_render" | "tables">("preview");
   const [truePdfUrl, setTruePdfUrl] = useState<string | null>(null);
   const [loadingTruePdf, setLoadingTruePdf] = useState(false);
+  const [truePdfExpanded, setTruePdfExpanded] = useState(false);
   const [exportingDocx, setExportingDocx] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
   const [generatingToc, setGeneratingToc] = useState(false);
@@ -373,7 +376,17 @@ export function Module2Editor({
       if (prev) URL.revokeObjectURL(prev);
       return null;
     });
+    setTruePdfExpanded(false);
   }, [project.project_id]);
+
+  useEffect(() => {
+    if (!truePdfExpanded) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setTruePdfExpanded(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [truePdfExpanded]);
 
   const handleLoadTruePdf = async (switchToTab = true) => {
     setLoadingTruePdf(true);
@@ -1458,6 +1471,18 @@ export function Module2Editor({
                 )}
                 {lang === "en" ? "Refresh True Render" : "Actualiser le vrai rendu"}
               </button>
+              {truePdfUrl && (
+                <button
+                  type="button"
+                  data-testid="m2-expand-pdf-btn"
+                  onClick={() => setTruePdfExpanded(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-[#6C2826]/30 bg-[#6C2826]/5 px-3 py-1.5 text-xs font-semibold text-[#6C2826] hover:bg-[#6C2826]/10"
+                  title={lang === "en" ? "Expand PDF to full screen" : "Agrandir le PDF en plein écran"}
+                >
+                  <Maximize2 className="h-3.5 w-3.5" />
+                  {lang === "en" ? "Expand" : "Agrandir"}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -2487,6 +2512,66 @@ export function Module2Editor({
           </div>
         )}
       </section>
+
+      {/* Floating Full-Screen True PDF Render Modal */}
+      {truePdfExpanded && truePdfUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/65 p-3 backdrop-blur-xs sm:p-5"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setTruePdfExpanded(false);
+          }}
+        >
+          <div className="flex h-[94vh] w-[96vw] max-w-[1600px] flex-col overflow-hidden rounded-2xl border border-slate-300 bg-white shadow-2xl">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2.5">
+              <div className="flex min-w-0 items-center gap-2">
+                <Eye className="h-4 w-4 shrink-0 text-[#6C2826]" />
+                <span className="truncate text-sm font-bold text-slate-900">
+                  {lang === "en" ? "True PDF Render" : "Vrai Rendu PDF"} —{" "}
+                  {project.cover.title || project.name}
+                </span>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  disabled={loadingTruePdf}
+                  onClick={() => void handleLoadTruePdf(true)}
+                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+                >
+                  {loadingTruePdf ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <RefreshCw className="h-3.5 w-3.5" />
+                  )}
+                  {lang === "en" ? "Refresh" : "Actualiser"}
+                </button>
+                <button
+                  type="button"
+                  disabled={exportingPdf}
+                  onClick={() => void handleDownloadPdf()}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-[#6C2826] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#58201e] disabled:opacity-50"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  {lang === "en" ? "Download PDF" : "Télécharger PDF"}
+                </button>
+                <button
+                  type="button"
+                  data-testid="m2-close-expanded-pdf-btn"
+                  onClick={() => setTruePdfExpanded(false)}
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-rose-50 hover:border-rose-300 hover:text-rose-700"
+                >
+                  <X className="h-3.5 w-3.5" />
+                  {lang === "en" ? "Close" : "Fermer"}
+                </button>
+              </div>
+            </div>
+            <iframe
+              title={lang === "en" ? "Expanded True PDF Render" : "Vrai Rendu PDF plein écran"}
+              src={`${truePdfUrl}#view=FitH`}
+              className="flex-1 w-full border-0 bg-slate-100"
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

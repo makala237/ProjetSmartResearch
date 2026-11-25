@@ -720,7 +720,7 @@ FMSB_SECTIONS: List[CanvasSectionSpec] = [
             min_references=0,
             max_references=0,
             table_policy="required",
-            table_guidance="Tableau chronogramme (diagramme de Gantt) généré depuis project.timeline_grid.",
+            table_guidance="Fournir le tableau chronogramme (diagramme de Gantt : Activité | M1 | M2 | ... avec ■) dans `suggested_tables` — ne JAMAIS écrire de placeholder [À compléter : insérer ici le tableau...] dans le texte.",
             figure_policy="none",
             required=True,
         ),

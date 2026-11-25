@@ -481,7 +481,7 @@ _EN_CANVAS_OVERRIDES: Dict[str, Dict[str, Any]] = {
             "Consistency with the study period stated in Section III.1",
         ],
         "concepts_to_avoid": ["Redundant long narrative paragraphs"],
-        "table_guidance": "Gantt timeline table generated automatically from project.timeline_grid.",
+        "table_guidance": "Provide the structured Gantt timeline table (Activity | M1 | M2 | ... with ■) in `suggested_tables` — NEVER write a [To be completed: insert timeline table...] placeholder in prose.",
     },
     "chap3_budget": {
         "chapter_title": "CHAPTER III: METHODOLOGY",

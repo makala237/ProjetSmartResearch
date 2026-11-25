@@ -881,6 +881,8 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
     # Safety net: convert any raw Markdown pipe tables leaked in prose into real structured SectionTables
     from app.services.rich_formatter import extract_markdown_tables_to_structured
 
+    if section_id == "chap3_chronogramme":
+        clean_md = _strip_timeline_placeholder_prose(clean_md)
     clean_md, leaked_tables = extract_markdown_tables_to_structured(clean_md, fallback_title=spec.title)
     if leaked_tables and spec.constraints.table_policy != "forbidden":
         for lt in leaked_tables:
@@ -909,7 +911,12 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
         current_sec.audit_notes = det_notes
         _append_structured_elements(current_sec, dto)
         if section_id == "chap3_chronogramme":
-            sync_timeline_from_section(project, overwrite=True)
+            # Preserve existing Module 2 Gantt if user already configured it; otherwise sync from AI table or seed standard FMSB Gantt
+            has_existing_gantt = bool(project.timeline_grid and project.timeline_grid.rows)
+            sync_timeline_from_section(project, overwrite=not has_existing_gantt)
+            _ensure_default_timeline_grid(project)
+            current_sec.suppress_structured_table = False
+            current_sec.custom_tables = []
         from app.services.vancouver import renumber_and_sync_vancouver_references
 
         renumber_and_sync_vancouver_references(project)
@@ -932,6 +939,54 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
         "internal_library_entries_used": int(orch.get("internal_library_entries_used", 0) or 0),
         "can_enrich_externally": bool(orch.get("can_enrich_externally", False)),
     }
+
+
+def _strip_timeline_placeholder_prose(md_text: str) -> str:
+    """Remove ambiguous '[À compléter ... chronogramme / timeline_grid ...]' lines from prose."""
+    if not md_text:
+        return md_text
+    cleaned = re.sub(
+        r"(?im)^\s*\[(?:À compléter|To be completed)[^\]]*(?:timeline_grid|chronogramme|diagramme\s+de\s+gantt|gantt\s+timeline)[^\]]*\]\s*$",
+        "",
+        md_text,
+    )
+    cleaned = re.sub(
+        r"(?i)\[(?:À compléter|To be completed)[^\]]*project\.timeline_grid[^\]]*\]",
+        "",
+        cleaned,
+    )
+    return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+def _ensure_default_timeline_grid(project: ProtocolProject) -> None:
+    """If `project.timeline_grid` is empty after drafting `chap3_chronogramme`, seed a standard FMSB Gantt grid."""
+    from app.schemas.protocol import TimelineGrid, TimelineGridRow
+
+    if project.timeline_grid and project.timeline_grid.rows:
+        return
+    is_en = normalize_lang(getattr(project, "language", "fr")) == "en"
+    periods = ["M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12"]
+    if is_en:
+        rows = [
+            TimelineGridRow(activity="Protocol drafting & approval", active_periods=["M1", "M2"]),
+            TimelineGridRow(activity="Ethical clearance & administrative approvals", active_periods=["M2", "M3"]),
+            TimelineGridRow(activity="Pre-testing of data collection tool", active_periods=["M4"]),
+            TimelineGridRow(activity="Field data collection", active_periods=["M5", "M6", "M7", "M8"]),
+            TimelineGridRow(activity="Data entry, cleaning & statistical analysis", active_periods=["M9", "M10"]),
+            TimelineGridRow(activity="Thesis writing & supervisor review", active_periods=["M10", "M11"]),
+            TimelineGridRow(activity="Final submission & thesis defense", active_periods=["M12"]),
+        ]
+    else:
+        rows = [
+            TimelineGridRow(activity="Rédaction et validation du protocole", active_periods=["M1", "M2"]),
+            TimelineGridRow(activity="Clairance éthique et autorisations administratives", active_periods=["M2", "M3"]),
+            TimelineGridRow(activity="Pré-test de la fiche de collecte", active_periods=["M4"]),
+            TimelineGridRow(activity="Collecte des données sur le terrain", active_periods=["M5", "M6", "M7", "M8"]),
+            TimelineGridRow(activity="Saisie, nettoyage et analyse statistique", active_periods=["M9", "M10"]),
+            TimelineGridRow(activity="Rédaction du mémoire et corrections encadreur", active_periods=["M10", "M11"]),
+            TimelineGridRow(activity="Dépôt final et soutenance du mémoire", active_periods=["M12"]),
+        ]
+    project.timeline_grid = TimelineGrid(periods=periods, rows=rows)
 
 
 def sync_timeline_from_section(project: ProtocolProject, overwrite: bool = True) -> bool:
@@ -1313,6 +1368,8 @@ Instructions:
     clean_md = _reconcile_intro_citation_cap(project, section_id, clean_md, max_refs=5)
     from app.services.rich_formatter import extract_markdown_tables_to_structured
 
+    if section_id == "chap3_chronogramme":
+        clean_md = _strip_timeline_placeholder_prose(clean_md)
     clean_md, leaked_tables = extract_markdown_tables_to_structured(clean_md, fallback_title=spec.title)
     if leaked_tables and spec.constraints.table_policy != "forbidden":
         for lt in leaked_tables:

@@ -1999,6 +1999,80 @@ export function Module1Assistant({
                       </button>
                     </div>
                   )}
+                  {activeSpec.id === "chap3_chronogramme" &&
+                    (project.timeline_grid?.rows?.length ?? 0) > 0 && (
+                      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-sky-200 bg-sky-50/80 px-3 py-2 text-xs text-sky-950">
+                        <div className="min-w-0 flex-1 text-[11px]">
+                          <strong>
+                            {lang === "en"
+                              ? "Existing Gantt Timeline (synced with Module 2):"
+                              : "Diagramme de Gantt déjà présent (synchronisé avec Module 2) :"}
+                          </strong>{" "}
+                          {lang === "en"
+                            ? `${project.timeline_grid.rows.length} activities × ${project.timeline_grid.periods.length} periods — visible below in the Tables section.`
+                            : `${project.timeline_grid.rows.length} activités × ${project.timeline_grid.periods.length} périodes — visible ci-dessous dans la section Tableaux.`}
+                        </div>
+                        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              document
+                                .getElementById("m1-section-media-panel")
+                                ?.scrollIntoView({ behavior: "smooth", block: "start" });
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md border border-sky-300 bg-white px-2.5 py-1 text-[11px] font-semibold text-sky-800 hover:bg-sky-100"
+                          >
+                            {lang === "en" ? "View Gantt below" : "Voir le Gantt ci-dessous"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={busyReformulate || busyDraft}
+                            onClick={async () => {
+                              setBusyReformulate(true);
+                              setAssistantActionFeedback(null);
+                              onError("");
+                              try {
+                                const res = await api.runSectionAssistantCommand(
+                                  project.project_id,
+                                  "chap3_chronogramme",
+                                  {
+                                    instruction:
+                                      aiInstruction.trim() ||
+                                      (lang === "en"
+                                        ? "Regenerate and update the Gantt activity timeline aligned with section III.1 study duration"
+                                        : "Régénérer et mettre à jour le chronogramme des activités (Gantt) cohérent avec la durée de l'étude en III.1"),
+                                    current_markdown: draftRef.current,
+                                    action: "create_table",
+                                  }
+                                );
+                                if (res.project) {
+                                  onProjectUpdated(res.project);
+                                }
+                                setAssistantActionFeedback({
+                                  actionType: res.action_type,
+                                  message: res.message,
+                                });
+                                setAiInstruction("");
+                              } catch (err) {
+                                onError(err instanceof Error ? err.message : String(err));
+                              } finally {
+                                setBusyReformulate(false);
+                              }
+                            }}
+                            className="inline-flex items-center gap-1 rounded-md bg-sky-700 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-sky-800 disabled:opacity-50"
+                          >
+                            {busyReformulate ? (
+                              <Loader2 className="h-3 w-3 animate-spin" />
+                            ) : (
+                              <RefreshCw className="h-3 w-3" />
+                            )}
+                            {lang === "en"
+                              ? "Regenerate / Update Gantt"
+                              : "Régénérer / Mettre à jour le Gantt"}
+                          </button>
+                        </div>
+                      </div>
+                    )}
                   {activeSpec.id === "annexe_fiche_collecte" && (
                     <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-emerald-200 bg-emerald-50/70 px-3 py-2 text-xs text-emerald-950">
                       <div className="min-w-0 flex-1 text-[11px]">
@@ -2606,14 +2680,16 @@ export function Module1Assistant({
               </div>
 
               {showMediaPanel && (
-                <SectionMediaPanel
-                  project={project}
-                  sectionId={activeSpec.id}
-                  sectionText={draft}
-                  sectionHtml={draftHtml}
-                  onProjectUpdated={onProjectUpdated}
-                  onError={onError}
-                />
+                <div id="m1-section-media-panel">
+                  <SectionMediaPanel
+                    project={project}
+                    sectionId={activeSpec.id}
+                    sectionText={draft}
+                    sectionHtml={draftHtml}
+                    onProjectUpdated={onProjectUpdated}
+                    onError={onError}
+                  />
+                </div>
               )}
 
               {/* Compact Collapsible Personal Notes + Save Bar */}
