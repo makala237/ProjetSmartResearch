@@ -251,27 +251,37 @@ export default function App() {
     triggerFeatureDiscovery(activeModule);
   }, [activeModule, activeView, activeProject, showWelcomeTour, currentUser, triggerFeatureDiscovery]);
 
-  // Automatically report any runtime error to backend so admins receive the real error in real time
+  // Automatically report any runtime error ONCE when `error` itself changes
+  // (never re-report the same stale banner when switching sections or updating user profile)
+  const reportCtxRef = useRef({ activeModule, activeView, selectedSectionId, userId: currentUser?.id });
+  reportCtxRef.current = { activeModule, activeView, selectedSectionId, userId: currentUser?.id };
+
   useEffect(() => {
-    if (!error || !currentUser) return;
+    if (!error || !reportCtxRef.current.userId) return;
+    const rawClean = /failed to fetch|load failed|networkerror|network request failed/i.test(error)
+      ? lang === "en"
+        ? "Connection interrupted. Please check your internet connection and try again."
+        : "Connexion interrompue, réessayez. Vérifiez votre connexion Internet."
+      : sanitizeTechnicalMessage(error);
     const now = Date.now();
     if (
-      lastReportedErrorRef.current.msg === error &&
-      now - lastReportedErrorRef.current.ts < 5000
+      lastReportedErrorRef.current.msg === rawClean &&
+      now - lastReportedErrorRef.current.ts < 60000
     ) {
       return;
     }
-    lastReportedErrorRef.current = { msg: error, ts: now };
+    lastReportedErrorRef.current = { msg: rawClean, ts: now };
+    const ctx = reportCtxRef.current;
     api
       .reportClientError({
-        message: sanitizeTechnicalMessage(error),
-        module: activeModule,
-        context: activeView === "admin" ? "admin_portal" : selectedSectionId,
+        message: rawClean,
+        module: ctx.activeModule,
+        context: ctx.activeView === "admin" ? "admin_portal" : ctx.selectedSectionId,
       })
       .catch(() => {
         /* never loop on telemetry failure */
       });
-  }, [error, currentUser, activeModule, activeView, selectedSectionId]);
+  }, [error, lang]);
 
   // Poll live error alerts for Admin users so they see student & system incidents as they happen
   useEffect(() => {

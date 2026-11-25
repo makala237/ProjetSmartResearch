@@ -265,10 +265,30 @@ async function trySilentRefresh(): Promise<boolean> {
 interface RequestOptions extends RequestInit {
   skipAuth?: boolean;
   _retried?: boolean;
+  _networkRetried?: boolean;
+}
+
+function isTransientNetworkError(err: unknown): boolean {
+  if (err instanceof TypeError) return true;
+  const msg = err instanceof Error ? err.message : String(err || "");
+  return /failed to fetch|load failed|networkerror|network request failed/i.test(msg);
+}
+
+export function friendlyNetworkErrorMessage(): string {
+  return getActiveUiLang() === "en"
+    ? "Connection interrupted. Please check your internet connection and try again."
+    : "Connexion interrompue, réessayez. Vérifiez votre connexion Internet.";
 }
 
 async function request<T>(url: string, options?: RequestOptions): Promise<T> {
-  const { skipAuth = false, _retried = false, headers, ...fetchOptions } = options || {};
+  const {
+    skipAuth = false,
+    _retried = false,
+    _networkRetried = false,
+    headers,
+    ...fetchOptions
+  } = options || {};
+  const method = (fetchOptions.method || "GET").toUpperCase();
   let res: Response;
   try {
     res = await fetch(apiUrl(url), {
@@ -281,12 +301,12 @@ async function request<T>(url: string, options?: RequestOptions): Promise<T> {
       },
     });
   } catch (err) {
-    if (err instanceof TypeError) {
-      throw new Error(
-        getActiveUiLang() === "en"
-          ? "Unable to reach the backend server. Please check your connection and try again."
-          : "Connexion au serveur backend impossible. Vérifiez votre connexion puis réessayez."
-      );
+    if (isTransientNetworkError(err)) {
+      if (method === "GET" && !_networkRetried) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        return request<T>(url, { ...options, _networkRetried: true });
+      }
+      throw new Error(friendlyNetworkErrorMessage());
     }
     throw err;
   }

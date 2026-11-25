@@ -30,6 +30,10 @@ export function sanitizeTechnicalMessage(raw: string): string {
       : snippet || "HTTP 502/504 Server Error";
   }
 
+  if (/^(?:TypeError:\s*)?(?:Failed to fetch|Load failed|NetworkError|network request failed)$/i.test(trimmed)) {
+    return "Connexion interrompue, réessayez. Vérifiez votre connexion Internet.";
+  }
+
   return trimmed;
 }
 

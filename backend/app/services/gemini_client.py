@@ -373,7 +373,10 @@ class GeminiRouter:
         payload: Dict[str, Any] = {
             "model": model_id,
             "messages": messages,
-            "max_tokens": 8192,
+            "max_tokens": 12288,
+            # Disable hidden chain-of-thought reasoning on OpenRouter reasoning models (e.g. Nemotron 3.5)
+            # so reasoning tokens never exhaust max_tokens and leave `message.content` empty.
+            "reasoning": {"enabled": False},
         }
         if temperature is not None:
             payload["temperature"] = float(temperature)
@@ -399,8 +402,14 @@ class GeminiRouter:
         choices = body.get("choices") or []
         msg = (choices[0].get("message") or {}) if choices else {}
         text = str(msg.get("content") or "").strip()
+        if not text and wants_json:
+            # Safety net: if a reasoning model still wrote JSON into `reasoning` / `reasoning_content`
+            reasoning_fallback = str(msg.get("reasoning") or msg.get("reasoning_content") or "").strip()
+            if reasoning_fallback and "{" in reasoning_fallback and "}" in reasoning_fallback:
+                text = reasoning_fallback
         if not text:
-            raise ValueError("Réponse vide du modèle OpenRouter.")
+            finish_reason = (choices[0].get("finish_reason") or "") if choices else ""
+            raise ValueError(f"Réponse vide du modèle OpenRouter (finish_reason={finish_reason or 'unknown'}).")
         if wants_json:
             # Strip optional ```json ... ``` fences if present
             fence_match = re.search(r"```(?:json)?\s*(\{.*\}|\[.*\])\s*```", text, flags=re.DOTALL)
