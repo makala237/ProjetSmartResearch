@@ -283,6 +283,36 @@ def _resolve_effective_layout(diagram: SectionDiagram) -> str:
     return "decision_flowchart"
 
 
+VALID_DIAGRAM_THEMES: Dict[str, List[str]] = {
+    "auto": [],
+    "fmsb_burgundy": ["#6C2826", "#991B1B", "#B45309", "#7C2D12"],
+    "medical_teal": ["#0F766E", "#0369A1", "#1E3A8A", "#0D9488"],
+    "navy_slate": ["#1E3A8A", "#334155", "#0F766E", "#1D4ED8"],
+    "emerald_forest": ["#047857", "#0F766E", "#1D4ED8", "#065F46"],
+    "monochrome_prisma": ["#1E293B", "#334155", "#475569", "#0F172A"],
+}
+
+
+def _make_custom_palette(hex_color: str, flat_header: bool = False) -> Dict[str, str]:
+    dark = _sanitize_dark_color(hex_color)
+    return {
+        "fill": _tint_hex(dark, 0.93),
+        "stroke": dark,
+        "header_fill": _tint_hex(dark, 0.84) if flat_header else dark,
+        "title_fg": dark if flat_header else "#FFFFFF",
+        "body_fg": "#1E293B",
+        "accent": dark,
+    }
+
+
+def _safe_light_bg_fg(pal: Dict[str, str]) -> str:
+    """Guarantee dark high-contrast text whenever drawing directly onto a light pastel fill."""
+    fg = (pal.get("title_fg") or "").strip().upper()
+    if not fg or fg in ("#FFFFFF", "#FFF", "#FAF5F5", "#F8FAFC"):
+        return _sanitize_dark_color(pal.get("stroke") or "#1E293B")
+    return fg
+
+
 def _node_palette(
     node: DiagramNode,
     idx: int,
@@ -291,65 +321,68 @@ def _node_palette(
     is_excl: bool = False,
     is_root: bool = False,
     is_leaf: bool = False,
+    color_theme: str = "auto",
 ) -> Dict[str, str]:
-    """Select clean semantic academic colors for a node."""
+    """Select clean semantic academic colors for a node, honoring user color_theme and per-node color."""
+    theme_key = (color_theme or "auto").strip().lower()
+    theme_colors = VALID_DIAGRAM_THEMES.get(theme_key) or []
+
     # Respect non-default custom colors if explicitly chosen by user/AI
     custom = (node.color or "").strip().upper()
-    has_custom_non_default = bool(custom) and custom not in ("#6C2826", "#6C2826", "#000000", "")
+    has_custom_non_default = bool(custom) and custom not in ("#6C2826", "#000000", "")
+
+    if has_custom_non_default and theme_key == "auto":
+        pal = _make_custom_palette(custom, flat_header=(node.shape in ("circle", "oval", "pill", "diamond")))
+        return pal
+
+    if theme_colors:
+        if theme_key == "monochrome_prisma":
+            pal = dict(_ROLE_PALETTES["prisma_excl"] if is_excl else _ROLE_PALETTES["prisma_main"])
+        else:
+            base_hex = custom if has_custom_non_default else theme_colors[idx % len(theme_colors)]
+            pal = _make_custom_palette(base_hex, flat_header=(node.shape in ("circle", "oval", "pill", "diamond")))
+        return pal
 
     if effective_layout == "prisma_exclusion":
-        return _ROLE_PALETTES["prisma_excl"] if is_excl else _ROLE_PALETTES["prisma_main"]
+        return dict(_ROLE_PALETTES["prisma_excl"] if is_excl else _ROLE_PALETTES["prisma_main"])
 
     if node.shape == "diamond":
-        return _ROLE_PALETTES["decision"]
+        return dict(_ROLE_PALETTES["decision"])
 
     if is_excl:
-        return _ROLE_PALETTES["exclusion"]
+        return dict(_ROLE_PALETTES["exclusion"])
 
     if effective_layout == "horizontal_flow":
-        if has_custom_non_default:
-            dark = _sanitize_dark_color(custom)
-            pal = {
-                "fill": _tint_hex(dark, 0.93),
-                "stroke": dark,
-                "header_fill": dark,
-                "title_fg": "#FFFFFF",
-                "body_fg": "#1E293B",
-                "accent": dark,
-            }
-        else:
-            # Progressive 3-4 stage conceptual palette (distinct, harmonious, academic)
-            stage_cycle = ["stage_gap", "stage_study", "stage_fmsb", "stage_goal"]
-            if total_nodes == 3:
-                stage_cycle = ["stage_gap", "stage_study", "stage_fmsb"]
-            elif total_nodes == 2:
-                stage_cycle = ["stage_study", "stage_fmsb"]
-            pal = dict(_ROLE_PALETTES[stage_cycle[idx % len(stage_cycle)]])
-        # Headerless shapes (circle/oval/pill/diamond) draw title directly on light fill -> MUST use dark text!
+        stage_cycle = ["stage_gap", "stage_study", "stage_fmsb", "stage_goal"]
+        if total_nodes == 3:
+            stage_cycle = ["stage_gap", "stage_study", "stage_fmsb"]
+        elif total_nodes == 2:
+            stage_cycle = ["stage_study", "stage_fmsb"]
+        pal = dict(_ROLE_PALETTES[stage_cycle[idx % len(stage_cycle)]])
         if node.shape in ("circle", "oval", "pill", "diamond"):
             pal["title_fg"] = pal["stroke"]
         return pal
 
     if effective_layout == "decision_flowchart":
         if node.shape in ("pill", "oval") or (is_root and not node.items) or (is_leaf and not node.items and total_nodes >= 3):
-            return _ROLE_PALETTES["start_end"]
-        return _ROLE_PALETTES["process"]
+            return dict(_ROLE_PALETTES["start_end"])
+        return dict(_ROLE_PALETTES["process"])
 
     if effective_layout == "parallel_converge":
         if is_root:
-            return _ROLE_PALETTES["stage_fmsb"]
+            return dict(_ROLE_PALETTES["stage_fmsb"])
         if is_leaf:
-            return _ROLE_PALETTES["outcome"]
-        return _ROLE_PALETTES["blue_tech"] if idx % 2 == 1 else _ROLE_PALETTES["process"]
+            return dict(_ROLE_PALETTES["outcome"])
+        return dict(_ROLE_PALETTES["blue_tech"] if idx % 2 == 1 else _ROLE_PALETTES["process"])
 
     if effective_layout == "branching_tree":
         if node.shape in ("pill", "oval", "circle"):
-            return _ROLE_PALETTES["process"]
+            return dict(_ROLE_PALETTES["process"])
         if is_root:
-            return _ROLE_PALETTES["stage_fmsb"]
-        return _ROLE_PALETTES["clinical"]
+            return dict(_ROLE_PALETTES["stage_fmsb"])
+        return dict(_ROLE_PALETTES["clinical"])
 
-    return _ROLE_PALETTES["process"]
+    return dict(_ROLE_PALETTES["process"])
 
 
 def _wrap_text(text: str, max_chars: int) -> List[str]:
@@ -544,6 +577,7 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
         return {"w": 420, "h": 140, "nodes": [], "edges": [], "layout": "horizontal_flow"}
 
     effective_layout = _resolve_effective_layout(diagram)
+    color_theme = str(getattr(diagram, "color_theme", "auto") or "auto").strip().lower()
     node_map = {n.id: n for n in nodes}
     in_deg: Dict[str, int] = {n.id: 0 for n in nodes}
     out_edges: Dict[str, List[DiagramConnection]] = defaultdict(list)
@@ -586,7 +620,7 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
             # Equalize card heights in horizontal conceptual pipeline for magazine-grade symmetry
             h_eq = max_h if (m["shape"] in ("rounded", "rectangle") and n_count <= 4) else m["h"]
             y = pad_y + (max_h - h_eq) // 2
-            pal = _node_palette(n, idx, n_count, effective_layout, is_root=(idx == 0), is_leaf=(idx == n_count - 1))
+            pal = _node_palette(n, idx, n_count, effective_layout, is_root=(idx == 0), is_leaf=(idx == n_count - 1), color_theme=color_theme)
             boxes[n.id] = {
                 "node": n,
                 "x": cur_x,
@@ -624,7 +658,7 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
         for idx, nid in enumerate(main_ids):
             n = node_map[nid]
             m = _measure_node(n, main_w, effective_layout, is_root=(idx == 0), is_leaf=(idx == len(main_ids) - 1))
-            pal = _node_palette(n, idx, len(nodes), effective_layout, is_excl=False)
+            pal = _node_palette(n, idx, len(nodes), effective_layout, is_excl=False, color_theme=color_theme)
             boxes[nid] = {
                 "node": n,
                 "x": pad_x,
@@ -645,7 +679,7 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
                 for e_idx, eid in enumerate(children_excl):
                     en = node_map[eid]
                     em = _measure_node(en, excl_w, effective_layout, is_excl=True) if False else _measure_node(en, excl_w, effective_layout)
-                    epal = _node_palette(en, e_idx, len(nodes), effective_layout, is_excl=True)
+                    epal = _node_palette(en, e_idx, len(nodes), effective_layout, is_excl=True, color_theme=color_theme)
                     boxes[eid] = {
                         "node": en,
                         "x": pad_x + main_w + gap_x,
@@ -747,6 +781,7 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
                     is_excl=(nid in excl_ids),
                     is_root=is_root,
                     is_leaf=is_leaf,
+                    color_theme=color_theme,
                 )
                 boxes[nid] = {
                     "node": n,
@@ -767,7 +802,7 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
                     sn = node_map[sid]
                     sx = max(pad_x, cur_x - 76 - sm["w"])
                     sy = y + (m["h"] - sm["h"]) // 2
-                    spal = _node_palette(sn, node_order.get(sid, 0), len(nodes), effective_layout, is_excl=True)
+                    spal = _node_palette(sn, node_order.get(sid, 0), len(nodes), effective_layout, is_excl=True, color_theme=color_theme)
                     boxes[sid] = {
                         "node": sn,
                         "x": sx,
@@ -1084,10 +1119,11 @@ def render_diagram_svg(diagram: SectionDiagram) -> str:
                 body_gap = 6 if b_lines else 0
                 total_th = len(t_lines) * DIAGRAM_LINE_H_TITLE_PX + body_gap + len(b_lines) * DIAGRAM_LINE_H_BODY_PX
                 cur_ty = y + (h - total_th) / 2.0 + 15.0
+                flat_title_fg = _safe_light_bg_fg(pal)
                 for tl in t_lines:
                     parts.append(
                         f'<text x="{x + w / 2.0:.1f}" y="{cur_ty:.1f}" text-anchor="middle" '
-                        f'font-size="{DIAGRAM_TITLE_FONT_PX}" font-weight="700" fill="{pal["title_fg"]}">{escape(tl)}</text>'
+                        f'font-size="{DIAGRAM_TITLE_FONT_PX}" font-weight="700" fill="{flat_title_fg}">{escape(tl)}</text>'
                     )
                     cur_ty += DIAGRAM_LINE_H_TITLE_PX
                 cur_ty += body_gap
@@ -1255,8 +1291,9 @@ def render_diagram_png(diagram: SectionDiagram, output_path: Path) -> Path:
                 body_gap = 6 * scale if b_lines else 0
                 total_th = len(t_lines) * DIAGRAM_LINE_H_TITLE_PX * scale + body_gap + len(b_lines) * DIAGRAM_LINE_H_BODY_PX * scale
                 cur_ty = ys + (hs - total_th) / 2.0 + (DIAGRAM_LINE_H_TITLE_PX * scale) / 2.0
+                flat_title_fg = _safe_light_bg_fg(pal)
                 for tl in t_lines:
-                    draw.text((xs + ws / 2.0, cur_ty), tl, fill=pal["title_fg"], font=font_title, anchor="mm")
+                    draw.text((xs + ws / 2.0, cur_ty), tl, fill=flat_title_fg, font=font_title, anchor="mm")
                     cur_ty += DIAGRAM_LINE_H_TITLE_PX * scale
                 cur_ty += body_gap
                 is_centered = eff_layout == "prisma_exclusion"

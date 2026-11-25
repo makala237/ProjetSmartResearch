@@ -1575,12 +1575,36 @@ def apply_reformulation_endpoint(
         source=payload.source or "smart_reformulate",
         note=payload.note or "Avant reformulation sélective",
     )
-    sec.content_markdown = payload.content_markdown
-    sec.content_html = (
-        payload.content_html
-        if payload.content_html is not None and payload.content_html.strip()
-        else markdown_to_clean_html(payload.content_markdown)
+    from app.services.rich_formatter import extract_markdown_tables_to_structured
+
+    cleaned_md, leaked_tables = extract_markdown_tables_to_structured(
+        payload.content_markdown,
+        fallback_title=sec.section_id,
     )
+    if leaked_tables:
+        existing_titles = {t.title.strip().lower() for t in sec.custom_tables}
+        for lt in leaked_tables:
+            lt_title = str(lt["title"]).strip()
+            if lt_title and lt_title.lower() not in existing_titles:
+                sec.custom_tables.append(
+                    SectionTable(
+                        table_id=f"tbl_{uuid.uuid4().hex[:8]}",
+                        title=lt_title,
+                        anchor_hint=str(lt.get("anchor_hint") or "").strip(),
+                        headers=list(lt["headers"]),
+                        rows=list(lt["rows"]),
+                    )
+                )
+                existing_titles.add(lt_title.lower())
+        sec.content_markdown = cleaned_md
+        sec.content_html = markdown_to_clean_html(cleaned_md)
+    else:
+        sec.content_markdown = payload.content_markdown
+        sec.content_html = (
+            payload.content_html
+            if payload.content_html is not None and payload.content_html.strip()
+            else markdown_to_clean_html(payload.content_markdown)
+        )
     if sec.status == StepStatus.PENDING and (sec.content_markdown or "").strip():
         sec.status = StepStatus.IN_PROGRESS
     if section_id == "chap3_budget":
@@ -1940,7 +1964,8 @@ class CreateSectionDiagramRequest(BaseModel):
     title: str
     caption: str = ""
     anchor_hint: str = ""
-    layout: str = "vertical"
+    layout: str = "horizontal_flow"
+    color_theme: str = "auto"
     nodes: List[DiagramNode]
     connections: List[DiagramConnection] = []
 
@@ -1990,12 +2015,15 @@ def add_section_diagram(
     project = get_authorized_project(project_id, current_user)
     if section_id not in project.sections:
         raise HTTPException(status_code=404, detail="Section inconnue.")
+    from app.services.diagram_renderer import VALID_DIAGRAM_LAYOUTS, VALID_DIAGRAM_THEMES
+
     dg = SectionDiagram(
         diagram_id=f"diag_{uuid.uuid4().hex[:8]}",
         title=payload.title.strip() or "Schéma conceptuel",
         caption=payload.caption.strip(),
         anchor_hint=payload.anchor_hint.strip(),
-        layout=payload.layout if payload.layout in ("vertical", "horizontal") else "vertical",
+        layout=payload.layout if payload.layout in VALID_DIAGRAM_LAYOUTS else "horizontal_flow",
+        color_theme=payload.color_theme if payload.color_theme in VALID_DIAGRAM_THEMES else "auto",
         nodes=payload.nodes,
         connections=payload.connections,
     )
@@ -2009,6 +2037,7 @@ class UpdateSectionDiagramRequest(BaseModel):
     caption: Optional[str] = None
     anchor_hint: Optional[str] = None
     layout: Optional[str] = None
+    color_theme: Optional[str] = None
     nodes: Optional[List[DiagramNode]] = None
     connections: Optional[List[DiagramConnection]] = None
 
@@ -2029,6 +2058,8 @@ def update_section_diagram(
     if target is None:
         raise HTTPException(status_code=404, detail="Schéma introuvable.")
 
+    from app.services.diagram_renderer import VALID_DIAGRAM_LAYOUTS, VALID_DIAGRAM_THEMES
+
     if payload.title is not None:
         cleaned_title = payload.title.strip()
         if cleaned_title:
@@ -2037,8 +2068,10 @@ def update_section_diagram(
         target.caption = payload.caption.strip()
     if payload.anchor_hint is not None:
         target.anchor_hint = payload.anchor_hint.strip()
-    if payload.layout is not None and payload.layout in ("vertical", "horizontal"):
+    if payload.layout is not None and payload.layout in VALID_DIAGRAM_LAYOUTS:
         target.layout = payload.layout
+    if payload.color_theme is not None and payload.color_theme in VALID_DIAGRAM_THEMES:
+        target.color_theme = payload.color_theme
     if payload.nodes is not None:
         target.nodes = payload.nodes
     if payload.connections is not None:

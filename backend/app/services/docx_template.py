@@ -1529,7 +1529,8 @@ def _configure_fmsb_pagination(
         if project is not None
         else ""
     ) or "Protocole de recherche"
-    running_title = _compact_running_title(raw_title, max_len=115)
+    show_full_hdr = bool(getattr(fmt, "header_show_full_title", True))
+    running_title = raw_title if show_full_hdr else _compact_running_title(raw_title, max_len=115)
     candidate_name = (
         (project.cover.author_name or "").strip()
         if project is not None
@@ -1540,24 +1541,35 @@ def _configure_fmsb_pagination(
         getattr(fmt, "header_footer_rule_color", None) or "#CBD5E1"
     ).strip().lstrip("#").upper()
     hf_width_pt = float(getattr(fmt, "header_footer_rule_width_pt", None) or 0.5)
+    h_size_pt = max(7, min(14, int(getattr(fmt, "header_font_size_pt", 9) or 9)))
+    h_bold = str(getattr(fmt, "header_font_weight", "normal") or "normal").strip().lower() == "bold"
+    h_italic = bool(getattr(fmt, "header_italic", True))
+    h_align_str = str(getattr(fmt, "header_align", "right") or "right").strip().lower()
+    h_align_map = {
+        "left": WD_ALIGN_PARAGRAPH.LEFT,
+        "center": WD_ALIGN_PARAGRAPH.CENTER,
+        "right": WD_ALIGN_PARAGRAPH.RIGHT,
+        "justify": WD_ALIGN_PARAGRAPH.JUSTIFY,
+    }
+    h_align = h_align_map.get(h_align_str, WD_ALIGN_PARAGRAPH.RIGHT)
 
-    # Running Header from Page 2+: Protocol Title aligned right with configurable bottom rule
+    # Running Header from Page 2+: Full Protocol Theme with configurable typography & alignment
     header = base_sec.header
     header.is_linked_to_previous = False
     hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
     for extra_p in list(header.paragraphs[1:]):
         extra_p._element.getparent().remove(extra_p._element)
     hp.text = ""
-    hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    hp.alignment = h_align
     hp.paragraph_format.space_before = Pt(0)
     hp.paragraph_format.space_after = Pt(2)
     h_run = hp.add_run(running_title)
     _apply_run_font(
         h_run,
         fmt,
-        size_pt=9,
-        bold=False,
-        italic=True,
+        size_pt=h_size_pt,
+        bold=h_bold,
+        italic=h_italic,
         color_rgb=RGBColor(71, 85, 105),
     )
     _set_paragraph_rule(hp, edge="bottom", color_hex=hf_color, width_pt=hf_width_pt)

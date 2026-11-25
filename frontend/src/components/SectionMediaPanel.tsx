@@ -446,11 +446,11 @@ export function SectionMediaPanel({
   const [editDgTitle, setEditDgTitle] = useState("");
   const [editDgCaption, setEditDgCaption] = useState("");
   const [editDgAnchor, setEditDgAnchor] = useState("");
-  const [editDgLayout, setEditDgLayout] = useState<"vertical" | "horizontal">(
-    "vertical"
-  );
+  const [editDgLayout, setEditDgLayout] = useState<string>("horizontal_flow");
+  const [editDgColorTheme, setEditDgColorTheme] = useState<string>("auto");
   const [editDgNodes, setEditDgNodes] = useState<DiagramNode[]>([]);
   const [busyUpdateDiagram, setBusyUpdateDiagram] = useState(false);
+  const [dgPreviewRev, setDgPreviewRev] = useState(0);
 
   useEffect(() => {
     setEditingTableId(null);
@@ -727,10 +727,12 @@ export function SectionMediaPanel({
           caption: editDgCaption.trim(),
           anchor_hint: editDgAnchor.trim(),
           layout: editDgLayout,
+          color_theme: editDgColorTheme,
           nodes: editDgNodes,
         }
       );
       onProjectUpdated(updated);
+      setDgPreviewRev((r) => r + 1);
       setEditingDiagramId(null);
     } catch (err) {
       onError(err instanceof Error ? err.message : String(err));
@@ -2285,7 +2287,8 @@ export function SectionMediaPanel({
                               setEditDgTitle(dg.title);
                               setEditDgCaption(dg.caption || "");
                               setEditDgAnchor(dg.anchor_hint || "");
-                              setEditDgLayout(dg.layout || "vertical");
+                              setEditDgLayout(dg.layout || "horizontal_flow");
+                              setEditDgColorTheme(dg.color_theme || "auto");
                               setEditDgNodes(
                                 dg.nodes.map((n) => ({
                                   ...n,
@@ -2358,26 +2361,47 @@ export function SectionMediaPanel({
                           </div>
                           <div>
                             <label className="block text-[11px] font-semibold text-slate-700">
-                              {isEn ? "Orientation" : "Disposition"}
+                              {isEn ? "Diagram Layout" : "Modèle / Disposition"}
                             </label>
                             <select
                               value={editDgLayout}
-                              onChange={(e) =>
-                                setEditDgLayout(
-                                  e.target.value as "vertical" | "horizontal"
-                                )
-                              }
+                              onChange={(e) => setEditDgLayout(e.target.value)}
                               className="mt-1 w-full rounded-lg border border-slate-300 px-2.5 py-1.5 text-xs"
                             >
+                              <option value="horizontal_flow">
+                                {isEn
+                                  ? "Horizontal conceptual pipeline"
+                                  : "Pipeline conceptuel horizontal"}
+                              </option>
+                              <option value="prisma_exclusion">
+                                {isEn
+                                  ? "PRISMA / CONSORT exclusion flow"
+                                  : "Flux PRISMA / CONSORT (exclusions)"}
+                              </option>
+                              <option value="decision_flowchart">
+                                {isEn
+                                  ? "Decision flowchart (Yes/No)"
+                                  : "Organigramme décisionnel (Oui/Non)"}
+                              </option>
+                              <option value="branching_tree">
+                                {isEn
+                                  ? "Branching clinical tree"
+                                  : "Arbre décisionnel / clinique"}
+                              </option>
+                              <option value="parallel_converge">
+                                {isEn
+                                  ? "Parallel branches → synthesis"
+                                  : "Branches parallèles → synthèse"}
+                              </option>
                               <option value="vertical">
                                 {isEn
-                                  ? "Vertical (top → bottom)"
-                                  : "Verticale (haut → bas)"}
+                                  ? "Auto (Vertical)"
+                                  : "Auto (Vertical)"}
                               </option>
                               <option value="horizontal">
                                 {isEn
-                                  ? "Horizontal (left → right)"
-                                  : "Horizontale (gauche → droite)"}
+                                  ? "Auto (Horizontal)"
+                                  : "Auto (Horizontal)"}
                               </option>
                             </select>
                           </div>
@@ -2392,6 +2416,46 @@ export function SectionMediaPanel({
                                 ? "Diagram placement"
                                 : "Emplacement du schéma"
                             )}
+                          </div>
+                          <div className="md:col-span-3">
+                            <label className="block text-[11px] font-semibold text-slate-700">
+                              {isEn ? "Figure Color Palette" : "Palette de couleurs de la figure"}
+                            </label>
+                            <div className="mt-1.5 flex flex-wrap gap-1.5">
+                              {[
+                                { id: "auto", label: isEn ? "Auto (Semantic)" : "Auto (Sémantique)", dots: ["#991B1B", "#0F766E", "#6C2826"] },
+                                { id: "fmsb_burgundy", label: isEn ? "FMSB Burgundy" : "FMSB Bordeaux", dots: ["#6C2826", "#991B1B", "#B45309"] },
+                                { id: "medical_teal", label: isEn ? "Medical Teal" : "Médical Bleu-Vert", dots: ["#0F766E", "#0369A1", "#1E3A8A"] },
+                                { id: "navy_slate", label: isEn ? "Academic Navy" : "Académique Marine", dots: ["#1E3A8A", "#334155", "#0F766E"] },
+                                { id: "emerald_forest", label: isEn ? "Clinical Emerald" : "Clinique Émeraude", dots: ["#047857", "#0F766E", "#1D4ED8"] },
+                                { id: "monochrome_prisma", label: isEn ? "Journal B&W (PRISMA)" : "Journal N&B (PRISMA)", dots: ["#1E293B", "#475569", "#94A3B8"] },
+                              ].map((th) => {
+                                const active = editDgColorTheme === th.id;
+                                return (
+                                  <button
+                                    key={th.id}
+                                    type="button"
+                                    onClick={() => setEditDgColorTheme(th.id)}
+                                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition ${
+                                      active
+                                        ? "border-[#6C2826] bg-rose-50 text-[#6C2826] ring-1 ring-[#6C2826]/40"
+                                        : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
+                                    }`}
+                                  >
+                                    <span className="flex items-center -space-x-1">
+                                      {th.dots.map((hex) => (
+                                        <span
+                                          key={hex}
+                                          className="h-2.5 w-2.5 rounded-full ring-1 ring-white"
+                                          style={{ backgroundColor: hex }}
+                                        />
+                                      ))}
+                                    </span>
+                                    {th.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
                           </div>
                           <div className="md:col-span-3">
                             <label className="block text-[11px] font-semibold text-slate-700">
@@ -2414,32 +2478,57 @@ export function SectionMediaPanel({
                               key={node.id}
                               className="grid grid-cols-1 gap-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 md:grid-cols-12"
                             >
-                              <select
-                                value={node.shape}
-                                onChange={(e) => {
-                                  const next = [...editDgNodes];
-                                  next[nIdx] = {
-                                    ...node,
-                                    shape: e.target
-                                      .value as DiagramNode["shape"],
-                                  };
-                                  setEditDgNodes(next);
-                                }}
-                                className="rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs md:col-span-3"
-                              >
-                                <option value="rounded">
-                                  {isEn ? "Rounded box" : "Rectangle arrondi"}
-                                </option>
-                                <option value="rectangle">
-                                  {isEn ? "Square box" : "Rectangle carré"}
-                                </option>
-                                <option value="circle">
-                                  {isEn ? "Circle" : "Cercle"}
-                                </option>
-                                <option value="diamond">
-                                  {isEn ? "Diamond" : "Losange"}
-                                </option>
-                              </select>
+                              <div className="flex items-center gap-1.5 md:col-span-3">
+                                <input
+                                  type="color"
+                                  value={node.color && /^#[0-9A-Fa-f]{6}$/.test(node.color) ? node.color : "#6C2826"}
+                                  onChange={(e) => {
+                                    const next = [...editDgNodes];
+                                    next[nIdx] = {
+                                      ...node,
+                                      color: e.target.value,
+                                    };
+                                    setEditDgNodes(next);
+                                  }}
+                                  title={isEn ? "Block color" : "Couleur du bloc"}
+                                  className="h-7 w-7 shrink-0 cursor-pointer rounded border border-slate-300 bg-white p-0.5"
+                                />
+                                <select
+                                  value={node.shape}
+                                  onChange={(e) => {
+                                    const next = [...editDgNodes];
+                                    next[nIdx] = {
+                                      ...node,
+                                      shape: e.target
+                                        .value as DiagramNode["shape"],
+                                    };
+                                    setEditDgNodes(next);
+                                  }}
+                                  className="w-full rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs"
+                                >
+                                  <option value="rounded">
+                                    {isEn ? "Rounded box" : "Rectangle arrondi"}
+                                  </option>
+                                  <option value="rectangle">
+                                    {isEn ? "Square box" : "Rectangle carré"}
+                                  </option>
+                                  <option value="pill">
+                                    {isEn ? "Pill (Start/End)" : "Pilule (Début/Fin)"}
+                                  </option>
+                                  <option value="diamond">
+                                    {isEn ? "Diamond (Decision)" : "Losange (Décision)"}
+                                  </option>
+                                  <option value="circle">
+                                    {isEn ? "Circle" : "Cercle"}
+                                  </option>
+                                  <option value="oval">
+                                    {isEn ? "Oval" : "Ovale"}
+                                  </option>
+                                  <option value="cylinder">
+                                    {isEn ? "Database / Cylinder" : "Base / Cylindre"}
+                                  </option>
+                                </select>
+                              </div>
                               <input
                                 type="text"
                                 value={node.title}
@@ -2543,10 +2632,11 @@ export function SectionMediaPanel({
                         src={api.diagramSvgUrl(
                           project.project_id,
                           sectionId,
-                          dg.diagram_id
+                          dg.diagram_id,
+                          `${dgPreviewRev}_${dg.layout}_${dg.color_theme || "auto"}_${(dg.nodes || []).map((n) => n.color || "").join(",")}`
                         )}
                         alt={dg.title}
-                        className="mx-auto max-h-56 max-w-md rounded bg-white object-contain p-1.5 shadow-2xs"
+                        className="mx-auto max-h-72 w-full max-w-2xl rounded bg-white object-contain p-1.5 shadow-2xs"
                       />
                     </div>
                   </div>

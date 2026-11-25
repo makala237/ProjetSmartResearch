@@ -214,6 +214,151 @@ def strip_ascii_diagrams(text: str) -> str:
     return "\n".join(cleaned)
 
 
+_TABLE_SEP_RE = re.compile(r"^\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?$")
+
+
+def _split_pipe_row(line: str) -> List[str]:
+    s = line.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [cell.strip() for cell in s.split("|")]
+
+
+def _is_pipe_table_line(line: str) -> bool:
+    s = line.strip()
+    if not s or "|" not in s:
+        return False
+    if _TABLE_SEP_RE.match(s):
+        return True
+    cells = _split_pipe_row(s)
+    # Must have at least 2 non-empty cells (or 3+ columns) and not be a prose sentence with an isolated pipe
+    non_empty = [c for c in cells if c]
+    if len(cells) >= 3 and len(non_empty) >= 2:
+        return True
+    if len(cells) == 2 and len(non_empty) == 2 and len(s) <= 180:
+        return True
+    return False
+
+
+def extract_markdown_tables_to_structured(
+    markdown_text: str,
+    fallback_title: str = "Tableau récapitulatif",
+) -> Tuple[str, List[Dict[str, object]]]:
+    """Deterministically extract any raw Markdown pipe tables from prose into structured table dicts.
+
+    Returns `(cleaned_markdown, extracted_tables)` where each table dict has:
+      {"title": str, "anchor_hint": str, "headers": List[str], "rows": List[List[str]]}
+    """
+    raw = (markdown_text or "")
+    if "|" not in raw:
+        return raw, []
+
+    lines = raw.splitlines()
+    out_lines: List[str] = []
+    extracted: List[Dict[str, object]] = []
+    last_heading = ""
+    last_para = ""
+
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i]
+        s = line.strip()
+
+        if _is_pipe_table_line(s):
+            block: List[str] = []
+            j = i
+            while j < n and _is_pipe_table_line(lines[j]):
+                block.append(lines[j].strip())
+                j += 1
+
+            # Require at least 2 non-separator rows (1 header + >= 1 data row)
+            data_rows = [b for b in block if not _TABLE_SEP_RE.match(b)]
+            if len(data_rows) >= 2:
+                headers = _split_pipe_row(data_rows[0])
+                col_count = len(headers)
+                if col_count >= 2:
+                    parsed_rows: List[List[str]] = []
+                    for row_line in data_rows[1:]:
+                        cells = _split_pipe_row(row_line)
+                        if len(cells) == col_count:
+                            parsed_rows.append(cells)
+                        elif len(cells) < col_count:
+                            # Right-align 2-cell summary rows like "SOUS-TOTAL | 3 796 000" into last column
+                            if len(cells) == 2 and col_count >= 3:
+                                parsed_rows.append([cells[0]] + [""] * (col_count - 2) + [cells[1]])
+                            else:
+                                parsed_rows.append(cells + [""] * (col_count - len(cells)))
+                        else:
+                            parsed_rows.append(cells[: col_count - 1] + [" | ".join(cells[col_count - 1 :])])
+
+                    clean_heading = re.sub(r"^#{1,6}\s+", "", last_heading).strip()
+                    clean_heading = re.sub(r"^\*+|\*+$", "", clean_heading).strip()
+                    tbl_title = clean_heading or fallback_title
+                    if len(extracted) > 0 and any(str(t["title"]).lower() == tbl_title.lower() for t in extracted):
+                        tbl_title = f"{tbl_title} ({len(extracted) + 1})"
+
+                    extracted.append(
+                        {
+                            "title": tbl_title,
+                            "anchor_hint": (last_para or clean_heading)[:140],
+                            "headers": headers,
+                            "rows": parsed_rows,
+                        }
+                    )
+                    i = j
+                    continue
+
+        # Track preceding heading & paragraph for title/anchor_hint inference
+        if s:
+            if re.match(r"^(?:#{1,6}\s+|[A-Z]\.\s+|[IVX]+\.\s+|Tableau\s)", s) and len(s) <= 120:
+                last_heading = s
+            elif len(s) >= 20:
+                last_para = s
+        out_lines.append(line)
+        i += 1
+
+    cleaned_md = re.sub(r"\n{3,}", "\n\n", "\n".join(out_lines)).strip()
+    return cleaned_md, extracted
+
+
+def _render_pipe_table_html(block_lines: List[str]) -> str:
+    """Fallback HTML <table> renderer if raw pipe table lines reach markdown_to_clean_html directly."""
+    data_rows = [b for b in block_lines if not _TABLE_SEP_RE.match(b)]
+    if len(data_rows) < 2:
+        return "".join(f"<p>{_inline_markdown_to_html(b)}</p>" for b in block_lines)
+    headers = _split_pipe_row(data_rows[0])
+    col_count = len(headers)
+    th_html = "".join(
+        f'<th style="background:#6C2826;color:#FFFFFF;padding:6px 8px;border:1px solid #cbd5e1;text-align:left;font-weight:700;">'
+        f'{_inline_markdown_to_html(h)}</th>'
+        for h in headers
+    )
+    body_rows_html: List[str] = []
+    for r_idx, r_line in enumerate(data_rows[1:]):
+        cells = _split_pipe_row(r_line)
+        if len(cells) < col_count:
+            if len(cells) == 2 and col_count >= 3:
+                cells = [cells[0]] + [""] * (col_count - 2) + [cells[1]]
+            else:
+                cells = cells + [""] * (col_count - len(cells))
+        elif len(cells) > col_count:
+            cells = cells[: col_count - 1] + [" | ".join(cells[col_count - 1 :])]
+        bg = "#F8FAFC" if r_idx % 2 == 1 else "#FFFFFF"
+        tds = "".join(
+            f'<td style="padding:6px 8px;border:1px solid #cbd5e1;background:{bg};">{_inline_markdown_to_html(c)}</td>'
+            for c in cells
+        )
+        body_rows_html.append(f"<tr>{tds}</tr>")
+    return (
+        '<table style="width:100%;border-collapse:collapse;margin:10px 0;font-size:13px;">'
+        f"<thead><tr>{th_html}</tr></thead>"
+        f"<tbody>{''.join(body_rows_html)}</tbody></table>"
+    )
+
+
 def markdown_to_clean_html(markdown_text: str) -> str:
     """Deterministically convert Markdown + LaTeX math into clean TipTap/HTML (zero `#` or `$`)."""
     raw = strip_ascii_diagrams(markdown_text or "").strip()
@@ -237,6 +382,13 @@ def markdown_to_clean_html(markdown_text: str) -> str:
     in_ul = False
     in_ol = False
     para_buf: List[str] = []
+    tbl_buf: List[str] = []
+
+    def _flush_table() -> None:
+        nonlocal tbl_buf
+        if tbl_buf:
+            html_parts.append(_render_pipe_table_html(tbl_buf))
+            tbl_buf = []
 
     def _flush_para() -> None:
         nonlocal para_buf
@@ -258,9 +410,18 @@ def markdown_to_clean_html(markdown_text: str) -> str:
     for line in lines:
         s = line.strip()
         if not s:
+            _flush_table()
             _flush_para()
             _close_lists()
             continue
+
+        if _is_pipe_table_line(s):
+            _flush_para()
+            _close_lists()
+            tbl_buf.append(s)
+            continue
+        else:
+            _flush_table()
 
         if s.startswith("@@BLOCKMATH") and s.endswith("@@"):
             _flush_para()
@@ -308,6 +469,7 @@ def markdown_to_clean_html(markdown_text: str) -> str:
         _close_lists()
         para_buf.append(s)
 
+    _flush_table()
     _flush_para()
     _close_lists()
     return "\n".join(html_parts)

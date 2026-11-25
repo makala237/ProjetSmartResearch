@@ -127,7 +127,7 @@ export function Module3DataEntry({
     new Date().toISOString().slice(0, 10)
   );
   const [hospitalSite, setHospitalSite] = useState<string>(
-    project.cover?.host_institutions?.find((s) => s.trim()) || "HGOPY"
+    project.cover?.host_institutions?.find((s) => s.trim()) || ""
   );
   const [investigatorName, setInvestigatorName] = useState<string>(
     project.cover?.author_name || ""
@@ -138,17 +138,46 @@ export function Module3DataEntry({
   const [notes, setNotes] = useState<string>("");
 
   const hospitalChoices = useMemo(() => {
-    const coverSites =
-      project.cover?.host_institutions?.map((s) => s.trim()).filter(Boolean) ?? [];
-    if (coverSites.length > 0) {
-      return Array.from(new Set(coverSites)).slice(0, 8);
+    const merged: string[] = [];
+    const seen = new Set<string>();
+    const addSite = (raw: string) => {
+      const cleaned = raw.trim();
+      if (!cleaned) return;
+      const k = cleaned.toLowerCase();
+      if (!seen.has(k)) {
+        seen.add(k);
+        merged.push(cleaned);
+      }
+    };
+
+    // 1. Sites synced from backend CRF parser (exact parity with Aperçu fiche papier)
+    for (const s of backendHospitalSites) {
+      addSite(s);
     }
-    const syncedSites = backendHospitalSites.map((s) => s.trim()).filter(Boolean);
-    if (syncedSites.length > 0) {
-      return Array.from(new Set(syncedSites)).slice(0, 8);
+
+    // 2. Direct extraction from project.crf_fields (immediate before async preview returns)
+    const siteFieldRe =
+      /(site\s+d|site\s+de|site\s+hospitalier|h[ôo]pital|hospital|[ée]tablissement|centre\s+d|formation\s+sanitaire|prison|lieu\s+d|study\s+site)/i;
+    for (const f of project.crf_fields ?? []) {
+      if (
+        (f.options?.length ?? 0) > 0 &&
+        (siteFieldRe.test(f.label || "") || siteFieldRe.test(f.field_id || ""))
+      ) {
+        for (const opt of f.options ?? []) {
+          if (!/^(?:autre|other)\b/i.test(opt.trim())) {
+            addSite(opt);
+          }
+        }
+      }
     }
-    return ["HGOPY", "HCBY", "HGY"];
-  }, [project.cover?.host_institutions, backendHospitalSites]);
+
+    // 3. Cover host_institutions fallback/merge
+    for (const s of project.cover?.host_institutions ?? []) {
+      addSite(s);
+    }
+
+    return merged.slice(0, 12);
+  }, [project.cover?.host_institutions, project.crf_fields, backendHospitalSites]);
 
   // Content fingerprint across CRF upstream sources (omits updated_at so patient saves do not re-fetch preview HTML)
   const crfSyncSignature = useMemo(
@@ -160,6 +189,7 @@ export function Module3DataEntry({
         chap1Md: project.sections?.chap1_variables?.content_markdown ?? "",
         chap1Html: project.sections?.chap1_variables?.content_html ?? "",
         chap1Tables: project.sections?.chap1_variables?.custom_tables ?? [],
+        annexeCrfMd: project.sections?.annexe_fiche_collecte?.content_markdown ?? "",
         annexesMd: project.sections?.annexes?.content_markdown ?? "",
         coverTitle: project.cover?.title ?? "",
         coverAuthor: project.cover?.author_name ?? "",
@@ -173,6 +203,7 @@ export function Module3DataEntry({
       project.sections?.chap1_variables?.content_markdown,
       project.sections?.chap1_variables?.content_html,
       project.sections?.chap1_variables?.custom_tables,
+      project.sections?.annexe_fiche_collecte?.content_markdown,
       project.sections?.annexes?.content_markdown,
       project.cover?.title,
       project.cover?.author_name,
@@ -180,6 +211,14 @@ export function Module3DataEntry({
       project.cover?.host_institutions,
     ]
   );
+
+  // Keep selected hospitalSite in sync whenever real sites arrive from CRF / backend
+  useEffect(() => {
+    if (editingRecordId) return;
+    if (hospitalChoices.length > 0 && (!hospitalSite || !hospitalChoices.includes(hospitalSite))) {
+      setHospitalSite(hospitalChoices[0]);
+    }
+  }, [hospitalChoices, editingRecordId]);
 
   // Reset dirty designer flag & transient notice when switching projects
   useEffect(() => {
@@ -198,9 +237,7 @@ export function Module3DataEntry({
       .then((res) => {
         if (cancelled) return;
         setAnnexe1Html(res.annexe1_html);
-        if (res.hospital_sites?.length) {
-          setBackendHospitalSites(res.hospital_sites);
-        }
+        setBackendHospitalSites(res.hospital_sites ?? []);
         const incomingJson = JSON.stringify(res.crf_fields ?? []);
         const currentJson = JSON.stringify(project.crf_fields ?? []);
         if (res.crf_fields && incomingJson !== currentJson) {
@@ -218,10 +255,10 @@ export function Module3DataEntry({
       setPatientCode(computeNextPatientCode(project.patient_records ?? []));
       setInvestigatorName(project.cover?.author_name || "");
       const preferredSite =
-        project.cover?.host_institutions?.find((s) => s.trim()) ||
         hospitalChoices[0] ||
-        "HGOPY";
-      if (!hospitalSite || !hospitalChoices.includes(hospitalSite)) {
+        project.cover?.host_institutions?.find((s) => s.trim()) ||
+        "";
+      if (!hospitalSite || (hospitalChoices.length > 0 && !hospitalChoices.includes(hospitalSite))) {
         setHospitalSite(preferredSite);
       }
     }

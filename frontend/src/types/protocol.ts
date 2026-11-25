@@ -128,9 +128,18 @@ export interface SectionTable {
   rows: string[][];
 }
 
+export type DiagramLayoutType =
+  | "horizontal_flow"
+  | "prisma_exclusion"
+  | "decision_flowchart"
+  | "branching_tree"
+  | "parallel_converge"
+  | "vertical"
+  | "horizontal";
+
 export interface DiagramNode {
   id: string;
-  shape: "rectangle" | "rounded" | "circle" | "diamond";
+  shape: "rectangle" | "rounded" | "pill" | "oval" | "circle" | "diamond" | "cylinder";
   title: string;
   items: string[];
   width_px?: number;
@@ -149,7 +158,8 @@ export interface SectionDiagram {
   title: string;
   caption: string;
   anchor_hint: string;
-  layout: "vertical" | "horizontal";
+  layout: DiagramLayoutType;
+  color_theme?: string;
   nodes: DiagramNode[];
   connections: DiagramConnection[];
 }
@@ -229,6 +239,11 @@ export interface FormattingRules {
   box_corner_radius_pct?: number;
   header_footer_rule_color?: string;
   header_footer_rule_width_pt?: number;
+  header_font_size_pt?: number;
+  header_font_weight?: "normal" | "bold";
+  header_italic?: boolean;
+  header_align?: "left" | "center" | "right" | "justify";
+  header_show_full_title?: boolean;
   cover_department_layout?: "header_columns" | "above_title";
 }
 

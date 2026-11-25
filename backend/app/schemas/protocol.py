@@ -285,6 +285,11 @@ class FormattingRules(BaseModel):
     box_corner_radius_pct: int = 18
     header_footer_rule_color: str = "#CBD5E1"
     header_footer_rule_width_pt: float = 0.5
+    header_font_size_pt: int = 9
+    header_font_weight: str = "normal"  # "normal" | "bold"
+    header_italic: bool = True
+    header_align: str = "right"  # "left" | "center" | "right" | "justify"
+    header_show_full_title: bool = True
 
     @model_validator(mode="after")
     def _sync_border_geometry(self) -> "FormattingRules":
@@ -300,6 +305,13 @@ class FormattingRules(BaseModel):
         if not re.fullmatch(r"#[0-9A-Fa-f]{6}", raw_hf_color):
             raw_hf_color = "#CBD5E1"
         self.header_footer_rule_color = raw_hf_color.upper()
+        self.header_font_size_pt = max(7, min(14, int(self.header_font_size_pt or 9)))
+        raw_h_weight = (self.header_font_weight or "normal").strip().lower()
+        self.header_font_weight = "bold" if raw_h_weight == "bold" else "normal"
+        raw_h_align = (self.header_align or "right").strip().lower()
+        if raw_h_align not in {"left", "center", "right", "justify"}:
+            raw_h_align = "right"
+        self.header_align = raw_h_align
         raw_corner = self.box_corner_radius_pct
         self.box_corner_radius_pct = max(
             0, min(50, int(18 if raw_corner is None else raw_corner))
@@ -338,6 +350,7 @@ class SectionDiagram(BaseModel):
     caption: str = ""
     anchor_hint: str = ""
     layout: str = "horizontal_flow"  # "horizontal_flow" | "prisma_exclusion" | "decision_flowchart" | "branching_tree" | "parallel_converge" | "vertical" | "horizontal"
+    color_theme: str = "auto"  # "auto" | "fmsb_burgundy" | "medical_teal" | "navy_slate" | "emerald_forest" | "monochrome_prisma"
     nodes: List[DiagramNode] = Field(default_factory=list)
     connections: List[DiagramConnection] = Field(default_factory=list)
 

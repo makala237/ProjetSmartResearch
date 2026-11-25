@@ -725,7 +725,8 @@ export const api = {
       title: string;
       caption: string;
       anchor_hint: string;
-      layout: "vertical" | "horizontal";
+      layout: string;
+      color_theme?: string;
       nodes: DiagramNode[];
       connections: DiagramConnection[];
     }
@@ -746,7 +747,8 @@ export const api = {
       title?: string;
       caption?: string;
       anchor_hint?: string;
-      layout?: "vertical" | "horizontal";
+      layout?: string;
+      color_theme?: string;
       nodes?: DiagramNode[];
       connections?: DiagramConnection[];
     }
@@ -771,8 +773,18 @@ export const api = {
       }
     ),
 
-  diagramSvgUrl: (projectId: string, sectionId: string, diagramId: string) =>
-    withAuthToken(`/api/projects/${projectId}/sections/${sectionId}/diagrams/${diagramId}/svg`),
+  diagramSvgUrl: (
+    projectId: string,
+    sectionId: string,
+    diagramId: string,
+    cacheKey?: string
+  ) => {
+    const base = withAuthToken(
+      `/api/projects/${projectId}/sections/${sectionId}/diagrams/${diagramId}/svg`
+    );
+    if (!cacheKey) return base;
+    return `${base}${base.includes("?") ? "&" : "?"}v=${encodeURIComponent(cacheKey)}`;
+  },
 
   importProtocol: async (
     projectId: string,

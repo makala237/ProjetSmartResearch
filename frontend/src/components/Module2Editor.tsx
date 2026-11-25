@@ -240,6 +240,10 @@ export function Module2Editor({
   const accentColor = fmt.border_color || "#6C2826";
   const hfRuleColor = (fmt.header_footer_rule_color || "#CBD5E1").trim();
   const hfRuleWidthPt = fmt.header_footer_rule_width_pt ?? 0.5;
+  const headerFontSizePt = fmt.header_font_size_pt ?? 9;
+  const headerFontWeight = fmt.header_font_weight ?? "normal";
+  const headerItalic = fmt.header_italic ?? true;
+  const headerAlign = fmt.header_align ?? "right";
   const isFormattingDirty =
     JSON.stringify(fmt) !== JSON.stringify(project.formatting);
   fmtDirtyRef.current = isFormattingDirty;
@@ -957,6 +961,108 @@ export function Module2Editor({
                     className="mt-1 w-full accent-[#6C2826]"
                   />
                 </div>
+
+                {/* Running Header Typography & Alignment (Full Theme) */}
+                <div className="space-y-2 border-t border-slate-200 pt-2">
+                  <div className="text-[11px] font-semibold text-slate-700">
+                    {lang === "en"
+                      ? "Header theme typography (pages 2+)"
+                      : "Style du thème en en-tête (pages 2+)"}
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[10px] font-medium text-slate-600">
+                        {lang === "en" ? "Font size" : "Taille police"}
+                      </label>
+                      <select
+                        data-testid="header-font-size-select"
+                        value={headerFontSizePt}
+                        onChange={(e) =>
+                          setFmt({
+                            ...fmt,
+                            header_font_size_pt: Number(e.target.value),
+                          })
+                        }
+                        className="mt-0.5 w-full rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                      >
+                        {[7, 8, 9, 10, 11, 12, 13, 14].map((pt) => (
+                          <option key={pt} value={pt}>
+                            {pt} pt
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-medium text-slate-600">
+                        {lang === "en" ? "Font weight" : "Graisse"}
+                      </label>
+                      <select
+                        data-testid="header-font-weight-select"
+                        value={headerFontWeight}
+                        onChange={(e) =>
+                          setFmt({
+                            ...fmt,
+                            header_font_weight: e.target.value as "normal" | "bold",
+                          })
+                        }
+                        className="mt-0.5 w-full rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                      >
+                        <option value="normal">
+                          {lang === "en" ? "Normal" : "Normal"}
+                        </option>
+                        <option value="bold">
+                          {lang === "en" ? "Bold" : "Gras"}
+                        </option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 items-end gap-2">
+                    <div>
+                      <label className="block text-[10px] font-medium text-slate-600">
+                        {lang === "en" ? "Alignment" : "Alignement"}
+                      </label>
+                      <select
+                        data-testid="header-align-select"
+                        value={headerAlign}
+                        onChange={(e) =>
+                          setFmt({
+                            ...fmt,
+                            header_align: e.target.value as
+                              | "left"
+                              | "center"
+                              | "right"
+                              | "justify",
+                          })
+                        }
+                        className="mt-0.5 w-full rounded border border-slate-300 bg-white px-2 py-1 text-[11px]"
+                      >
+                        <option value="left">
+                          {lang === "en" ? "Left" : "Gauche"}
+                        </option>
+                        <option value="center">
+                          {lang === "en" ? "Center" : "Centré"}
+                        </option>
+                        <option value="right">
+                          {lang === "en" ? "Right" : "Droite"}
+                        </option>
+                        <option value="justify">
+                          {lang === "en" ? "Justified" : "Justifié"}
+                        </option>
+                      </select>
+                    </div>
+                    <label className="flex cursor-pointer items-center gap-1.5 pb-1 text-[11px] font-medium text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={headerItalic}
+                        onChange={(e) =>
+                          setFmt({ ...fmt, header_italic: e.target.checked })
+                        }
+                        className="h-3.5 w-3.5 accent-[#6C2826]"
+                      />
+                      {lang === "en" ? "Italic" : "Italique"}
+                    </label>
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1560,22 +1666,30 @@ export function Module2Editor({
                 </span>
               </div>
 
-              {/* Preview of Running Header starting Page 2 */}
+              {/* Preview of Running Header starting Page 2 (Full Theme visible, configurable typography & alignment) */}
               <div
                 data-testid="preview-running-header"
-                className="mb-4 flex items-center justify-between gap-4 pb-1.5 text-[11px] italic text-slate-500"
+                className="mb-4 pb-1.5 text-slate-600"
                 style={{
                   borderBottomWidth: `${Math.max(1, Number((hfRuleWidthPt * 1.35).toFixed(2)))}px`,
                   borderBottomStyle: "solid",
                   borderBottomColor: hfRuleColor,
                 }}
               >
-                <span className="font-sans text-[10px] font-semibold not-italic uppercase tracking-wide text-slate-400">
+                <div className="mb-0.5 font-sans text-[9px] font-semibold uppercase tracking-wide text-slate-400">
                   {lang === "en" ? "Header (pages 2+)" : "En-tête (pages 2+)"}
-                </span>
-                <span className="truncate text-right">
+                </div>
+                <div
+                  className="whitespace-normal break-words leading-snug"
+                  style={{
+                    fontSize: `${Math.round(headerFontSizePt * 1.333)}px`,
+                    fontWeight: headerFontWeight === "bold" ? 700 : 400,
+                    fontStyle: headerItalic ? "italic" : "normal",
+                    textAlign: headerAlign,
+                  }}
+                >
                   {project.cover.title || project.name}
-                </span>
+                </div>
               </div>
 
               <div className="space-y-6">
@@ -2115,9 +2229,14 @@ export function Module2Editor({
                         {st?.custom_diagrams?.map((dg) => (
                           <div key={dg.diagram_id} className="mt-3 text-center">
                             <img
-                              src={api.diagramSvgUrl(project.project_id, spec.id, dg.diagram_id)}
+                              src={api.diagramSvgUrl(
+                                project.project_id,
+                                spec.id,
+                                dg.diagram_id,
+                                `${dg.layout}_${dg.color_theme || "auto"}_${(dg.nodes || []).map((n) => n.color || "").join(",")}`
+                              )}
                               alt={dg.title}
-                              className="mx-auto max-h-52 max-w-md rounded border border-slate-200 bg-white p-1 object-contain"
+                              className="mx-auto max-h-80 w-full max-w-2xl rounded border border-slate-200 bg-white p-1.5 object-contain"
                             />
                             <div className="mt-1 text-[11px] italic text-slate-600">
                               Figure. {dg.title}

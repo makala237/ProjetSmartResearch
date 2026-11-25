@@ -875,6 +875,21 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
             + [order_to_ref_id[int(n)] for n in all_cited_nums if n.isdigit() and int(n) in order_to_ref_id]
         )
     )
+    # Safety net: convert any raw Markdown pipe tables leaked in prose into real structured SectionTables
+    from app.services.rich_formatter import extract_markdown_tables_to_structured
+
+    clean_md, leaked_tables = extract_markdown_tables_to_structured(clean_md, fallback_title=spec.title)
+    if leaked_tables and spec.constraints.table_policy != "forbidden":
+        for lt in leaked_tables:
+            dto.suggested_tables.append(
+                SuggestedTableInline(
+                    title=str(lt["title"]),
+                    anchor_hint=str(lt.get("anchor_hint") or ""),
+                    headers=list(lt["headers"]),
+                    rows=list(lt["rows"]),
+                )
+            )
+
     clean_html = markdown_to_clean_html(clean_md)
     det_notes = deterministic_section_checks(project, section_id, clean_md)
 
@@ -1213,6 +1228,19 @@ Instructions:
     )
     orch_trace["word_count_continuation"] = wc_trace
     clean_md = _reconcile_intro_citation_cap(project, section_id, clean_md, max_refs=5)
+    from app.services.rich_formatter import extract_markdown_tables_to_structured
+
+    clean_md, leaked_tables = extract_markdown_tables_to_structured(clean_md, fallback_title=spec.title)
+    if leaked_tables and spec.constraints.table_policy != "forbidden":
+        for lt in leaked_tables:
+            dto.suggested_tables.append(
+                SuggestedTableInline(
+                    title=str(lt["title"]),
+                    anchor_hint=str(lt.get("anchor_hint") or ""),
+                    headers=list(lt["headers"]),
+                    rows=list(lt["rows"]),
+                )
+            )
     clean_html = markdown_to_clean_html(clean_md)
     det_notes = deterministic_section_checks(project, section_id, clean_md)
 

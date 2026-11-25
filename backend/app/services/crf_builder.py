@@ -401,19 +401,126 @@ def _infer_field_from_spec(
     )
 
 
+_SITE_LABEL_KEYWORDS = (
+    "site d'étude",
+    "site d’étude",
+    "site de l'étude",
+    "site de l’étude",
+    "site d'inclusion",
+    "site d’inclusion",
+    "site de collecte",
+    "site hospitalier",
+    "hôpital",
+    "hopital",
+    "hospital",
+    "établissement",
+    "etablissement",
+    "centre d'étude",
+    "centre de collecte",
+    "centre d'inclusion",
+    "formation sanitaire",
+    "prison",
+    "lieu d'inclusion",
+    "lieu de collecte",
+    "study site",
+    "inclusion site",
+)
+
+
+def _is_site_field_label(text: str) -> bool:
+    low = (text or "").strip().lower()
+    if not low:
+        return False
+    if any(kw in low for kw in _SITE_LABEL_KEYWORDS):
+        return True
+    return bool(re.search(r"\b(?:site|sites|centre|centres)\b", low)) and not any(
+        bad in low for bad in ("visite", "parasite", "web", "internet", "anatomique", "lésion", "lesion", "injection")
+    )
+
+
+def _clean_site_option(opt: str) -> str:
+    s = re.sub(r"^[\-\*•☐☑✓\[\]\s]+", "", (opt or "").strip())
+    s = re.sub(r"(?i)^(?:autre|other)\s*(?:\(.*?\))?\s*:?.*$", "", s).strip()
+    s = re.sub(r"_{2,}|\.{3,}", "", s).strip(" :;,-/")
+    if len(s) < 2 or len(s) > 90:
+        return ""
+    return s
+
+
 def extract_hospital_sites_from_project(project: ProtocolProject) -> List[str]:
-    """Extract hospital site choices from cover metadata or dedicated CRF markdown header."""
-    sites: List[str] = [s.strip() for s in (project.cover.host_institutions or []) if s and s.strip()]
+    """Extract study/hospital site choices from CRF fields, CRF markdown, and cover metadata.
+
+    Priority:
+      1. Structured `project.crf_fields` option lists for any site/hospital/establishment field
+         (ensures 100% parity with the paper CRF preview).
+      2. Full CRF markdown (`annexe_fiche_collecte` / `annexes`) — inline checkboxes,
+         slash/semicolon lists, or indented bullet lists under a site/hospital header.
+      3. `project.cover.host_institutions`.
+    """
+    sites: List[str] = []
+    seen_lower: set[str] = set()
+
+    def _add_site(raw: str) -> None:
+        cleaned = _clean_site_option(raw)
+        if not cleaned:
+            return
+        key = cleaned.lower()
+        if key not in seen_lower:
+            seen_lower.add(key)
+            sites.append(cleaned)
+
+    # 1. Structured CRF fields (exact parity with Aperçu fiche papier)
+    for fld in project.crf_fields or []:
+        if fld.options and (_is_site_field_label(fld.label) or _is_site_field_label(fld.field_id)):
+            for opt in fld.options:
+                _add_site(opt)
+
+    # 2. Full CRF markdown scan (all lines, not just first 15)
     crf_md = get_crf_markdown_from_project(project)
     if crf_md:
-        for line in crf_md.splitlines()[:15]:
-            lower_l = line.lower()
-            if "hôpital" in lower_l or "hospital" in lower_l or "site" in lower_l:
-                opts = _parse_checkbox_options(re.sub(r"(?i)/?\s*(?:Autre|Other)\s*:.*$", "", line))
-                for o in opts:
-                    if o and o not in sites:
-                        sites.append(o)
-    return sites or ["HGOPY", "HCBY", "HGY"]
+        lines = crf_md.splitlines()
+        for idx, line in enumerate(lines):
+            s = line.strip()
+            if not s or not _is_site_field_label(s):
+                continue
+            # 2a. Inline checkbox options on the same line: [ ] Site A  [ ] Site B
+            cleaned_line = re.sub(r"(?i)/?\s*(?:Autre|Other)\s*:.*$", "", s)
+            opts = _parse_checkbox_options(cleaned_line)
+            for o in opts:
+                _add_site(o)
+
+            # 2b. Inline delimited options after colon: "Site d'étude : CHUY / HGY / HCY"
+            if not opts and ":" in cleaned_line:
+                after_colon = cleaned_line.split(":", 1)[1].strip()
+                if after_colon and not re.fullmatch(r"[\s_\.\-\[\]]+", after_colon):
+                    if any(sep in after_colon for sep in ("/", ";", "|", "•")):
+                        for part in re.split(r"\s*[/;|•]\s*", after_colon):
+                            _add_site(part)
+
+            # 2c. Following indented/bullet/checkbox lines belonging to this site field
+            for nxt in lines[idx + 1 : idx + 12]:
+                ns = nxt.strip()
+                if not ns:
+                    if sites:
+                        break
+                    continue
+                if re.match(r"^(?:#{1,6}\s+|SECTION\s+[A-Z]|(?:\*\*)?[A-Z]\d+[\.\):])", ns, re.IGNORECASE):
+                    break
+                nxt_opts = _parse_checkbox_options(re.sub(r"(?i)/?\s*(?:Autre|Other)\s*:.*$", "", ns))
+                if nxt_opts:
+                    for o in nxt_opts:
+                        _add_site(o)
+                elif re.match(r"^(?:[-*•☐]|\[\s*\]|\d+[\.\)])\s+", ns):
+                    _add_site(re.sub(r"^(?:[-*•☐]|\[\s*\]|\d+[\.\)])\s+", "", ns))
+                else:
+                    break
+
+    # 3. Cover host_institutions (added if not already captured from CRF)
+    for inst in project.cover.host_institutions or []:
+        if inst and inst.strip():
+            _add_site(inst)
+
+    return sites[:12]
 
 
 def extract_crf_fields_from_project(project: ProtocolProject) -> List[CRFFieldSpec]:
