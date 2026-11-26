@@ -19,6 +19,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -33,8 +34,9 @@ if str(BACKEND_DIR) not in sys.path:
 # Force Firestore production backend when running this sync tool locally
 os.environ.setdefault("DB_BACKEND", "firestore")
 os.environ.setdefault("FIRESTORE_PROJECT_ID", "smart-research-fmsb")
+os.environ.setdefault("FIRESTORE_DATABASE", "smartresearch-prod")
 os.environ.setdefault("STORAGE_BACKEND", "gcs")
-os.environ.setdefault("CLOUD_STORAGE_BUCKET", "smart-research-fmsb-storage")
+os.environ.setdefault("CLOUD_STORAGE_BUCKET", "smart-research-fmsb-smartresearch-uploads")
 
 from app.core.security import ensure_utc  # noqa: E402
 from app.db.datastore import FirestoreDataStore  # noqa: E402
@@ -49,8 +51,49 @@ def _slugify(value: str) -> str:
     return (s[:36] or "user").lower()
 
 
+def _get_gcp_credentials():
+    """Return ADC credentials or fall back seamlessly to the active gcloud CLI access token."""
+    import google.auth
+
+    try:
+        creds, _ = google.auth.default()
+        return creds
+    except Exception:
+        from google.oauth2.credentials import Credentials
+
+        gcloud_cmd = "gcloud.cmd" if os.name == "nt" else "gcloud"
+        tok = subprocess.check_output([gcloud_cmd, "auth", "print-access-token"], text=True).strip()
+        if not tok:
+            raise RuntimeError("No gcloud access token available. Run `gcloud auth login`.")
+        return Credentials(token=tok)
+
+
+def _build_firestore_client():
+    from google.cloud import firestore
+
+    project_id = os.environ.get("FIRESTORE_PROJECT_ID", "smart-research-fmsb")
+    database_id = os.environ.get("FIRESTORE_DATABASE", "smartresearch-prod")
+    return firestore.Client(project=project_id, database=database_id, credentials=_get_gcp_credentials())
+
+
+def _build_gcs_blob_storage():
+    from google.cloud import storage as gcs_storage
+    from app.services.blob_storage import GCSBlobStorage
+
+    project_id = os.environ.get("FIRESTORE_PROJECT_ID", "smart-research-fmsb")
+    bucket_name = os.environ.get("CLOUD_STORAGE_BUCKET", "smart-research-fmsb-smartresearch-uploads")
+    blob = object.__new__(GCSBlobStorage)
+    blob.bucket_name = bucket_name
+    blob._client = gcs_storage.Client(project=project_id, credentials=_get_gcp_credentials())
+    blob._bucket = blob._client.bucket(bucket_name)
+    return blob
+
+
 def _get_store() -> FirestoreDataStore:
-    return FirestoreDataStore(project_id=os.environ.get("FIRESTORE_PROJECT_ID", "smart-research-fmsb"))
+    return FirestoreDataStore(
+        client=_build_firestore_client(),
+        blob_storage=_build_gcs_blob_storage(),
+    )
 
 
 def fetch_pending_requests(store: FirestoreDataStore, limit: int = 200) -> List[Dict[str, Any]]:
@@ -137,10 +180,12 @@ def cmd_pull(project_id: Optional[str] = None) -> None:
         if not pid:
             print(f"Skipping request {req.get('id')} (no project_id attached).")
             continue
-        proj = project_storage.get(pid)
-        if proj is None:
-            print(f"Project {pid} not found in Firestore.")
+        loaded = store.get_project_payload(pid)
+        if loaded is None:
+            print(f"Project {pid} not found in Firestore/GCS.")
             continue
+        _meta, payload_dict = loaded
+        proj = ProtocolProject.model_validate(payload_dict)
         folder_name = f"{_slugify(req.get('user_name') or proj.cover.author_name or 'user')}_{pid}"
         ws = WORKSPACES_DIR / folder_name
         ws.mkdir(parents=True, exist_ok=True)
@@ -166,13 +211,25 @@ def cmd_push(project_id: str, request_id: Optional[str] = None, note: str = "") 
     raw_data = json.loads((ws / "project.json").read_text(encoding="utf-8"))
     proj = ProtocolProject.model_validate(raw_data)
 
-    # Verify docx compiles cleanly before pushing back to Firestore
+    # Verify docx compiles cleanly before pushing back to Firestore/GCS
     docx_path = ws / "protocol.docx"
     compile_protocol_docx(proj, docx_path)
     print(f"Verified local protocol.docx ({docx_path.stat().st_size:,} bytes).")
 
-    saved = project_storage.save(proj)
-    print(f"Pushed updated project {saved.project_id} to Firestore.")
+    store = _get_store()
+    existing_meta = store.get_project_meta(project_id)
+    if existing_meta is None:
+        raise SystemExit(f"Project metadata for {project_id} not found in Firestore.")
+    now = utcnow()
+    proj.updated_at = now
+    existing_meta.name = proj.name
+    existing_meta.updated_at = now
+    existing_meta.sections_validated_count = sum(
+        1 for s in proj.sections.values() if str(getattr(s.status, "value", s.status)) == "validated"
+    )
+    existing_meta.patients_count = len(proj.patient_records or [])
+    store.save_project(existing_meta, proj.model_dump(mode="json"))
+    print(f"Pushed updated project {project_id} to Firestore + GCS.")
 
     # Resolve matching support request & notify the student
     req_meta: Dict[str, Any] = {}
@@ -184,7 +241,6 @@ def cmd_push(project_id: str, request_id: Optional[str] = None, note: str = "") 
     rid = (request_id or req_meta.get("id") or "").strip()
     target_uid = str(req_meta.get("user_id") or proj.owner_user_id or "").strip()
     if rid:
-        store = _get_store()
         store.create_audit_log(
             admin_id=None,
             target_user_id=target_uid,
