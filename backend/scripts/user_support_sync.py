@@ -359,7 +359,7 @@ def cmd_push(
                 "project_id": project_id,
                 "module": str(req_meta.get("module") or "module2"),
                 "admin_name": "Équipe Smart Research",
-                "note": note.strip()[:300],
+                "note": note.strip()[:6000],
             },
             created_at=utcnow(),
         )
@@ -378,6 +378,7 @@ def main() -> None:
     p_push.add_argument("project_id", help="Project ID to push")
     p_push.add_argument("--request-id", default=None, help="Optional request ID to mark resolved")
     p_push.add_argument("--note", default="Ajustement appliqué sur votre document.", help="Resolution note shown to user")
+    p_push.add_argument("--note-file", default=None, help="Optional UTF-8 text/markdown file containing the resolution note")
     p_push.add_argument("--force", action="store_true", help="Bypass guardrail block (emergency override only)")
 
     args = parser.parse_args()
@@ -388,7 +389,10 @@ def main() -> None:
     elif args.cmd == "validate":
         cmd_validate(project_id=args.project_id)
     elif args.cmd == "push":
-        cmd_push(project_id=args.project_id, request_id=args.request_id, note=args.note, force=args.force)
+        final_note = args.note
+        if args.note_file:
+            final_note = Path(args.note_file).read_text(encoding="utf-8")
+        cmd_push(project_id=args.project_id, request_id=args.request_id, note=final_note, force=args.force)
 
 
 if __name__ == "__main__":

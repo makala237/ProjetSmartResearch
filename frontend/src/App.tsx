@@ -30,7 +30,11 @@ import {
 import { AdminPortal } from "./components/AdminPortal";
 import { AssistantSmartResearchWidget } from "./components/AssistantSmartResearchWidget";
 import { ChangePasswordModal } from "./components/ChangePasswordModal";
-import { SupportRequestModal } from "./components/SupportRequestModal";
+import {
+  SupportRequestModal,
+  getSeenSupportIds,
+  type SupportHistoryItem,
+} from "./components/SupportRequestModal";
 import { LoginScreen } from "./components/LoginScreen";
 import { Module1Assistant } from "./components/Module1Assistant";
 import { Module2Editor } from "./components/Module2Editor";
@@ -93,6 +97,9 @@ export default function App() {
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [showSupportModal, setShowSupportModal] = useState(false);
+  const [supportInitialRequestId, setSupportInitialRequestId] = useState<string | null>(null);
+  const [unreadSupportReplies, setUnreadSupportReplies] = useState<SupportHistoryItem[]>([]);
+  const [supportBannerDismissed, setSupportBannerDismissed] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const [activeView, setActiveView] = useState<"studio" | "admin">(() =>
@@ -253,6 +260,28 @@ export default function App() {
     }
     triggerFeatureDiscovery(activeModule);
   }, [activeModule, activeView, activeProject, showWelcomeTour, currentUser, triggerFeatureDiscovery]);
+
+  // Fetch unread resolved Assistance replies for the logged-in user
+  useEffect(() => {
+    if (!currentUser) {
+      setUnreadSupportReplies([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .listMyUpdateRequests()
+      .then((rows) => {
+        if (cancelled) return;
+        const seen = getSeenSupportIds();
+        const unread = rows.filter((r) => r.resolved && Boolean(r.resolution_note) && !seen.has(r.id));
+        setUnreadSupportReplies(unread);
+        if (unread.length > 0) setSupportBannerDismissed(false);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [currentUser]);
 
   // Automatically report any runtime error ONCE when `error` itself changes
   // (never re-report the same stale banner when switching sections or updating user profile)
@@ -1039,16 +1068,26 @@ export default function App() {
             {/* Subtle top-bar Technical/Document Assistance button (separate from AI tools) */}
             <button
               type="button"
-              onClick={() => setShowSupportModal(true)}
-              className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50/80 px-2.5 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-100"
+              onClick={() => {
+                setSupportInitialRequestId(
+                  unreadSupportReplies.length > 0 ? unreadSupportReplies[0].id : null
+                );
+                setShowSupportModal(true);
+              }}
+              className="relative inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50/80 px-2.5 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-100"
               title={
                 lang === "en"
-                  ? "Request a document adjustment or technical assistance"
-                  : "Demander un ajustement sur votre document ou une assistance technique"
+                  ? "Request a document adjustment or view team responses"
+                  : "Demander un ajustement sur votre document ou voir les réponses de l'équipe"
               }
             >
               <LifeBuoy className="h-3.5 w-3.5" />
               <span>{lang === "en" ? "Support" : "Assistance"}</span>
+              {unreadSupportReplies.length > 0 && (
+                <span className="ml-0.5 inline-flex h-4 min-w-[16px] items-center justify-center rounded-full bg-emerald-600 px-1 text-[10px] font-bold text-white">
+                  {unreadSupportReplies.length}
+                </span>
+              )}
             </button>
 
             {/* User Badge & Account Actions */}
@@ -1289,6 +1328,45 @@ export default function App() {
           </div>
         )}
       </header>
+
+      {/* Clickable Emerald Notification Banner when Smart Research Team has replied */}
+      {unreadSupportReplies.length > 0 && !supportBannerDismissed && activeView === "studio" && (
+        <div className="mx-auto mt-2 flex max-w-[1600px] flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-300 bg-emerald-50/95 px-4 py-2 text-xs text-emerald-950 shadow-xs">
+          <div className="flex items-center gap-2">
+            <LifeBuoy className="h-4 w-4 shrink-0 text-emerald-700" />
+            <span>
+              {lang === "en" ? (
+                <>
+                  <strong>Smart Research Team replied</strong> to your assistance request.
+                </>
+              ) : (
+                <>
+                  <strong>L&apos;équipe Smart Research a répondu</strong> à votre demande d&apos;assistance.
+                </>
+              )}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setSupportInitialRequestId(unreadSupportReplies[0].id);
+                setShowSupportModal(true);
+              }}
+              className="rounded-lg bg-emerald-600 px-3 py-1 text-[11px] font-bold text-white hover:bg-emerald-700"
+            >
+              {lang === "en" ? "View response →" : "Voir la réponse →"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setSupportBannerDismissed(true)}
+              className="rounded-lg px-2 py-1 text-[11px] font-medium text-emerald-800 hover:bg-emerald-100"
+            >
+              {lang === "en" ? "Later" : "Plus tard"}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Always-Visible Floating Viewport Error / Warning Banner (no scrolling needed) */}
       {error && (() => {
@@ -1893,7 +1971,10 @@ export default function App() {
 
       <SupportRequestModal
         open={showSupportModal}
-        onClose={() => setShowSupportModal(false)}
+        onClose={() => {
+          setShowSupportModal(false);
+          setSupportInitialRequestId(null);
+        }}
         lang={lang}
         projectId={activeProject?.project_id}
         projectName={activeProject?.cover?.title || activeProject?.name}
@@ -1905,6 +1986,11 @@ export default function App() {
             : canvas
           ).find((c) => c.id === selectedSectionId)?.title || selectedSectionId
         }
+        initialRequestId={supportInitialRequestId}
+        onMarkedRead={() => {
+          const seen = getSeenSupportIds();
+          setUnreadSupportReplies((prev) => prev.filter((r) => !seen.has(r.id)));
+        }}
       />
 
       {showPasswordModal && (

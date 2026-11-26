@@ -1328,7 +1328,7 @@ def resolve_admin_update_request(
         raise HTTPException(status_code=404, detail="Demande introuvable.")
 
     now = utcnow()
-    note = str((payload or {}).get("note") or "").strip()[:300]
+    note = str((payload or {}).get("note") or "").strip()[:6000]
     td = target.details_json or {}
     store.create_audit_log(
         admin_id=current_admin.id,
