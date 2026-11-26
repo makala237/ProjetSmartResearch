@@ -1241,24 +1241,28 @@ def _render_crf_form_in_docx(
     date_segs = ["D", "D", "/", "M", "M", "/", "2", "0", "Y", "Y"] if is_en else ["J", "J", "/", "M", "M", "/", "2", "0", "A", "A"]
     _append_segmented_boxes_in_cell(doc, c_date, date_segs, fmt, box_w_cm=0.42)
 
-    # Row 2: Hospital sites with drawn checkboxes + Autre fill-in
-    c_hosp = hdr_tbl.rows[2].cells[0].merge(hdr_tbl.rows[2].cells[1])
-    c_hosp.width = Cm(16.0)
+    # Row 2: Standard blank Collection Site / Institution | Department / Unit (never auto-guess Yes/No sites)
+    c_hosp = hdr_tbl.rows[2].cells[0]
+    c_hosp.width = Cm(9.5)
     _set_cell_margins(c_hosp, top=70, bottom=70, left=100, right=100)
     p_hosp = c_hosp.paragraphs[0]
     p_hosp.paragraph_format.space_before = Pt(0)
     p_hosp.paragraph_format.space_after = Pt(2)
-    rh = p_hosp.add_run("Hospital / Inclusion Site:   " if is_en else "Hôpital / Site d'inclusion :   ")
+    rh = p_hosp.add_run("Collection Site / Institution: " if is_en else "Site de collecte / Établissement : ")
     _apply_run_font(rh, fmt, size_pt=9.5, bold=True, color_rgb=accent_rgb)
-    for site in ann.get("hospital_sites") or ["HGOPY", "HCBY", "HGY"]:
-        _append_inline_checkbox(p_hosp, str(site), cb_png, fmt, size_pt=9.5)
-    _append_inline_checkbox(
-        p_hosp,
-        "Other (specify): _______________" if is_en else "Autre (préciser) : _______________",
-        cb_png,
-        fmt,
-        size_pt=9.5,
-    )
+    rh_blank = p_hosp.add_run("___________________________")
+    _apply_run_font(rh_blank, fmt, size_pt=9.5, color_rgb=RGBColor(71, 85, 105))
+
+    c_unit = hdr_tbl.rows[2].cells[1]
+    c_unit.width = Cm(6.5)
+    _set_cell_margins(c_unit, top=70, bottom=70, left=100, right=100)
+    p_unit = c_unit.paragraphs[0]
+    p_unit.paragraph_format.space_before = Pt(0)
+    p_unit.paragraph_format.space_after = Pt(2)
+    ru = p_unit.add_run("Department / Unit: " if is_en else "Service / Unité : ")
+    _apply_run_font(ru, fmt, size_pt=9.5, bold=True, color_rgb=accent_rgb)
+    ru_blank = p_unit.add_run("____________________")
+    _apply_run_font(ru_blank, fmt, size_pt=9.5, color_rgb=RGBColor(71, 85, 105))
 
     # Row 3: Investigator
     c_inv = hdr_tbl.rows[3].cells[0].merge(hdr_tbl.rows[3].cells[1])
@@ -1391,7 +1395,619 @@ def _render_crf_form_in_docx(
         cursor.paragraph_format.space_before = Pt(0)
         cursor.paragraph_format.space_after = Pt(4)
 
+    # 4. Investigator verification & signature footer box
+    sig_tbl = doc.add_table(rows=1, cols=2)
+    sig_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+    sig_tbl.autofit = False
+    _set_table_borders_clean(sig_tbl, border_color="94A3B8")
+    _set_cell_shading(sig_tbl.rows[0].cells[0], "F8FAFC")
+    _set_cell_shading(sig_tbl.rows[0].cells[1], "F8FAFC")
+    sig_tbl.rows[0].cells[0].width = Cm(8.5)
+    sig_tbl.rows[0].cells[1].width = Cm(7.5)
+    _set_cell_margins(sig_tbl.rows[0].cells[0], top=80, bottom=80, left=100, right=100)
+    _set_cell_margins(sig_tbl.rows[0].cells[1], top=80, bottom=80, left=100, right=100)
+
+    ps0 = sig_tbl.rows[0].cells[0].paragraphs[0]
+    ps0.paragraph_format.space_before = Pt(0)
+    ps0.paragraph_format.space_after = Pt(2)
+    rs0 = ps0.add_run(
+        "Investigator Verification\n" if is_en else "Validation de l'enquêteur\n"
+    )
+    _apply_run_font(rs0, fmt, size_pt=9.0, bold=True, color_rgb=accent_rgb)
+    rs0b = ps0.add_run(
+        "Date: ____ / ____ / 20____" if is_en else "Date : ____ / ____ / 20____"
+    )
+    _apply_run_font(rs0b, fmt, size_pt=9.0, color_rgb=RGBColor(51, 65, 85))
+
+    ps1 = sig_tbl.rows[0].cells[1].paragraphs[0]
+    ps1.paragraph_format.space_before = Pt(0)
+    ps1.paragraph_format.space_after = Pt(2)
+    rs1 = ps1.add_run(
+        "Investigator Signature:\n\n____________________________"
+        if is_en
+        else "Signature de l'enquêteur :\n\n____________________________"
+    )
+    _apply_run_font(rs1, fmt, size_pt=9.0, bold=True, color_rgb=RGBColor(51, 65, 85))
+
+    cursor._p.addnext(sig_tbl._tbl)
+    end_sp = OxmlElement("w:p")
+    sig_tbl._tbl.addnext(end_sp)
+    cursor = doc.paragraphs[0].__class__(end_sp, cursor._parent)
+    cursor.paragraph_format.space_before = Pt(0)
+    cursor.paragraph_format.space_after = Pt(4)
+
     return cursor
+
+
+def _hex_to_rgb(hex_color: str) -> RGBColor:
+    """Safely convert a 6-digit hex color string into python-docx RGBColor."""
+    clean = re.sub(r"[^0-9A-Fa-f]", "", (hex_color or "").strip())
+    if len(clean) != 6:
+        clean = "6C2826"
+    return RGBColor.from_string(clean.upper())
+
+
+def _set_table_borders_clean(tbl, border_color: str = "CBD5E1") -> None:
+    """Apply clean single-line borders with a subtle inner grid to a Word form table."""
+    clean_hex = re.sub(r"[^0-9A-Fa-f]", "", (border_color or "CBD5E1").strip())
+    if len(clean_hex) != 6:
+        clean_hex = "CBD5E1"
+    tbl_pr = tbl._tbl.tblPr
+    existing = tbl_pr.find(qn("w:tblBorders"))
+    if existing is not None:
+        tbl_pr.remove(existing)
+    tbl_pr.append(
+        parse_xml(
+            f'<w:tblBorders {nsdecls("w")}>'
+            f'<w:top w:val="single" w:sz="8" w:space="0" w:color="{clean_hex}"/>'
+            f'<w:left w:val="single" w:sz="8" w:space="0" w:color="{clean_hex}"/>'
+            f'<w:bottom w:val="single" w:sz="8" w:space="0" w:color="{clean_hex}"/>'
+            f'<w:right w:val="single" w:sz="8" w:space="0" w:color="{clean_hex}"/>'
+            '<w:insideH w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
+            '<w:insideV w:val="single" w:sz="4" w:space="0" w:color="CBD5E1"/>'
+            "</w:tblBorders>"
+        )
+    )
+
+
+def _set_table_borders_none(tbl) -> None:
+    """Remove all visible borders from a Word layout table (for administrative letters)."""
+    tbl_pr = tbl._tbl.tblPr
+    borders = tbl_pr.find(qn("w:tblBorders"))
+    if borders is not None:
+        tbl_pr.remove(borders)
+    borders = OxmlElement("w:tblBorders")
+    for side in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        el = OxmlElement(f"w:{side}")
+        el.set(qn("w:val"), "none")
+        el.set(qn("w:sz"), "0")
+        el.set(qn("w:space"), "0")
+        el.set(qn("w:color"), "auto")
+        borders.append(el)
+    tbl_pr.append(borders)
+
+
+def _render_administrative_letter_in_docx(
+    doc: Document,
+    cursor,
+    ann: Dict[str, Any],
+    fmt: FormattingRules,
+    lang: str = "fr",
+):
+    """Render any request annex (autorisation, clairance éthique, etc.) using official Francophone administrative letter layout."""
+    is_en = normalize_lang(lang) == "en"
+    ctx = ann.get("admin_ctx") if isinstance(ann.get("admin_ctx"), dict) else {}
+    accent_hex = (fmt.border_color or "#6C2826").lstrip("#")
+    accent_rgb = _hex_to_rgb(accent_hex)
+
+    raw_lines: List[str] = []
+    for p_txt in ann.get("paragraphs") or []:
+        for ln in str(p_txt or "").splitlines():
+            s = re.sub(r"\*\*|__|(?<!\*)\*(?!\*)", "", ln).strip()
+            if s and s not in ("---", "***", "___"):
+                raw_lines.append(s)
+
+    # Extract structured letter components dynamically from text (with clean fallback to admin_ctx)
+    date_line = ""
+    recipient_lines: List[str] = []
+    subject_line = ""
+    attachments_line = ""
+    salutation_line = ""
+    body_paragraphs: List[str] = []
+    in_recipient = False
+    in_body = False
+    in_signature = False
+
+    for ln in raw_lines:
+        low = ln.lower()
+        if re.match(r"^(?:annexe|appendix)\s+\d+", low):
+            continue
+        if not in_body and (
+            re.match(r"^(?:fait\s+[àa]\s+|yaound[ée]|douala|garoua|buea|bu[ée]a|bamenda|dschang|maroua|ngaound[ée]r[ée]|\[ville\]|\[city\]).*,\s*le\s+", low)
+            or re.match(r"^(?:date\s*:|le\s+_{2,})", low)
+        ):
+            date_line = ln
+            in_recipient = False
+            continue
+        if not in_body and re.match(r"^(?:objet\s*:|subject\s*:)", low):
+            subject_line = ln
+            in_recipient = False
+            continue
+        if not in_body and re.match(r"^(?:p\.?\s*j\.?\s*:|pi[èe]ces?\s+jointes?\s*:|attachments?\s*:|enclosures?\s*:)", low):
+            attachments_line = ln
+            in_recipient = False
+            continue
+        if not in_body and re.match(
+            r"^(?:[àa]\s*$|à\s+(?:monsieur|madame|m\.|mme|pr|dr)|to\s*:|monsieur\s+le\s+|madame\s+la\s+|the\s+(?:dean|director|chair))",
+            low,
+        ):
+            # Distinguish recipient line vs salutation ending with comma
+            if ln.endswith(",") and not low.startswith(("à ", "a ", "to:")):
+                salutation_line = ln
+                in_body = True
+                in_recipient = False
+            else:
+                recipient_lines.append(ln)
+                in_recipient = True
+            continue
+        if in_recipient and not in_body and len(ln) <= 90 and not ln.endswith("."):
+            recipient_lines.append(ln)
+            continue
+        if not in_body and ln.endswith(",") and len(ln) <= 70 and re.match(
+            r"^(?:monsieur|madame|madame,\s*monsieur|dear\s+|ch[èe]r)", low
+        ):
+            salutation_line = ln
+            in_body = True
+            in_recipient = False
+            continue
+        if in_body and re.match(
+            r"^(?:signature|l['’]investigateur|le\s+candidat|l['’][ée]tudiant|visa\s+du|sincerely|respectfully|the\s+principal\s+investigator)",
+            low,
+        ):
+            in_signature = True
+            continue
+        if in_signature:
+            continue
+        # Skip duplicate sender metadata lines at top if before body (rendered cleanly in top-left block)
+        if not in_body and not subject_line and len(ln) <= 75 and any(
+            k in low for k in ("matricule", "tél", "tel:", "email", "e-mail", "faculté", "université", "étudiant", "student", "faculty", "university")
+        ):
+            continue
+        in_body = True
+        body_paragraphs.append(ln)
+
+    # Defaults from project cover metadata if omitted in text
+    author_name = str(ctx.get("author_name") or ("[Full Name]" if is_en else "[Nom et Prénom]"))
+    faculty_name = str(ctx.get("faculty_name") or "")
+    university_name = str(ctx.get("university_name") or "")
+    matricule = str(ctx.get("matricule") or "")
+    phone = str(ctx.get("student_phone") or "")
+    email = str(ctx.get("student_email") or "")
+    student_level = str(ctx.get("student_level") or ("Medical Student" if is_en else "Étudiant(e) en Médecine"))
+    city = str(ctx.get("city") or ("Yaoundé" if not is_en else "[City]"))
+    director = str(ctx.get("director") or "")
+
+    if not date_line:
+        date_line = f"{city}, ____ / ____ / 20____" if is_en else f"{city}, le ____ / ____ / 20____"
+    if not recipient_lines:
+        sid = str(ann.get("section_id") or "")
+        if "clairance" in sid or "ethic" in str(ann.get("title") or "").lower():
+            recipient_lines = [
+                "To:" if is_en else "À",
+                "The Chairperson," if is_en else "Monsieur le Président du",
+                str(ctx.get("ethics_committee") or ("Institutional Research Ethics Committee" if is_en else "Comité Institutionnel d'Éthique et de la Recherche")),
+                city,
+            ]
+        else:
+            recipient_lines = [
+                "To:" if is_en else "À",
+                str(ctx.get("faculty_head_recipient") or ("The Director / Medical Superintendent" if is_en else "Monsieur le Directeur de l'Établissement d'accueil")),
+                city,
+            ]
+    if not subject_line:
+        clean_t = re.sub(r"^(?:ANNEXE|APPENDIX)\s+\d+\s*[:\-–.]\s*", "", str(ann.get("title") or ""), flags=re.IGNORECASE).strip()
+        subject_line = f"{'Subject:' if is_en else 'Objet :'} {clean_t or ('Research Authorization Request' if is_en else 'Demande d’autorisation de recherche')}"
+
+    # 1. Top 2-column borderless table: Expéditeur (top-left) | Lieu & Date (top-right)
+    top_tbl = doc.add_table(rows=1, cols=2)
+    top_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+    top_tbl.autofit = False
+    _set_table_borders_none(top_tbl)
+    c_left, c_right = top_tbl.rows[0].cells[0], top_tbl.rows[0].cells[1]
+    c_left.width = Cm(9.5)
+    c_right.width = Cm(6.5)
+    _set_cell_margins(c_left, top=40, bottom=40, left=20, right=60)
+    _set_cell_margins(c_right, top=40, bottom=40, left=60, right=20)
+
+    p_exp = c_left.paragraphs[0]
+    p_exp.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p_exp.paragraph_format.space_before = Pt(0)
+    p_exp.paragraph_format.space_after = Pt(2)
+    p_exp.paragraph_format.line_spacing = 1.15
+    r_name = p_exp.add_run(f"{author_name}\n")
+    _apply_run_font(r_name, fmt, size_pt=11, bold=True)
+    sender_details = [student_level]
+    if faculty_name:
+        sender_details.append(faculty_name)
+    if university_name:
+        sender_details.append(university_name)
+    if matricule:
+        sender_details.append(f"{'Reg. No.:' if is_en else 'Matricule :'} {matricule}")
+    contact_bits = [b for b in (f"Tél : {phone}" if phone else "", f"Email : {email}" if email else "") if b]
+    if contact_bits:
+        sender_details.append(" | ".join(contact_bits))
+    r_det = p_exp.add_run("\n".join(sender_details))
+    _apply_run_font(r_det, fmt, size_pt=10, color_rgb=RGBColor(30, 41, 59))
+
+    p_dt = c_right.paragraphs[0]
+    p_dt.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p_dt.paragraph_format.space_before = Pt(0)
+    p_dt.paragraph_format.space_after = Pt(0)
+    r_dt = p_dt.add_run(date_line)
+    _apply_run_font(r_dt, fmt, size_pt=11, italic=False)
+
+    cursor._p.addnext(top_tbl._tbl)
+
+    # 2. Right-offset Destinataire block (2-column borderless table: empty left 7.5cm | recipient right 8.5cm)
+    dest_tbl = doc.add_table(rows=1, cols=2)
+    dest_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+    dest_tbl.autofit = False
+    _set_table_borders_none(dest_tbl)
+    d_empty, d_box = dest_tbl.rows[0].cells[0], dest_tbl.rows[0].cells[1]
+    d_empty.width = Cm(7.5)
+    d_box.width = Cm(8.5)
+    _set_cell_margins(d_box, top=80, bottom=80, left=60, right=20)
+    p_dest = d_box.paragraphs[0]
+    p_dest.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p_dest.paragraph_format.space_before = Pt(6)
+    p_dest.paragraph_format.space_after = Pt(6)
+    p_dest.paragraph_format.line_spacing = 1.15
+    for idx_r, r_ln in enumerate(recipient_lines):
+        run_r = p_dest.add_run(r_ln + ("\n" if idx_r < len(recipient_lines) - 1 else ""))
+        _apply_run_font(run_r, fmt, size_pt=11, bold=(idx_r <= 1))
+
+    top_tbl._tbl.addnext(dest_tbl._tbl)
+    last_el = dest_tbl._tbl
+
+    def _add_letter_p(text_val: str, bold: bool = False, italic: bool = False, align=WD_ALIGN_PARAGRAPH.LEFT, first_indent_cm: float = 0.0, space_before: float = 4.0, space_after: float = 6.0):
+        nonlocal last_el
+        np = OxmlElement("w:p")
+        last_el.addnext(np)
+        po = doc.paragraphs[0].__class__(np, cursor._parent)
+        _apply_paragraph_rules(po, fmt, align_override=align)
+        po.paragraph_format.space_before = Pt(space_before)
+        po.paragraph_format.space_after = Pt(space_after)
+        if first_indent_cm > 0:
+            po.paragraph_format.first_line_indent = Cm(first_indent_cm)
+        run_p = po.add_run(text_val)
+        _apply_run_font(run_p, fmt, size_pt=fmt.body_font_size_pt, bold=bold, italic=italic)
+        last_el = np
+        return po
+
+    # 3. Bold Objet & P.J.
+    _add_letter_p(subject_line, bold=True, space_before=8.0, space_after=4.0)
+    if attachments_line:
+        _add_letter_p(attachments_line, italic=True, space_before=0.0, space_after=8.0)
+
+    # 4. Formal Salutation
+    if salutation_line:
+        _add_letter_p(salutation_line, bold=False, first_indent_cm=0.75, space_before=6.0, space_after=6.0)
+
+    # 5. Justified Body Paragraphs
+    for bp_txt in body_paragraphs:
+        _add_letter_p(
+            bp_txt,
+            align=WD_ALIGN_PARAGRAPH.JUSTIFY if fmt.text_align == "justify" else WD_ALIGN_PARAGRAPH.LEFT,
+            first_indent_cm=0.75,
+            space_before=2.0,
+            space_after=6.0,
+        )
+
+    # 6. Bottom 2-column Signature Table (left: Visa du Directeur | right: L'Investigateur / Signature)
+    sig_tbl = doc.add_table(rows=1, cols=2)
+    sig_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+    sig_tbl.autofit = False
+    _set_table_borders_none(sig_tbl)
+    s_left, s_right = sig_tbl.rows[0].cells[0], sig_tbl.rows[0].cells[1]
+    s_left.width = Cm(8.0)
+    s_right.width = Cm(8.0)
+    _set_cell_margins(s_left, top=140, bottom=40, left=20, right=40)
+    _set_cell_margins(s_right, top=140, bottom=40, left=40, right=20)
+
+    psl = s_left.paragraphs[0]
+    psl.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    psl.paragraph_format.space_before = Pt(8)
+    if director:
+        rl1 = psl.add_run(("Supervisor's Endorsement\n\n\n" if is_en else "Visa du Directeur de Thèse / Mémoire\n\n\n"))
+        _apply_run_font(rl1, fmt, size_pt=10.5, bold=True, color_rgb=accent_rgb)
+        rl2 = psl.add_run(director)
+        _apply_run_font(rl2, fmt, size_pt=10.5)
+
+    psr = s_right.paragraphs[0]
+    psr.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    psr.paragraph_format.space_before = Pt(8)
+    rr1 = psr.add_run(("The Principal Investigator / Applicant\n\n\n" if is_en else "L'Investigateur principal / Le Candidat\n\n\n"))
+    _apply_run_font(rr1, fmt, size_pt=10.5, bold=True, color_rgb=accent_rgb)
+    rr2 = psr.add_run(f"{author_name}")
+    _apply_run_font(rr2, fmt, size_pt=11, bold=True)
+
+    last_el.addnext(sig_tbl._tbl)
+    end_p = OxmlElement("w:p")
+    sig_tbl._tbl.addnext(end_p)
+    return doc.paragraphs[0].__class__(end_p, cursor._parent)
+
+
+def _render_structured_form_in_docx(
+    doc: Document,
+    cursor,
+    ann: Dict[str, Any],
+    fmt: FormattingRules,
+    lang: str = "fr",
+):
+    """Render any form annex (consentement éclairé, notice, confidentialité, engagement) with WHO/CIER-FMSB layout."""
+    is_en = normalize_lang(lang) == "en"
+    ctx = ann.get("admin_ctx") if isinstance(ann.get("admin_ctx"), dict) else {}
+    accent_hex = (fmt.border_color or "#6C2826").lstrip("#")
+    accent_rgb = _hex_to_rgb(accent_hex)
+    cb_png = get_crf_checkbox_png_bytes(checked=False)
+
+    sid = str(ann.get("section_id") or "").lower()
+    raw_title = re.sub(r"^(?:ANNEXE|APPENDIX)\s+\d+\s*[:\-–.]\s*", "", str(ann.get("title") or ""), flags=re.IGNORECASE).strip()
+    is_consent = sid == "annexe_consentement" or "consent" in raw_title.lower()
+    is_notice = sid == "annexe_notice_information" or "notice" in raw_title.lower() or "information sheet" in raw_title.lower()
+
+    # 1. Official Framed Form Header Box
+    hdr_tbl = doc.add_table(rows=2, cols=1)
+    hdr_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+    hdr_tbl.autofit = False
+    _set_table_borders_clean(hdr_tbl, border_color=accent_hex)
+    c0 = hdr_tbl.rows[0].cells[0]
+    c0.width = Cm(16.0)
+    _set_cell_shading(c0, "FDF8F8")
+    _set_cell_margins(c0, top=90, bottom=90, left=120, right=120)
+    p0 = c0.paragraphs[0]
+    p0.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p0.paragraph_format.space_before = Pt(0)
+    p0.paragraph_format.space_after = Pt(2)
+    inst_line = " — ".join(x for x in (ctx.get("university_name"), ctx.get("faculty_name")) if x)
+    if inst_line:
+        r_inst = p0.add_run(f"{inst_line}\n")
+        _apply_run_font(r_inst, fmt, size_pt=9.0, bold=True, color_rgb=RGBColor(71, 85, 105))
+    r_ft = p0.add_run((raw_title or ("STANDARD RESEARCH FORM" if is_en else "FORMULAIRE OFFICIEL DE RECHERCHE")).upper())
+    _apply_run_font(r_ft, fmt, size_pt=11.5, bold=True, color_rgb=accent_rgb)
+
+    c1 = hdr_tbl.rows[1].cells[0]
+    c1.width = Cm(16.0)
+    _set_cell_margins(c1, top=60, bottom=60, left=120, right=120)
+    p1 = c1.paragraphs[0]
+    p1.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p1.paragraph_format.space_before = Pt(0)
+    p1.paragraph_format.space_after = Pt(0)
+    p1.paragraph_format.line_spacing = 1.15
+    study_title = str(ctx.get("study_title") or "")
+    author_name = str(ctx.get("author_name") or "")
+    ethics_comm = str(ctx.get("ethics_committee") or "")
+    if study_title:
+        r_sl = p1.add_run(("Study Title: " if is_en else "Titre de l'étude : "))
+        _apply_run_font(r_sl, fmt, size_pt=9.5, bold=True, color_rgb=accent_rgb)
+        r_sv = p1.add_run(f"{study_title}\n")
+        _apply_run_font(r_sv, fmt, size_pt=9.5)
+    if author_name:
+        r_al = p1.add_run(("Principal Investigator: " if is_en else "Investigateur principal : "))
+        _apply_run_font(r_al, fmt, size_pt=9.5, bold=True, color_rgb=accent_rgb)
+        r_av = p1.add_run(f"{author_name}" + (f"  |  {ethics_comm}" if ethics_comm else ""))
+        _apply_run_font(r_av, fmt, size_pt=9.5)
+
+    cursor._p.addnext(hdr_tbl._tbl)
+    last_el = hdr_tbl._tbl
+
+    # 2. Separate body lines vs checklist/attestation items (rendered in a crisp Yes/No checkbox table)
+    checklist_items: List[str] = []
+    body_blocks: List[Tuple[str, str]] = []  # ("heading" | "para", text)
+    skip_sig_tail = False
+
+    for p_txt in ann.get("paragraphs") or []:
+        for ln in str(p_txt or "").splitlines():
+            clean = re.sub(r"\*\*|__|(?<!\*)\*(?!\*)", "", ln).strip()
+            if not clean or clean in ("---", "***", "___"):
+                continue
+            low = clean.lower()
+            if re.match(r"^(?:annexe|appendix)\s+\d+", low):
+                continue
+            if re.match(r"^(?:signature|fait\s+[àa]\s+|date\s*:\s*_{2,}|nom\s+et\s+pr[ée]nom\s+du\s+participant|t[ée]moin\s+impartial)", low) and not is_notice:
+                skip_sig_tail = True
+                continue
+            if skip_sig_tail and ("___" in clean or "..." in clean or len(clean) < 55):
+                continue
+            skip_sig_tail = False
+
+            if re.match(r"^(?:[-*•]\s*)?(?:☐|☑|\[\s*\])\s+", clean):
+                stmt = re.sub(r"^(?:[-*•]\s*)?(?:☐|☑|\[\s*\])\s+", "", clean).strip()
+                if stmt:
+                    checklist_items.append(stmt)
+                continue
+            if clean.startswith("#") or (
+                len(clean) <= 85
+                and not clean.endswith((".", ";"))
+                and re.match(r"^(?:\d+[.)]\s+|[A-Z][.)]\s+|SECTION\s+|PARTIE\s+|D[ÉE]CLARATION)", clean, re.IGNORECASE)
+            ):
+                body_blocks.append(("heading", clean.lstrip("# ").strip()))
+            else:
+                body_blocks.append(("para", clean))
+
+    for kind_b, txt_b in body_blocks:
+        np = OxmlElement("w:p")
+        last_el.addnext(np)
+        po = doc.paragraphs[0].__class__(np, cursor._parent)
+        is_h = kind_b == "heading"
+        _apply_paragraph_rules(
+            po,
+            fmt,
+            align_override=WD_ALIGN_PARAGRAPH.LEFT if is_h else (WD_ALIGN_PARAGRAPH.JUSTIFY if fmt.text_align == "justify" else WD_ALIGN_PARAGRAPH.LEFT),
+        )
+        po.paragraph_format.space_before = Pt(7 if is_h else 2)
+        po.paragraph_format.space_after = Pt(3 if is_h else 5)
+        r_b = po.add_run(txt_b)
+        _apply_run_font(r_b, fmt, size_pt=fmt.body_font_size_pt, bold=is_h, color_rgb=accent_rgb if is_h else None)
+        last_el = np
+
+    # 3. Render Attestation Checkbox Table (Oui / Non) if checklist items exist (or default WHO consent checklist)
+    if not checklist_items and is_consent:
+        checklist_items = (
+            [
+                "I have read (or had read to me) the Information Sheet and understood the objectives and procedures of the study.",
+                "I had the opportunity to ask questions and received clear and satisfactory answers.",
+                "I understand that my participation is completely voluntary and that I may withdraw at any time without affecting my medical care.",
+                "I freely agree to participate in this research study.",
+            ]
+            if is_en
+            else [
+                "J'ai lu (ou on m'a lu) la notice d'information et j'ai compris les objectifs et le déroulement de l'étude.",
+                "J'ai eu l'occasion de poser toutes mes questions et j'ai reçu des réponses claires et satisfaisantes.",
+                "Je comprends que ma participation est entièrement libre et que je peux me retirer à tout moment sans conséquence sur mes soins.",
+                "J'accepte librement et volontairement de participer à cette étude.",
+            ]
+        )
+
+    if checklist_items:
+        chk_tbl = doc.add_table(rows=1 + len(checklist_items), cols=3)
+        chk_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+        chk_tbl.autofit = False
+        _set_table_borders_clean(chk_tbl, border_color="CBD5E1")
+        col_ws = [Cm(12.2), Cm(1.9), Cm(1.9)]
+        hdr_lbls = (
+            ["Attestation / Statement", "Yes", "No"]
+            if is_en
+            else ["Déclaration / Critère d'accord", "Oui", "Non"]
+        )
+        for ci, h_txt in enumerate(hdr_lbls):
+            cell = chk_tbl.rows[0].cells[ci]
+            cell.width = col_ws[ci]
+            _set_cell_shading(cell, accent_hex)
+            _set_cell_margins(cell, top=60, bottom=60, left=80, right=80)
+            ph = cell.paragraphs[0]
+            ph.alignment = WD_ALIGN_PARAGRAPH.LEFT if ci == 0 else WD_ALIGN_PARAGRAPH.CENTER
+            ph.paragraph_format.space_before = Pt(0)
+            ph.paragraph_format.space_after = Pt(0)
+            rh = ph.add_run(h_txt)
+            _apply_run_font(rh, fmt, size_pt=9.5, bold=True, color_rgb=RGBColor(255, 255, 255))
+
+        for r_idx, stmt in enumerate(checklist_items, start=1):
+            row_cells = chk_tbl.rows[r_idx].cells
+            if r_idx % 2 == 0:
+                for rc in row_cells:
+                    _set_cell_shading(rc, "F8FAFC")
+            for ci, rc in enumerate(row_cells):
+                rc.width = col_ws[ci]
+                _set_cell_margins(rc, top=55, bottom=55, left=80, right=80)
+            p_st = row_cells[0].paragraphs[0]
+            p_st.paragraph_format.space_before = Pt(0)
+            p_st.paragraph_format.space_after = Pt(0)
+            rst = p_st.add_run(f"{r_idx}. {stmt}")
+            _apply_run_font(rst, fmt, size_pt=9.5)
+            for ci in (1, 2):
+                p_cb = row_cells[ci].paragraphs[0]
+                p_cb.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                p_cb.paragraph_format.space_before = Pt(0)
+                p_cb.paragraph_format.space_after = Pt(0)
+                _append_inline_checkbox(p_cb, "", cb_png, fmt, size_pt=9.5)
+
+        last_el.addnext(chk_tbl._tbl)
+        last_el = chk_tbl._tbl
+
+    # 4. Official Framed Signature Block Table (for all forms except pure info notice)
+    if not is_notice:
+        sp_sig = OxmlElement("w:p")
+        last_el.addnext(sp_sig)
+        last_el = sp_sig
+
+        n_rows = 2 if is_consent else 1
+        sig_tbl = doc.add_table(rows=n_rows, cols=2)
+        sig_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+        sig_tbl.autofit = False
+        _set_table_borders_clean(sig_tbl, border_color=accent_hex)
+
+        c_l, c_r = sig_tbl.rows[0].cells[0], sig_tbl.rows[0].cells[1]
+        c_l.width = Cm(8.0)
+        c_r.width = Cm(8.0)
+        _set_cell_margins(c_l, top=80, bottom=80, left=100, right=100)
+        _set_cell_margins(c_r, top=80, bottom=80, left=100, right=100)
+
+        pl = c_l.paragraphs[0]
+        pl.paragraph_format.space_before = Pt(0)
+        pl.paragraph_format.space_after = Pt(2)
+        pl.paragraph_format.line_spacing = 1.25
+        if is_consent:
+            r_lt = pl.add_run("Participant / Legal Representative\n" if is_en else "Participant / Représentant légal\n")
+            _apply_run_font(r_lt, fmt, size_pt=10.0, bold=True, color_rgb=accent_rgb)
+            r_lb = pl.add_run(
+                "Full Name: _______________________\nDate: ____ / ____ / 20____\nSignature / Thumbprint:\n\n_______________________________"
+                if is_en
+                else "Nom & Prénom : ___________________\nDate : ____ / ____ / 20____\nSignature / Empreinte digitale :\n\n_______________________________"
+            )
+            _apply_run_font(r_lb, fmt, size_pt=9.5)
+        else:
+            r_lt = pl.add_run("Principal Investigator\n" if is_en else "Investigateur principal\n")
+            _apply_run_font(r_lt, fmt, size_pt=10.0, bold=True, color_rgb=accent_rgb)
+            r_lb = pl.add_run(
+                f"Name: {author_name or '_______________________'}\nDate: ____ / ____ / 20____\nSignature:\n\n_______________________________"
+                if is_en
+                else f"Nom : {author_name or '_______________________'}\nDate : ____ / ____ / 20____\nSignature :\n\n_______________________________"
+            )
+            _apply_run_font(r_lb, fmt, size_pt=9.5)
+
+        pr = c_r.paragraphs[0]
+        pr.paragraph_format.space_before = Pt(0)
+        pr.paragraph_format.space_after = Pt(2)
+        pr.paragraph_format.line_spacing = 1.25
+        if is_consent:
+            r_rt = pr.add_run("Principal Investigator\n" if is_en else "Investigateur principal\n")
+            _apply_run_font(r_rt, fmt, size_pt=10.0, bold=True, color_rgb=accent_rgb)
+            r_rb = pr.add_run(
+                f"Name: {author_name or '_______________________'}\nDate: ____ / ____ / 20____\nSignature:\n\n_______________________________"
+                if is_en
+                else f"Nom : {author_name or '_______________________'}\nDate : ____ / ____ / 20____\nSignature :\n\n_______________________________"
+            )
+            _apply_run_font(r_rb, fmt, size_pt=9.5)
+        else:
+            director_name = str(ctx.get("director") or "")
+            r_rt = pr.add_run("Thesis Supervisor / Endorsement\n" if is_en else "Directeur de Thèse / Visa\n")
+            _apply_run_font(r_rt, fmt, size_pt=10.0, bold=True, color_rgb=accent_rgb)
+            r_rb = pr.add_run(
+                f"Name: {director_name or '_______________________'}\nDate: ____ / ____ / 20____\nSignature:\n\n_______________________________"
+                if is_en
+                else f"Nom : {director_name or '_______________________'}\nDate : ____ / ____ / 20____\nSignature :\n\n_______________________________"
+            )
+            _apply_run_font(r_rb, fmt, size_pt=9.5)
+
+        if is_consent:
+            w_cell = sig_tbl.rows[1].cells[0].merge(sig_tbl.rows[1].cells[1])
+            w_cell.width = Cm(16.0)
+            _set_cell_shading(w_cell, "F8FAFC")
+            _set_cell_margins(w_cell, top=70, bottom=70, left=100, right=100)
+            pw = w_cell.paragraphs[0]
+            pw.paragraph_format.space_before = Pt(0)
+            pw.paragraph_format.space_after = Pt(0)
+            pw.paragraph_format.line_spacing = 1.2
+            r_wt = pw.add_run(
+                "Impartial Witness (if participant is unable to read or sign):   "
+                if is_en
+                else "Témoin impartial (si le participant ne peut lire ou signer) :   "
+            )
+            _apply_run_font(r_wt, fmt, size_pt=9.0, bold=True, color_rgb=accent_rgb)
+            r_wb = pw.add_run(
+                "Name: _______________________   |   Date: ____/____/20____   |   Signature: ______________________"
+                if is_en
+                else "Nom : _______________________   |   Date : ____/____/20____   |   Signature : ______________________"
+            )
+            _apply_run_font(r_wb, fmt, size_pt=9.0)
+
+        last_el.addnext(sig_tbl._tbl)
+        last_el = sig_tbl._tbl
+
+    end_p = OxmlElement("w:p")
+    last_el.addnext(end_p)
+    return doc.paragraphs[0].__class__(end_p, cursor._parent)
 
 
 _SECTPR_ORDER = [
@@ -2679,6 +3295,10 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             _set_paragraph_outline(cursor, 1)
             if ann.get("kind") == "data_collection":
                 cursor = _render_crf_form_in_docx(doc, cursor, ann, fmt, lang=lang)
+            elif ann.get("kind") == "request_letter":
+                cursor = _render_administrative_letter_in_docx(doc, cursor, ann, fmt, lang=lang)
+            elif ann.get("kind") == "ethics_form":
+                cursor = _render_structured_form_in_docx(doc, cursor, ann, fmt, lang=lang)
             else:
                 flat_lines: List[str] = []
                 for p_txt in ann["paragraphs"]:

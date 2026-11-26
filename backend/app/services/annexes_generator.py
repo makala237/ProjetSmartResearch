@@ -108,7 +108,7 @@ def parse_user_annexes_from_markdown(project: ProtocolProject, md: str) -> List[
                 }
             )
 
-    return annexes
+    return _attach_admin_context_to_annexes(project, annexes)
 
 
 def _build_data_collection_annex_entry(
@@ -173,6 +173,74 @@ def _build_data_collection_annex_entry(
         "study_title": title,
         "paragraphs": paragraphs or default_paras,
     }
+
+
+def classify_annex_kind(
+    section_id: str = "",
+    title: str = "",
+    paragraphs: Optional[List[str]] = None,
+) -> str:
+    """Classify any annex (built-in or custom) into 'data_collection', 'request_letter', 'ethics_form', or 'letter'."""
+    sid = (section_id or "").strip().lower()
+    t_low = (title or "").strip().lower()
+    body_sample = " ".join(str(p) for p in (paragraphs or [])[:8]).lower()
+
+    if sid == "annexe_fiche_collecte" or is_crf_annexe_content(title, body_sample):
+        return "data_collection"
+    if sid in ("annexe_autorisation_recherche", "annexe_clairance_ethique") or any(
+        k in t_low
+        for k in (
+            "demande",
+            "autorisation",
+            "clairance",
+            "request",
+            "authorization",
+            "clearance",
+            "lettre administrative",
+            "sollicitation",
+        )
+    ) or ("objet :" in body_sample or "objet:" in body_sample or "subject:" in body_sample):
+        return "request_letter"
+    if sid in (
+        "annexe_consentement",
+        "annexe_notice_information",
+        "annexe_confidentialite",
+        "annexe_engagement",
+    ) or any(
+        k in t_low
+        for k in (
+            "consentement",
+            "consent",
+            "formulaire",
+            "form",
+            "notice d'information",
+            "information sheet",
+            "confidentialit",
+            "confidentiality",
+            "engagement",
+            "commitment",
+            "déclaration",
+            "declaration",
+        )
+    ):
+        return "ethics_form"
+    return "letter"
+
+
+def _attach_admin_context_to_annexes(
+    project: ProtocolProject,
+    annexes: List[Dict[str, object]],
+) -> List[Dict[str, object]]:
+    ctx = resolve_faculty_admin_context(project)
+    for ann in annexes:
+        if ann.get("kind") != "data_collection":
+            ann["kind"] = classify_annex_kind(
+                section_id=str(ann.get("section_id") or ""),
+                title=str(ann.get("title") or ""),
+                paragraphs=ann.get("paragraphs") if isinstance(ann.get("paragraphs"), list) else [],
+            )
+            ann["admin_ctx"] = ctx
+    return annexes
 
 
 def _extract_heading_and_body_from_section(md: str, default_title: str) -> Tuple[str, List[str]]:
@@ -288,11 +356,11 @@ def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
             item_copy["number"] = len(combined) + 1
             combined.append(item_copy)
         if combined:
-            return combined
+            return _attach_admin_context_to_annexes(project, combined)
 
     if user_annexes:
         if has_crf_in_user_annexes:
-            return user_annexes
+            return _attach_admin_context_to_annexes(project, user_annexes)
         if crf_heading or crf_body or getattr(project.annexes_config, "include_data_collection_form", True):
             crf_entry = _build_data_collection_annex_entry(
                 project,
@@ -303,8 +371,8 @@ def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
             combined = [crf_entry] + user_annexes
             for idx_item, item in enumerate(combined, start=1):
                 item["number"] = idx_item
-            return combined
-        return user_annexes
+            return _attach_admin_context_to_annexes(project, combined)
+        return _attach_admin_context_to_annexes(project, user_annexes)
 
     ctx = resolve_faculty_admin_context(project)
     cfg = project.annexes_config
@@ -417,4 +485,4 @@ def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
         )
         idx += 1
 
-    return annexes
+    return _attach_admin_context_to_annexes(project, annexes)

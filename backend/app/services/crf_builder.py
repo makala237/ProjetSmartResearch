@@ -905,28 +905,40 @@ def draw_field_control_markdown(field: CRFFieldSpec) -> str:
 
 
 def render_crf_annexe1_markdown(project: ProtocolProject, header_title: str = "") -> str:
-    """Render Annexe Markdown using visual checkbox & fill-in box drawings."""
+    """Render Annexe Markdown using visual checkbox & fill-in box drawings (standard blank collection site)."""
     ensure_project_crf_fields(project)
-    sites = extract_hospital_sites_from_project(project)
-    author = project.cover.author_name or "[Nom de l'enquêteur]"
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    is_en = lang == "en"
+    author = project.cover.author_name or ("_________________________" if is_en else "_________________________")
     matricule = f" (Matricule : {project.cover.matricule})" if project.cover.matricule else ""
-    sites_boxes = "  ".join(f"☐ {s}" for s in sites) + "  ☐ Autre : ⟦________________⟧"
 
-    main_heading = header_title.strip() if header_title.strip() else "## ANNEXE 1 : FICHE DE COLLECTE DES DONNÉES"
+    main_heading = header_title.strip() if header_title.strip() else (
+        "## APPENDIX 1: DATA COLLECTION FORM (CRF)" if is_en else "## ANNEXE 1 : FICHE DE COLLECTE DES DONNÉES"
+    )
     if not main_heading.startswith("#"):
         main_heading = f"## {main_heading}"
 
-    lines = [
-        main_heading,
-        f"**Code participant :** ⟦  |  |  |  -  |  |  ⟧ | **Date de collecte :** ⟦  |  ⟧ / ⟦  |  ⟧ / ⟦ 2 | 0 |  |  ⟧",
-        f"**Hôpital d'inclusion :** {sites_boxes}",
-        f"**Nom de l'enquêteur :** {author}{matricule}",
-        "",
-    ]
+    lines = (
+        [
+            main_heading,
+            "**Participant ID:** ⟦  |  |  |  -  |  |  ⟧ | **Collection Date:** ⟦  |  ⟧ / ⟦  |  ⟧ / ⟦ 2 | 0 |  |  ⟧",
+            "**Collection Site / Institution:** ⟦____________________________________⟧ | **Department / Unit:** ⟦______________________⟧",
+            f"**Investigator:** {author}{matricule}",
+            "",
+        ]
+        if is_en
+        else [
+            main_heading,
+            "**Code participant :** ⟦  |  |  |  -  |  |  ⟧ | **Date de collecte :** ⟦  |  ⟧ / ⟦  |  ⟧ / ⟦ 2 | 0 |  |  ⟧",
+            "**Site de collecte / Établissement :** ⟦____________________________________⟧ | **Service / Unité :** ⟦______________________⟧",
+            f"**Nom de l'enquêteur :** {author}{matricule}",
+            "",
+        ]
+    )
 
     grouped: Dict[str, List[CRFFieldSpec]] = {}
     for f in project.crf_fields:
-        grouped.setdefault(f.section_title or "SECTION A : DONNÉES COLLECTÉES", []).append(f)
+        grouped.setdefault(f.section_title or ("SECTION A: COLLECTED VARIABLES" if is_en else "SECTION A : DONNÉES COLLECTÉES"), []).append(f)
 
     for sec_title, items in grouped.items():
         lines.append(f"### {sec_title}")
@@ -934,6 +946,11 @@ def render_crf_annexe1_markdown(project: ProtocolProject, header_title: str = ""
             code_prefix = f"{f.code}. " if f.code else ""
             lines.append(f"- **{code_prefix}{f.label} :** {draw_field_control_markdown(f)}")
         lines.append("")
+
+    if is_en:
+        lines.append("**Investigator Verification & Signature:** Date: ____/____/20____ | Signature: _________________________")
+    else:
+        lines.append("**Validation & Signature de l'enquêteur :** Date : ____/____/20____ | Signature : _________________________")
 
     return "\n".join(lines).strip()
 
@@ -1100,11 +1117,16 @@ def render_crf_annexe1_html(project: ProtocolProject) -> str:
         '<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #CBD5E1;display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;">'
         f'<div><strong>Code participant :</strong> {code_boxes}</div>'
         f'<div><strong>Date de collecte :</strong> {_draw_html_date_boxes()}</div>'
-        f'<div style="grid-column:span 2;"><strong>Site / Hôpital d\'inclusion :</strong> {site_checks}</div>'
+        '<div><strong>Site de collecte / Établissement :</strong> <span style="display:inline-block;min-width:185px;border-bottom:1.2px solid #475569;">&nbsp;</span></div>'
+        '<div><strong>Service / Unité :</strong> <span style="display:inline-block;min-width:135px;border-bottom:1.2px solid #475569;">&nbsp;</span></div>'
         f'<div style="grid-column:span 2;"><strong>Enquêteur :</strong> {_html_esc(author)}{_html_esc(matricule)}</div>'
         "</div>"
         "</div>"
         + "".join(sections_html)
+        + '<div style="margin-top:14px;padding:10px 12px;border:1px solid #CBD5E1;background:#F8FAFC;font-size:11.5px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:10px;">'
+        '<span><strong>Validation de l\'enquêteur</strong> — Date : ____ / ____ / 20____</span>'
+        '<span><strong>Signature :</strong> ____________________________</span>'
+        "</div>"
         + "</div>"
     )
 

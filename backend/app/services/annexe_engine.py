@@ -928,9 +928,27 @@ def generate_sub_annex_content(
             else ""
         )
 
+        is_request_letter = section_id in ("annexe_autorisation_recherche", "annexe_clairance_ethique")
+        layout_contract = (
+            "FORMAT OBLIGATOIRE DE LETTRE DE DEMANDE ADMINISTRATIVE (Cameroun / Francophonie) :\n"
+            "1. Lieu & date sur une ligne dédiée (ex. `Yaoundé, le ____ / ____ / 20____`).\n"
+            "2. Destinataire exact sur 2–3 lignes commençant par `À` puis la qualité exacte (`Monsieur le Directeur...` / `Monsieur le Président du...`).\n"
+            "3. Ligne `Objet : ...` claire et précise + ligne `P.J. : ...` (pièces jointes).\n"
+            "4. Formule d'appel respectueuse terminée par une virgule (`Monsieur le Directeur,`).\n"
+            "5. Corps structuré en 3 paragraphes académiques (motif de la demande, objectifs/méthodologie/confidentialité, formule de politesse).\n"
+            "6. Bloc signature final (`L'Investigateur principal / Le Candidat`)."
+            if is_request_letter
+            else "FORMAT OBLIGATOIRE DE FORMULAIRE MÉDICAL / ÉTHIQUE (OMS / CIER-FMSB) :\n"
+            "1. Sections numérotées claires (1., 2., 3...) en langage accessible et rigoureux.\n"
+            "2. Pour le consentement éclairé ou les engagements : inclure 4 à 6 déclarations précises précédées de la case `☐ ` (elles seront automatiquement rendues dans un tableau structuré Oui/Non dans Word et PDF).\n"
+            "3. Ne pas ajouter de mise en page ASCII manuelle : l'en-tête officiel encadré et le tableau de signatures (Participant / Investigateur / Témoin impartial) sont générés automatiquement à l'export."
+        )
+
         prompt = f"""
 Tu es un expert en rédaction réglementaire et éthique de protocoles médicaux (espace CAMES / Cameroun).
 Tu génères ou améliores la sous-annexe `{section_id}`.
+
+{layout_contract}
 
 RÈGLE ABSOLUE D'IDENTITÉ INSTITUTIONNELLE (NE JAMAIS INVENTER NI CODER EN DUR UNE AUTRE FACULTÉ) :
 - Université : {ctx['university_name']}
