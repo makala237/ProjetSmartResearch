@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 from app.data.fmsb_canvas import DEDICATED_SUB_ANNEX_IDS, NON_CRF_SUB_ANNEX_IDS
 from app.data.i18n import normalize_lang
 from app.schemas.protocol import ProtocolProject
