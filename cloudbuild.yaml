@@ -2,7 +2,7 @@ substitutions:
   _REGION: europe-west1
   _SERVICE_NAME: smart-research-api
   _AR_REPO: cloud-run-source-deploy
-  _CLOUD_STORAGE_BUCKET: ${PROJECT_ID}-smartresearch-uploads
+  _CLOUD_STORAGE_BUCKET: smart-research-fmsb-smartresearch-uploads
   _DB_BACKEND: firestore
   _FIRESTORE_DATABASE: smartresearch-prod
 
@@ -33,8 +33,8 @@ steps:
       - --memory=4Gi
       - --timeout=300
       - --max-instances=1
-      - --set-env-vars=DB_BACKEND=${_DB_BACKEND},FIRESTORE_PROJECT_ID=$PROJECT_ID,FIRESTORE_DATABASE=${_FIRESTORE_DATABASE},RENDER_ENGINE=libreoffice,STORAGE_BACKEND=gcs,CLOUD_STORAGE_BUCKET=${_CLOUD_STORAGE_BUCKET},RUN_MIGRATIONS_ON_START=false
-      - --set-secrets=JWT_SECRET_KEY=SMR_JWT_SECRET:latest,GEMINI_API_KEY=SMR_GEMINI_KEY:latest,BOOTSTRAP_ADMIN_PASSWORD=SMR_ADMIN_PASS:latest
+      - --update-env-vars=DB_BACKEND=${_DB_BACKEND},FIRESTORE_PROJECT_ID=$PROJECT_ID,FIRESTORE_DATABASE=${_FIRESTORE_DATABASE},RENDER_ENGINE=libreoffice,STORAGE_BACKEND=gcs,CLOUD_STORAGE_BUCKET=${_CLOUD_STORAGE_BUCKET},RUN_MIGRATIONS_ON_START=false
+      - --update-secrets=JWT_SECRET_KEY=SMR_JWT_SECRET:latest,GEMINI_API_KEY=SMR_GEMINI_KEY:latest,BOOTSTRAP_ADMIN_PASSWORD=SMR_ADMIN_PASS:latest,OPENROUTER_API_KEY=SMR_OPENROUTER_KEY:latest,NVIDIA_API_KEY=SMR_NVIDIA_KEY:latest
 
 images:
   - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/${_SERVICE_NAME}:latest"
