@@ -385,6 +385,18 @@ def _node_palette(
     return dict(_ROLE_PALETTES["process"])
 
 
+def _measure_text_px(text: str, size_px: int, bold: bool = False) -> float:
+    """Measure pixel width using the actual Pillow font (with 1.08x cross-platform SVG/PNG safety margin)."""
+    if not text:
+        return 0.0
+    try:
+        font = _load_font(size_px, bold=bold)
+        return float(font.getlength(text)) * 1.08
+    except Exception:
+        char_w = size_px * (0.62 if bold else 0.56)
+        return len(text) * char_w
+
+
 def _wrap_text(text: str, max_chars: int) -> List[str]:
     clean = re.sub(r"\s+", " ", (text or "").strip())
     if not clean:
@@ -392,27 +404,48 @@ def _wrap_text(text: str, max_chars: int) -> List[str]:
     return textwrap.wrap(clean, width=max(10, max_chars), break_long_words=False) or [clean]
 
 
+def _wrap_text_px(text: str, max_w_px: float, size_px: int, bold: bool = False) -> List[str]:
+    """Wrap text strictly within max_w_px using actual font metrics so text NEVER overflows a box."""
+    clean = re.sub(r"\s+", " ", (text or "").strip())
+    if not clean:
+        return []
+    words = clean.split(" ")
+    lines: List[str] = []
+    cur = words[0]
+    for w in words[1:]:
+        cand = f"{cur} {w}"
+        if _measure_text_px(cand, size_px, bold=bold) <= max_w_px:
+            cur = cand
+        else:
+            lines.append(cur)
+            cur = w
+    if cur:
+        lines.append(cur)
+    return lines or [clean]
+
+
 def _wrap_node_lines(node: DiagramNode, box_w: int, shape: str) -> Tuple[List[str], List[str]]:
-    """Wrap title and bullet items cleanly inside box_w."""
+    """Wrap title and bullet items cleanly inside box_w using real pixel measurements."""
     if shape == "diamond":
-        usable_w = max(90, int(box_w * 0.56))
-    elif shape in ("pill", "oval", "circle"):
-        usable_w = max(100, int(box_w * 0.78))
+        usable_w = max(90.0, box_w * 0.52)
+    elif shape == "circle":
+        usable_w = max(95.0, box_w * 0.62)
+    elif shape in ("pill", "oval"):
+        usable_w = max(100.0, box_w * 0.72)
     else:
-        usable_w = max(110, box_w - 26)
+        usable_w = max(110.0, float(box_w - 30))
 
-    title_chars = max(12, int(usable_w / 8.0))
-    body_chars = max(14, int(usable_w / 7.3))
-
-    t_lines = _wrap_text(node.title, title_chars) or [node.title.strip() or node.id]
+    t_lines = _wrap_text_px(node.title, usable_w, DIAGRAM_TITLE_FONT_PX, bold=True) or [node.title.strip() or node.id]
     b_lines: List[str] = []
+    bullet_indent_px = _measure_text_px("• ", DIAGRAM_MIN_BODY_FONT_PX, bold=False)
     for item in node.items or []:
         clean = item.strip()
         if not clean:
             continue
         # Preserve bold/stat lines without redundant bullet if already prefixed or N = ...
         already_prefixed = clean.startswith(("•", "-", "*", "1.", "2.", "3.")) or bool(re.match(r"^[Nn]\s*=", clean))
-        wrapped = _wrap_text(clean, body_chars - (0 if already_prefixed else 2))
+        item_max_w = usable_w if already_prefixed else max(80.0, usable_w - bullet_indent_px)
+        wrapped = _wrap_text_px(clean, item_max_w, DIAGRAM_MIN_BODY_FONT_PX, bold=False)
         for i, wl in enumerate(wrapped):
             if i == 0 and not already_prefixed:
                 b_lines.append(f"• {wl}")
@@ -423,6 +456,12 @@ def _wrap_node_lines(node: DiagramNode, box_w: int, shape: str) -> Tuple[List[st
     return t_lines, b_lines
 
 
+def _max_lines_width_px(t_lines: List[str], b_lines: List[str]) -> float:
+    tw = max((_measure_text_px(ln, DIAGRAM_TITLE_FONT_PX, bold=True) for ln in t_lines), default=0.0)
+    bw = max((_measure_text_px(ln, DIAGRAM_MIN_BODY_FONT_PX, bold=False) for ln in b_lines), default=0.0)
+    return max(tw, bw)
+
+
 def _measure_node(
     node: DiagramNode,
     target_w: int,
@@ -430,7 +469,7 @@ def _measure_node(
     is_root: bool = False,
     is_leaf: bool = False,
 ) -> Dict[str, Any]:
-    """Compute exact (w, h, header_h, shape, t_lines, b_lines) for a node."""
+    """Compute exact (w, h, header_h, shape, t_lines, b_lines) for a node with guaranteed zero overflow."""
     shape = (node.shape or "rounded").strip().lower()
     if shape not in VALID_DIAGRAM_SHAPES:
         shape = "rounded"
@@ -442,33 +481,45 @@ def _measure_node(
         shape = "rectangle"
 
     if shape == "diamond":
-        w = max(170, min(240, target_w))
+        w = max(180, min(260, target_w))
         t_lines, b_lines = _wrap_node_lines(node, w, shape)
+        max_px = _max_lines_width_px(t_lines, b_lines)
+        w = max(w, int(math.ceil(max_px / 0.54)) + 24)
         text_h = len(t_lines) * DIAGRAM_LINE_H_TITLE_PX + len(b_lines) * DIAGRAM_LINE_H_BODY_PX
-        h = max(84, int(text_h * 1.85) + 28)
+        h = max(88, int(text_h * 1.85) + 30)
         return {"w": w, "h": h, "header_h": 0, "shape": shape, "t_lines": t_lines, "b_lines": b_lines}
 
     if shape in ("pill", "oval"):
-        w = max(170, min(280, target_w))
+        w = max(180, min(300, target_w))
         t_lines, b_lines = _wrap_node_lines(node, w, shape)
+        max_px = _max_lines_width_px(t_lines, b_lines)
+        w = max(w, int(math.ceil(max_px / 0.72)) + 26)
         text_h = len(t_lines) * DIAGRAM_LINE_H_TITLE_PX + len(b_lines) * DIAGRAM_LINE_H_BODY_PX
-        h = max(48, text_h + 24)
+        h = max(52, text_h + 28)
         return {"w": w, "h": h, "header_h": 0, "shape": shape, "t_lines": t_lines, "b_lines": b_lines}
 
     if shape == "circle":
-        w = max(120, min(190, target_w))
-        t_lines, b_lines = _wrap_node_lines(node, w, shape)
-        text_h = len(t_lines) * DIAGRAM_LINE_H_TITLE_PX + len(b_lines) * DIAGRAM_LINE_H_BODY_PX
-        side = max(w, text_h + 34)
-        return {"w": side, "h": side, "header_h": 0, "shape": shape, "t_lines": t_lines, "b_lines": b_lines}
+        # Circles overflow easily when loaded with bullet items; upgrade multi-item circles to clean rounded cards
+        if len(node.items or []) >= 2 or len((node.title or "").strip()) > 26:
+            shape = "rounded"
+        else:
+            w = max(140, min(210, target_w))
+            t_lines, b_lines = _wrap_node_lines(node, w, shape)
+            max_px = _max_lines_width_px(t_lines, b_lines)
+            text_h = len(t_lines) * DIAGRAM_LINE_H_TITLE_PX + len(b_lines) * DIAGRAM_LINE_H_BODY_PX
+            side = max(w, int(math.ceil(math.hypot(max_px + 28, text_h + 28))) + 10)
+            return {"w": side, "h": side, "header_h": 0, "shape": shape, "t_lines": t_lines, "b_lines": b_lines}
 
-    w = max(165, target_w)
+    w = max(180, target_w)
     t_lines, b_lines = _wrap_node_lines(node, w, shape)
+    max_px = _max_lines_width_px(t_lines, b_lines)
+    if max_px + 30 > w:
+        w = int(math.ceil(max_px + 34))
 
     if effective_layout == "prisma_exclusion":
         # Clean academic PRISMA box: centered bold title + centered body lines, no dark header bar
         body_gap = 6 if b_lines else 0
-        h = max(56, 16 + len(t_lines) * DIAGRAM_LINE_H_TITLE_PX + body_gap + len(b_lines) * DIAGRAM_LINE_H_BODY_PX + 14)
+        h = max(56, 16 + len(t_lines) * DIAGRAM_LINE_H_TITLE_PX + body_gap + len(b_lines) * DIAGRAM_LINE_H_BODY_PX + 16)
         return {"w": w, "h": h, "header_h": 0, "shape": "rectangle", "t_lines": t_lines, "b_lines": b_lines}
 
     if not b_lines and effective_layout in ("decision_flowchart", "branching_tree"):
@@ -476,9 +527,9 @@ def _measure_node(
         h = max(50, len(t_lines) * DIAGRAM_LINE_H_TITLE_PX + 24)
         return {"w": w, "h": h, "header_h": 0, "shape": shape, "t_lines": t_lines, "b_lines": b_lines}
 
-    header_h = max(32, len(t_lines) * DIAGRAM_LINE_H_TITLE_PX + 12)
-    body_h = (len(b_lines) * DIAGRAM_LINE_H_BODY_PX + 16) if b_lines else 6
-    h = max(56, header_h + body_h)
+    header_h = max(34, len(t_lines) * DIAGRAM_LINE_H_TITLE_PX + 14)
+    body_h = (len(b_lines) * DIAGRAM_LINE_H_BODY_PX + 18) if b_lines else 6
+    h = max(58, header_h + body_h)
     return {"w": w, "h": h, "header_h": header_h, "shape": shape, "t_lines": t_lines, "b_lines": b_lines}
 
 
@@ -498,8 +549,8 @@ def _estimate_pill_size(label: str) -> Tuple[int, int]:
     lines = _wrap_pill_lines(label)
     if not lines:
         return 0, 0
-    max_len = max(len(ln) for ln in lines)
-    w = max(52, int(max_len * 8.4) + 24)
+    max_px = max(_measure_text_px(ln, DIAGRAM_LABEL_FONT_PX, bold=True) for ln in lines)
+    w = max(56, int(math.ceil(max_px)) + 24)
     h = 26 if len(lines) == 1 else 42
     return w, h
 
@@ -705,8 +756,9 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
         pad_y = 24
         has_back_edge = len(back_edges) > 0
         left_loop_gutter = 64 if has_back_edge else 0
-        gap_x = 42
-        gap_y = 66 if effective_layout == "decision_flowchart" else 56
+        gap_x = 38
+        has_edge_labels = any((c.label or "").strip() for c in conns)
+        gap_y = 88 if has_edge_labels else (68 if effective_layout == "decision_flowchart" else 60)
 
         # In decision_flowchart, pull side exclusion/exception nodes onto the SAME row as their parent diamond!
         side_nodes_by_parent: Dict[str, str] = {}
@@ -717,9 +769,20 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
 
         side_set = set(side_nodes_by_parent.values())
         filtered_layers: List[List[str]] = []
+        wrapped_leaf_rows: Set[int] = set()
         for ly in layers:
             kept = [nid for nid in ly if nid not in side_set]
-            if kept:
+            if not kept:
+                continue
+            # Wrap overly wide leaf rows (>= 5 siblings) into balanced rows of <= 3 boxes so nothing gets squeezed
+            all_leaves = all(len(out_edges.get(nid, [])) == 0 for nid in kept)
+            if effective_layout == "branching_tree" and all_leaves and len(kept) >= 5:
+                per_row = 3 if len(kept) <= 6 else 4
+                for ci_start in range(0, len(kept), per_row):
+                    if ci_start > 0:
+                        wrapped_leaf_rows.add(len(filtered_layers))
+                    filtered_layers.append(kept[ci_start : ci_start + per_row])
+            else:
                 filtered_layers.append(kept)
 
         max_cols = max((len(ly) for ly in filtered_layers), default=1)
@@ -728,9 +791,11 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
         elif max_cols == 1:
             base_w = 340
         elif max_cols == 2:
-            base_w = 260
+            base_w = 270
+        elif max_cols == 3:
+            base_w = 235
         else:
-            base_w = max(175, min(220, (DIAGRAM_MAX_CANVAS_W_PX - 2 * pad_x - gap_x * (max_cols - 1)) // max_cols))
+            base_w = max(195, min(225, (DIAGRAM_MAX_CANVAS_W_PX - 2 * pad_x - gap_x * (max_cols - 1)) // max_cols))
 
         # Measure each row
         row_items: List[List[Tuple[str, Dict[str, Any]]]] = []
@@ -896,19 +961,42 @@ def _build_scene(diagram: SectionDiagram) -> Dict[str, Any]:
         else:
             start_y = float(b1["y"] + b1["h"])
             end_y = float(b2["y"]) - 2.0
-            if abs(cx1 - cx2) <= 4.0:
+            # Check if any intermediate box sits vertically between b1 and b2 (e.g. wrapped 2nd leaf row)
+            inter_boxes = [
+                ob for oid, ob in boxes.items()
+                if oid not in (conn.from_id, conn.to_id)
+                and ob["y"] >= start_y - 4
+                and (ob["y"] + ob["h"]) <= end_y + 4
+            ]
+            if inter_boxes:
+                # Route cleanly down the right outer margin to a single unified horizontal bus between Row 1 and Row 2
+                bus_y1 = start_y + 22.0
+                row1_bottom = max(ob["y"] + ob["h"] for ob in inter_boxes)
+                bus_y2 = float(row1_bottom) + 22.0
+                right_edge = max(ob["x"] + ob["w"] for ob in inter_boxes)
+                gutter_x = float(right_edge) + 22.0
+                canvas_w = max(canvas_w, int(math.ceil(gutter_x + 28)))
+                pts = [
+                    (cx1, start_y),
+                    (cx1, bus_y1),
+                    (gutter_x, bus_y1),
+                    (gutter_x, bus_y2),
+                    (cx2, bus_y2),
+                    (cx2, end_y),
+                ]
+                lbl_pos = (cx2, bus_y2 + (end_y - bus_y2) * 0.46)
+            elif abs(cx1 - cx2) <= 4.0:
                 pts = [(cx1, start_y), (cx2, end_y)]
-                lbl_pos = (cx1, (start_y + end_y) / 2.0)
-            else:
+                lbl_pos = (cx1, start_y + (end_y - start_y) * 0.54)
+            elif b1["shape"] == "diamond" and abs(cx2 - cx1) > b1["w"] * 0.4:
                 # If source is a diamond and destination is left/right below, exit from diamond side!
-                if b1["shape"] == "diamond" and abs(cx2 - cx1) > b1["w"] * 0.4:
-                    sx = float(b1["x"] + b1["w"]) if cx2 > cx1 else float(b1["x"])
-                    pts = [(sx, cy1), (cx2, cy1), (cx2, end_y)]
-                    lbl_pos = ((sx + cx2) / 2.0, cy1)
-                else:
-                    mid_y = start_y + (end_y - start_y) * 0.48
-                    pts = [(cx1, start_y), (cx1, mid_y), (cx2, mid_y), (cx2, end_y)]
-                    lbl_pos = (cx2, mid_y + (end_y - mid_y) * 0.42) if abs(cx2 - cx1) > 40 else ((cx1 + cx2) / 2.0, mid_y)
+                sx = float(b1["x"] + b1["w"]) if cx2 > cx1 else float(b1["x"])
+                pts = [(sx, cy1), (cx2, cy1), (cx2, end_y)]
+                lbl_pos = ((sx + cx2) / 2.0, cy1)
+            else:
+                mid_y = start_y + min(26.0, (end_y - start_y) * 0.30)
+                pts = [(cx1, start_y), (cx1, mid_y), (cx2, mid_y), (cx2, end_y)]
+                lbl_pos = (cx2, mid_y + (end_y - mid_y) * 0.46) if abs(cx2 - cx1) > 30 else ((cx1 + cx2) / 2.0, mid_y + (end_y - mid_y) * 0.46)
 
         edge_color = "#B91C1C" if conn.to_id in excl_ids else ("#334155" if effective_layout == "prisma_exclusion" else "#475569")
         edges_out.append(
