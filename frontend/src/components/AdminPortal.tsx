@@ -6,6 +6,7 @@ import {
   BarChart3,
   CheckCircle2,
   ClipboardCopy,
+  Clock,
   Cpu,
   CreditCard,
   Edit3,
@@ -13,6 +14,7 @@ import {
   FileText,
   GraduationCap,
   KeyRound,
+  LifeBuoy,
   Lock,
   Plus,
   RefreshCw,
@@ -54,7 +56,34 @@ interface AdminPortalProps {
   onOpenUserWorkspace?: (projectId: string, studentName: string) => void | Promise<void>;
 }
 
-type AdminTab = "dashboard" | "users" | "plans" | "api_keys" | "stats";
+type AdminTab = "dashboard" | "users" | "assistance" | "plans" | "api_keys" | "stats";
+
+interface AdminSupportRequestItem {
+  id: string;
+  created_at: string;
+  user_id: string;
+  user_name: string;
+  user_email: string;
+  project_id: string;
+  project_name: string;
+  module: string;
+  section_id: string;
+  category: string;
+  message: string;
+  resolved: boolean;
+  resolved_at?: string | null;
+  resolved_by?: string;
+  resolution_note?: string;
+}
+
+const SUPPORT_CATEGORY_LABELS: Record<string, string> = {
+  formatting: "Mise en forme",
+  content: "Contenu / Rédaction",
+  tables_figures: "Tableaux / Schémas",
+  references: "Références Vancouver",
+  export: "Export Word / PDF",
+  other: "Autre",
+};
 
 const MODULE_META: Array<{ key: string; short: string; label: string }> = [
   { key: "module1", short: "M1", label: "Rédaction" },
@@ -214,10 +243,16 @@ export function AdminPortal({
   const [usageEvents, setUsageEvents] = useState<UsageEventOut[]>([]);
   const [auditLogs, setAuditLogs] = useState<AdminAuditLogOut[]>([]);
 
+  // Assistance / document update requests
+  const [supportRequests, setSupportRequests] = useState<AdminSupportRequestItem[]>([]);
+  const [supportFilter, setSupportFilter] = useState<"pending" | "resolved" | "all">("pending");
+  const [resolveNotes, setResolveNotes] = useState<Record<string, string>>({});
+  const [resolvingRequestId, setResolvingRequestId] = useState<string | null>(null);
+
   const loadAllCore = useCallback(async () => {
     setError(null);
     try {
-      const [dashRes, plansRes, usersRes, keysRes, catalogRes] = await Promise.all([
+      const [dashRes, plansRes, usersRes, keysRes, catalogRes, reqsRes] = await Promise.all([
         api.adminGetDashboard(),
         api.adminListPlans(true),
         api.adminListUsers({
@@ -227,11 +262,13 @@ export function AdminPortal({
         }),
         api.adminListApiKeys().catch(() => [] as GeminiApiKeyStatsOut[]),
         api.adminGetModelCatalog().catch(() => null),
+        api.adminListUpdateRequests(100).catch(() => [] as AdminSupportRequestItem[]),
       ]);
       setDashboard(dashRes);
       setPlans(plansRes);
       setUsers(usersRes);
       setApiKeys(keysRes);
+      setSupportRequests(reqsRes);
       if (catalogRes) setModelCatalog(catalogRes);
       if (!newPlanId && plansRes.some((p) => p.is_active)) {
         const firstActive = plansRes.find((p) => p.is_active);
@@ -795,6 +832,33 @@ export function AdminPortal({
     }
   }
 
+  const pendingSupportCount = supportRequests.filter((r) => !r.resolved).length;
+
+  async function handleResolveSupportRequest(requestId: string) {
+    setResolvingRequestId(requestId);
+    setError(null);
+    setNotice(null);
+    try {
+      const note = (resolveNotes[requestId] || "").trim();
+      await api.adminResolveUpdateRequest(
+        requestId,
+        note || "Ajustement appliqué sur votre document."
+      );
+      setNotice("Demande d'assistance marquée comme résolue et étudiant notifié.");
+      setResolveNotes((prev) => {
+        const next = { ...prev };
+        delete next[requestId];
+        return next;
+      });
+      const fresh = await api.adminListUpdateRequests(100);
+      setSupportRequests(fresh);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setResolvingRequestId(null);
+    }
+  }
+
   return (
     <div className="space-y-5">
       {/* Admin Header Strip */}
@@ -840,11 +904,17 @@ export function AdminPortal({
       <div className="flex flex-nowrap gap-2 overflow-x-auto no-scrollbar pb-1">
         {(
           [
-            { id: "dashboard", label: "Tableau de bord KPI", icon: Activity },
-            { id: "users", label: "Utilisateurs & Licences", icon: Users },
-            { id: "plans", label: "Plans & Tarifs", icon: CreditCard },
-            { id: "api_keys", label: `Clés API Gemini (${apiKeys.length})`, icon: KeyRound },
-            { id: "stats", label: "Statistiques Étudiants & Journaux", icon: BarChart3 },
+            { id: "dashboard", label: "Tableau de bord KPI", icon: Activity, badge: 0 },
+            { id: "users", label: "Utilisateurs & Licences", icon: Users, badge: 0 },
+            {
+              id: "assistance",
+              label: "Demandes d'assistance",
+              icon: LifeBuoy,
+              badge: pendingSupportCount,
+            },
+            { id: "plans", label: "Plans & Tarifs", icon: CreditCard, badge: 0 },
+            { id: "api_keys", label: `Clés API Gemini (${apiKeys.length})`, icon: KeyRound, badge: 0 },
+            { id: "stats", label: "Statistiques Étudiants & Journaux", icon: BarChart3, badge: 0 },
           ] as const
         ).map((t) => {
           const Icon = t.icon;
@@ -862,10 +932,45 @@ export function AdminPortal({
             >
               <Icon className="h-3.5 w-3.5" />
               {t.label}
+              {t.badge > 0 && (
+                <span
+                  className={`ml-0.5 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold ${
+                    active
+                      ? "bg-amber-300 text-slate-900"
+                      : "bg-amber-500 text-white"
+                  }`}
+                >
+                  {t.badge}
+                </span>
+              )}
             </button>
           );
         })}
       </div>
+
+      {pendingSupportCount > 0 && tab !== "assistance" && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50/90 px-4 py-2.5 text-xs text-amber-950">
+          <div className="flex items-center gap-2">
+            <LifeBuoy className="h-4 w-4 shrink-0 text-amber-700" />
+            <span>
+              <strong>
+                {pendingSupportCount} demande{pendingSupportCount > 1 ? "s" : ""} d&apos;assistance
+              </strong>{" "}
+              en attente de traitement.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setSupportFilter("pending");
+              setTab("assistance");
+            }}
+            className="rounded-lg bg-amber-600 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-amber-700"
+          >
+            Voir les demandes
+          </button>
+        </div>
+      )}
 
       {error && (
         <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-800">
@@ -2676,6 +2781,217 @@ export function AdminPortal({
               );
             })}
           </div>
+        </div>
+      )}
+
+      {/* TAB: DEMANDES D'ASSISTANCE */}
+      {tab === "assistance" && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+            <div>
+              <h2 className="flex items-center gap-2 text-base font-bold text-slate-900">
+                <LifeBuoy className="h-4 w-4 text-[#004A8F]" />
+                Demandes d&apos;assistance documentaire
+              </h2>
+              <p className="mt-0.5 text-xs text-slate-500">
+                Suivez les demandes envoyées depuis le bouton Assistance, ouvrez directement le protocole de l&apos;étudiant et marquez les demandes résolues.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {(
+                [
+                  { id: "pending", label: `En attente (${pendingSupportCount})` },
+                  {
+                    id: "resolved",
+                    label: `Résolues (${supportRequests.length - pendingSupportCount})`,
+                  },
+                  { id: "all", label: `Toutes (${supportRequests.length})` },
+                ] as const
+              ).map((f) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setSupportFilter(f.id)}
+                  className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                    supportFilter === f.id
+                      ? "bg-[#004A8F] text-white"
+                      : "border border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100"
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={async () => {
+                  try {
+                    const fresh = await api.adminListUpdateRequests(100);
+                    setSupportRequests(fresh);
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : String(err));
+                  }
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                <RefreshCw className="h-3.5 w-3.5" />
+                Actualiser
+              </button>
+            </div>
+          </div>
+
+          {(() => {
+            const filtered = supportRequests.filter((r) => {
+              if (supportFilter === "pending") return !r.resolved;
+              if (supportFilter === "resolved") return r.resolved;
+              return true;
+            });
+
+            if (filtered.length === 0) {
+              return (
+                <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center">
+                  <CheckCircle2 className="mx-auto h-8 w-8 text-emerald-500" />
+                  <p className="mt-2 text-sm font-semibold text-slate-800">
+                    {supportFilter === "pending"
+                      ? "Aucune demande d'assistance en attente."
+                      : "Aucune demande dans cette catégorie."}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Les nouvelles demandes soumises par les étudiants apparaîtront automatiquement ici.
+                  </p>
+                </div>
+              );
+            }
+
+            return (
+              <div className="space-y-3">
+                {filtered.map((req) => (
+                  <div
+                    key={req.id}
+                    className={`rounded-2xl border bg-white p-4 shadow-sm transition ${
+                      req.resolved
+                        ? "border-slate-200"
+                        : "border-amber-300 ring-1 ring-amber-200/70"
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                              req.resolved
+                                ? "bg-emerald-100 text-emerald-800"
+                                : "bg-amber-100 text-amber-800"
+                            }`}
+                          >
+                            {req.resolved ? (
+                              <CheckCircle2 className="h-3 w-3" />
+                            ) : (
+                              <Clock className="h-3 w-3" />
+                            )}
+                            {req.resolved ? "Résolue" : "En attente"}
+                          </span>
+                          <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-semibold text-slate-700">
+                            {SUPPORT_CATEGORY_LABELS[req.category] || req.category || "Général"}
+                          </span>
+                          {req.module && (
+                            <span className="rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-800">
+                              {req.module}
+                              {req.section_id ? ` · ${req.section_id}` : ""}
+                            </span>
+                          )}
+                          <span className="text-[11px] text-slate-400">
+                            {fmtDateTime(req.created_at)}
+                          </span>
+                        </div>
+
+                        <div className="text-sm font-bold text-slate-900">
+                          {req.user_name || "Étudiant"}{" "}
+                          {req.user_email && (
+                            <span className="text-xs font-normal text-slate-500">
+                              ({req.user_email})
+                            </span>
+                          )}
+                        </div>
+
+                        {(req.project_name || req.project_id) && (
+                          <div className="flex flex-wrap items-center gap-1.5 text-xs text-slate-600">
+                            <FileText className="h-3.5 w-3.5 text-slate-400" />
+                            <span className="font-medium text-slate-800">
+                              {req.project_name || "Protocole sans titre"}
+                            </span>
+                            {req.project_id && (
+                              <code className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-600">
+                                {req.project_id}
+                              </code>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {req.project_id && onOpenUserWorkspace && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onOpenUserWorkspace(req.project_id, req.user_name || "Étudiant")
+                          }
+                          className="inline-flex items-center gap-1.5 rounded-xl border border-[#004A8F]/30 bg-sky-50 px-3 py-1.5 text-xs font-semibold text-[#004A8F] hover:bg-sky-100"
+                        >
+                          <ExternalLink className="h-3.5 w-3.5" />
+                          Ouvrir le projet
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50/80 p-3 text-xs leading-relaxed text-slate-800 whitespace-pre-wrap">
+                      {req.message}
+                    </div>
+
+                    {req.resolved ? (
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-emerald-200 bg-emerald-50/60 px-3 py-2 text-xs text-emerald-900">
+                        <div>
+                          <span className="font-semibold">
+                            Résolue le {fmtDateTime(req.resolved_at)}
+                          </span>
+                          {req.resolved_by ? ` par ${req.resolved_by}` : ""}
+                          {req.resolution_note ? (
+                            <span className="block mt-0.5 text-emerald-800">
+                              Note : {req.resolution_note}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <input
+                          type="text"
+                          value={resolveNotes[req.id] ?? ""}
+                          onChange={(e) =>
+                            setResolveNotes((prev) => ({
+                              ...prev,
+                              [req.id]: e.target.value,
+                            }))
+                          }
+                          placeholder="Note de résolution visible par l'étudiant (ex: Sections complétées et conformes CAMES/Vancouver)..."
+                          className="min-w-[260px] flex-1 rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800 focus:border-[#004A8F] focus:outline-none"
+                        />
+                        <button
+                          type="button"
+                          disabled={resolvingRequestId === req.id}
+                          onClick={() => handleResolveSupportRequest(req.id)}
+                          className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-60"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5" />
+                          {resolvingRequestId === req.id
+                            ? "Validation..."
+                            : "Marquer résolu"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            );
+          })()}
         </div>
       )}
     </div>

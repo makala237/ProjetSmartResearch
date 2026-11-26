@@ -184,7 +184,10 @@ def deterministic_section_checks(project: ProtocolProject, section_id: str, text
         (getattr(project, "timeline_grid", None) and getattr(project.timeline_grid, "rows", None))
         or (sec_obj and getattr(sec_obj, "custom_tables", None))
     )
-    has_structured_table_content = has_structured_budget or has_structured_gantt
+    is_auto_list_section = section_id in ("toc", "abbreviations", "list_of_tables", "list_of_figures")
+    has_structured_table_content = has_structured_budget or has_structured_gantt or (
+        is_auto_list_section and bool((text or "").strip())
+    )
 
     if c.required and words == 0 and not has_structured_table_content:
         notes.append(
@@ -224,7 +227,11 @@ def deterministic_section_checks(project: ProtocolProject, section_id: str, text
         "annexe_engagement",
         "annexes",
     ):
-        cited_nums = set(re.findall(r"\[(\d+)\]", text))
+        from app.services.vancouver import _expand_citation_group
+        cited_nums: set[str] = set()
+        for grp in re.findall(r"\[([\d,\s\-–]+)\]", text):
+            for num in _expand_citation_group(grp):
+                cited_nums.add(str(num))
         if c.min_references is not None and c.min_references > 0 and len(cited_nums) < c.min_references:
             notes.append(
                 f"Insufficient citations ({len(cited_nums)} ref(s) cited): CAMES requires at least {c.min_references} citation(s) [n] in this section."
@@ -238,7 +245,7 @@ def deterministic_section_checks(project: ProtocolProject, section_id: str, text
                 else f"Trop de citations ({len(cited_nums)} réf. citées) : maximum autorisé de {c.max_references} référence(s) dans cette section."
             )
 
-    if c.table_policy == "forbidden":
+    if c.table_policy == "forbidden" and not is_auto_list_section:
         sec_obj = project.sections.get(section_id)
         has_raw_table = bool(re.search(r"(?m)^\s*\|[\s:\-|]+\|\s*$", text or ""))
         if has_raw_table or (sec_obj and getattr(sec_obj, "custom_tables", None)):

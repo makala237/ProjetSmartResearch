@@ -43,7 +43,18 @@ from app.db.datastore import FirestoreDataStore  # noqa: E402
 from app.db.models import utcnow  # noqa: E402
 from app.schemas.protocol import ProtocolProject  # noqa: E402
 from app.services.docx_template import compile_protocol_docx  # noqa: E402
+from app.services.drafting import (  # noqa: E402
+    _count_prose_words,
+    deterministic_section_checks,
+    refresh_section_audit_notes,
+)
+from app.services.list_builder import generate_all_lists_and_toc  # noqa: E402
 from app.services.storage import project_storage  # noqa: E402
+from app.services.vancouver import (  # noqa: E402
+    format_vancouver_citation,
+    get_cited_references_in_order,
+    renumber_and_sync_vancouver_references,
+)
 
 
 def _slugify(value: str) -> str:
@@ -203,13 +214,105 @@ def cmd_pull(project_id: Optional[str] = None) -> None:
         print(f"Pulled {pid} -> {ws} ({docx_status})")
 
 
-def cmd_push(project_id: str, request_id: Optional[str] = None, note: str = "") -> None:
+def sync_and_validate_guardrails(proj: ProtocolProject) -> List[str]:
+    """Sync Vancouver + TOC/Lists and verify 100% compliance with CAMES/FMSB & Vancouver guardrails."""
+    violations: List[str] = []
+
+    # 1. Sync Vancouver numbering/formatting & front-matter lists/TOC
+    renumber_and_sync_vancouver_references(proj)
+    generate_all_lists_and_toc(proj, use_gemini_decision=False)
+
+    # 2. Refresh deterministic CAMES/FMSB audit notes on every section
+    for sid, sec in proj.sections.items():
+        notes = refresh_section_audit_notes(proj, sid, clear_ai_notes=True)
+        for note in notes:
+            wc = _count_prose_words(sec.content_markdown or "")
+            violations.append(f"[CAMES:{sid} | {wc} mots] {note}")
+
+    # 3. Verify Vancouver citation integrity across all body sections
+    max_ref_idx = len(proj.references or [])
+    for sid, sec in proj.sections.items():
+        if sid in ("references", "toc", "abbreviations", "list_of_tables", "list_of_figures"):
+            continue
+        cited = [int(x) for x in re.findall(r"\[(\d+)\]", sec.content_markdown or "")]
+        bad = sorted({n for n in cited if n < 1 or n > max_ref_idx})
+        if bad:
+            violations.append(
+                f"[VANCOUVER:{sid}] Citations hors plage {bad} (pool actuel : 1..{max_ref_idx})."
+            )
+
+    # 4. Verify Vancouver reference metadata cleanliness on cited references
+    cited_refs = get_cited_references_in_order(proj)
+    seen_titles: Dict[str, int] = {}
+    lang = getattr(proj, "language", "fr") or "fr"
+    for ref in cited_refs:
+        idx = ref.order_index
+        rendered = format_vancouver_citation(ref, lang=lang)
+        if any(ent in rendered for ent in ("&lt;", "&gt;", "&amp;", "<sup>", "</sup>")):
+            violations.append(f"[VANCOUVER:ref#{idx}] Balises ou entités HTML détectées : {rendered[:100]}")
+        authors_joined = " ".join(ref.authors or [])
+        if "auteurs non précisés" in authors_joined.lower():
+            violations.append(f"[VANCOUVER:ref#{idx}] Auteur générique interdit ('Auteurs non précisés').")
+        if any("et al." in (a or "").lower() for a in (ref.authors or [])):
+            violations.append(f"[VANCOUVER:ref#{idx}] 'et al.' fusionné dans un champ auteur : {ref.authors}")
+        norm_title = re.sub(r"[^a-z0-9]+", "", (ref.title or "").lower())
+        if norm_title and len(norm_title) >= 15:
+            if norm_title in seen_titles:
+                violations.append(
+                    f"[VANCOUVER:ref#{idx}] Référence dupliquée avec réf. #{seen_titles[norm_title]} : {ref.title[:70]}"
+                )
+            else:
+                seen_titles[norm_title] = idx
+
+    return violations
+
+
+def cmd_validate(project_id: str) -> None:
     ws = _find_workspace_dir(project_id)
     if ws is None or not (ws / "project.json").exists():
         raise SystemExit(f"No local workspace found for project_id={project_id} in {WORKSPACES_DIR}")
 
     raw_data = json.loads((ws / "project.json").read_text(encoding="utf-8"))
     proj = ProtocolProject.model_validate(raw_data)
+    violations = sync_and_validate_guardrails(proj)
+    if violations:
+        print(f"GUARDRAIL CHECK FAILED ({len(violations)} violation(s)):")
+        for v in violations:
+            print(f"  - {v}")
+        raise SystemExit(1)
+    print(f"GUARDRAIL CHECK PASSED (0 violations across {len(proj.sections)} sections, {len(get_cited_references_in_order(proj))} cited Vancouver refs).")
+
+
+def cmd_push(
+    project_id: str,
+    request_id: Optional[str] = None,
+    note: str = "",
+    force: bool = False,
+) -> None:
+    ws = _find_workspace_dir(project_id)
+    if ws is None or not (ws / "project.json").exists():
+        raise SystemExit(f"No local workspace found for project_id={project_id} in {WORKSPACES_DIR}")
+
+    raw_data = json.loads((ws / "project.json").read_text(encoding="utf-8"))
+    proj = ProtocolProject.model_validate(raw_data)
+
+    # Strict CAMES/FMSB + Vancouver guardrail gate before any upload
+    violations = sync_and_validate_guardrails(proj)
+    if violations and not force:
+        print(f"PUSH BLOCKED — {len(violations)} guardrail violation(s) detected:")
+        for v in violations:
+            print(f"  - {v}")
+        raise SystemExit("Fix all CAMES/Vancouver guardrail violations before pushing (or pass --force only if explicitly authorized).")
+    if violations:
+        print(f"WARNING (--force): pushing despite {len(violations)} guardrail violation(s).")
+    else:
+        print(f"Guardrails passed: 0 CAMES/FMSB/Vancouver violations across {len(proj.sections)} sections.")
+
+    # Persist synced project.json locally before compiling & uploading
+    (ws / "project.json").write_text(
+        json.dumps(proj.model_dump(mode="json"), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
     # Verify docx compiles cleanly before pushing back to Firestore/GCS
     docx_path = ws / "protocol.docx"
@@ -263,18 +366,23 @@ def main() -> None:
     sub.add_parser("list", help="List pending user document update requests")
     p_pull = sub.add_parser("pull", help="Pull pending user projects into user_workspaces/")
     p_pull.add_argument("--project-id", default=None, help="Optional specific project_id to pull")
+    p_val = sub.add_parser("validate", help="Run all CAMES/FMSB & Vancouver guardrails on a local workspace")
+    p_val.add_argument("project_id", help="Project ID to validate")
     p_push = sub.add_parser("push", help="Push locally edited project.json back to Firestore & notify user")
     p_push.add_argument("project_id", help="Project ID to push")
     p_push.add_argument("--request-id", default=None, help="Optional request ID to mark resolved")
     p_push.add_argument("--note", default="Ajustement appliqué sur votre document.", help="Resolution note shown to user")
+    p_push.add_argument("--force", action="store_true", help="Bypass guardrail block (emergency override only)")
 
     args = parser.parse_args()
     if args.cmd == "list":
         cmd_list()
     elif args.cmd == "pull":
         cmd_pull(project_id=args.project_id)
+    elif args.cmd == "validate":
+        cmd_validate(project_id=args.project_id)
     elif args.cmd == "push":
-        cmd_push(project_id=args.project_id, request_id=args.request_id, note=args.note)
+        cmd_push(project_id=args.project_id, request_id=args.request_id, note=args.note, force=args.force)
 
 
 if __name__ == "__main__":
