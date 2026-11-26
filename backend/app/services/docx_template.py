@@ -913,6 +913,38 @@ def _set_table_borders(tbl) -> None:
     tbl._tbl.tblPr.append(borders)
 
 
+def _estimate_word_table_height_pt(
+    headers: List[str],
+    rows: List[List[str]],
+    fmt: FormattingRules,
+) -> float:
+    """Estimate rendered table height (in pt) on an A4 page to decide single-page keep-together vs multi-page flow."""
+    n_cols = max(1, len(headers))
+    margin_cm = float(getattr(fmt, "margin_cm", 2.5) or 2.5)
+    usable_w_cm = max(10.0, 21.0 - 2.0 * margin_cm)
+    usable_w_pt = usable_w_cm * 28.3465
+    col_w_pt = usable_w_pt / n_cols
+    cell_font_pt = max(9.0, float(fmt.body_font_size_pt or 12) - 2.0)
+    chars_per_line = max(8.0, (col_w_pt - 12.0) / (cell_font_pt * 0.52))
+
+    def _row_h(cells: List[str], f_pt: float) -> float:
+        max_lines = 1
+        for c in cells:
+            txt = str(c or "").strip()
+            if not txt:
+                continue
+            lines = sum(max(1, int((len(part) + chars_per_line - 1) // chars_per_line)) for part in txt.splitlines())
+            if lines > max_lines:
+                max_lines = lines
+        return max_lines * (f_pt * 1.28) + 10.0
+
+    # Caption (~22 pt) + header row + all data rows
+    total_h = 22.0 + _row_h(headers, max(9.0, float(fmt.body_font_size_pt or 12) - 1.0))
+    for r in rows:
+        total_h += _row_h([str(c or "") for c in r], cell_font_pt)
+    return total_h
+
+
 def _insert_table_after(
     doc: Document,
     anchor_p,
@@ -921,15 +953,20 @@ def _insert_table_after(
     fmt: FormattingRules,
     colored_cells: Optional[Dict[Tuple[int, int], str]] = None,
 ):
-    """Create a styled Word table and move it directly after anchor_p."""
+    """Create a styled Word table and move it directly after anchor_p.
+
+    Pagination rules:
+    - If the entire table + caption fits on a single A4 page, lock all rows together via `keep_with_next`
+      so Word/LibreOffice moves the whole table to the next page when remaining space is insufficient.
+    - If the table is genuinely taller than a single full page, allow natural multi-page flow WITHOUT
+      repeating a second table header/label on the continuation page.
+    """
     safe_headers = headers if headers else ["Colonne 1"]
     tbl = doc.add_table(rows=1 + len(rows), cols=len(safe_headers))
     tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
     _set_table_borders(tbl)
 
-    # Keep title/caption glued to table start (Header row + Row 0). Only lock ALL rows
-    # together for genuinely compact tables; locking 5..12 dense rows causes Word to break
-    # the keepWithNext chain BEFORE Row 0, stranding the title alone at the bottom of a page.
+    # Keep title/caption glued to table start (Header row + Row 0)
     anchor_txt = "".join(t.text for t in anchor_p._p.iter(qn("w:t")) if t.text).strip()
     if anchor_txt and (
         re.match(r"^(?:Tableau|Table)\s+\d+", anchor_txt, flags=re.IGNORECASE)
@@ -939,10 +976,13 @@ def _insert_table_after(
         anchor_p.paragraph_format.keep_together = True
         anchor_p.paragraph_format.keep_with_next = True
 
-    total_chars = sum(len(str(c or "")) for r in rows for c in r)
-    keep_all_rows = len(rows) <= 4 and total_chars <= 380
+    margin_cm = float(getattr(fmt, "margin_cm", 2.5) or 2.5)
+    usable_h_cm = max(16.0, 29.7 - 2.0 * margin_cm)
+    usable_h_pt = usable_h_cm * 28.3465 - 36.0
+    est_h_pt = _estimate_word_table_height_pt(safe_headers, rows, fmt)
+    keep_all_rows = est_h_pt <= (usable_h_pt * 0.86)
+
     hdr_trPr = tbl.rows[0]._tr.get_or_add_trPr()
-    hdr_trPr.append(parse_xml(f'<w:tblHeader {nsdecls("w")}/>'))
     hdr_trPr.append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
     accent_hex = _resolve_accent_hex(fmt)
     for ci, h_txt in enumerate(safe_headers):
