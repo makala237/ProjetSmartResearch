@@ -952,12 +952,17 @@ def _insert_table_after(
     rows: List[List[str]],
     fmt: FormattingRules,
     colored_cells: Optional[Dict[Tuple[int, int], str]] = None,
+    compact: bool = False,
+    keep_with_caption_below: bool = False,
 ):
     """Create a styled Word table and move it directly after anchor_p.
 
     Pagination rules:
-    - If the entire table + caption fits on a single A4 page, lock all rows together via `keep_with_next`
-      so Word/LibreOffice moves the whole table to the next page when remaining space is insufficient.
+    - If `compact=True` (e.g. Budget prévisionnel) or the table fits on a single A4 page,
+      use tight spacing and lock all rows together via `keep_with_next` so the entire table
+      stays intact on a single page.
+    - If `keep_with_caption_below=True`, the last row also sets `keep_with_next=True` so
+      the table caption placed underneath never separates from the table.
     - If the table is genuinely taller than a single full page, allow natural multi-page flow WITHOUT
       repeating a second table header/label on the continuation page.
     """
@@ -966,11 +971,10 @@ def _insert_table_after(
     tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
     _set_table_borders(tbl)
 
-    # Keep title/caption glued to table start (Header row + Row 0)
+    # Keep preceding heading/caption glued to table start
     anchor_txt = "".join(t.text for t in anchor_p._p.iter(qn("w:t")) if t.text).strip()
     if anchor_txt and (
         re.match(r"^(?:Tableau|Table)\s+\d+", anchor_txt, flags=re.IGNORECASE)
-        or len(anchor_txt) <= 180
         or anchor_p.paragraph_format.keep_with_next
     ):
         anchor_p.paragraph_format.keep_together = True
@@ -980,7 +984,11 @@ def _insert_table_after(
     usable_h_cm = max(16.0, 29.7 - 2.0 * margin_cm)
     usable_h_pt = usable_h_cm * 28.3465 - 36.0
     est_h_pt = _estimate_word_table_height_pt(safe_headers, rows, fmt)
-    keep_all_rows = est_h_pt <= (usable_h_pt * 0.86)
+    use_compact = compact or (10 <= len(rows) <= 22 and est_h_pt > usable_h_pt * 0.78)
+    keep_all_rows = use_compact or (est_h_pt <= (usable_h_pt * 0.86))
+
+    hdr_size_pt = 9.5 if use_compact else max(9, fmt.body_font_size_pt - 1)
+    cell_size_pt = 9 if use_compact else max(9, fmt.body_font_size_pt - 2)
 
     hdr_trPr = tbl.rows[0]._tr.get_or_add_trPr()
     hdr_trPr.append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
@@ -988,40 +996,51 @@ def _insert_table_after(
     for ci, h_txt in enumerate(safe_headers):
         cell = tbl.rows[0].cells[ci]
         _set_cell_shading(cell, accent_hex)
+        if use_compact:
+            _set_cell_margins(cell, top=32, bottom=32, left=70, right=70)
         p = cell.paragraphs[0]
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p.paragraph_format.space_after = Pt(2)
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(0 if use_compact else 2)
+        p.paragraph_format.line_spacing = 1.0 if use_compact else 1.15
         p.paragraph_format.keep_with_next = True
         run = p.add_run(h_txt)
-        _apply_run_font(run, fmt, size_pt=max(9, fmt.body_font_size_pt - 1), bold=True, color_rgb=RGBColor(255, 255, 255))
+        _apply_run_font(run, fmt, size_pt=hdr_size_pt, bold=True, color_rgb=RGBColor(255, 255, 255))
 
     # Data rows
     for ri, row_vals in enumerate(rows):
         row_obj = tbl.rows[ri + 1]
         row_trPr = row_obj._tr.get_or_add_trPr()
         row_trPr.append(parse_xml(f'<w:cantSplit {nsdecls("w")}/>'))
+        is_last_row = ri == len(rows) - 1
         for ci in range(len(safe_headers)):
             val = row_vals[ci] if ci < len(row_vals) else ""
             cell = row_obj.cells[ci]
             if colored_cells and (ri, ci) in colored_cells:
                 _set_cell_shading(cell, colored_cells[(ri, ci)])
+            if use_compact:
+                _set_cell_margins(cell, top=26, bottom=26, left=70, right=70)
             p = cell.paragraphs[0]
             p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-            p.paragraph_format.space_after = Pt(2)
-            if keep_all_rows and ri < len(rows) - 1:
+            p.paragraph_format.space_before = Pt(0)
+            p.paragraph_format.space_after = Pt(0 if use_compact else 2)
+            p.paragraph_format.line_spacing = 1.0 if use_compact else 1.15
+            if (keep_all_rows and not is_last_row) or (keep_with_caption_below and is_last_row):
                 p.paragraph_format.keep_with_next = True
             run = p.add_run(val)
-            _apply_run_font(run, fmt, size_pt=max(9, fmt.body_font_size_pt - 2))
+            _apply_run_font(run, fmt, size_pt=cell_size_pt, bold=(use_compact and is_last_row and ci in (0, len(safe_headers) - 1)))
 
     # Move table XML right after anchor_p
     anchor_p._p.addnext(tbl._tbl)
-    # Create a compact trailing spacer paragraph to return a valid cursor without inflating height
+    # Create a compact trailing spacer paragraph (or direct anchor for caption below)
     spacer = OxmlElement("w:p")
     tbl._tbl.addnext(spacer)
     spacer_p = doc.paragraphs[0].__class__(spacer, anchor_p._parent)
     spacer_p.paragraph_format.space_before = Pt(0)
-    spacer_p.paragraph_format.space_after = Pt(4)
+    spacer_p.paragraph_format.space_after = Pt(2 if keep_with_caption_below else 4)
     spacer_p.paragraph_format.line_spacing = 1.0
+    if keep_with_caption_below:
+        spacer_p.paragraph_format.keep_with_next = True
     return spacer_p
 
 
@@ -1646,7 +1665,10 @@ def _render_administrative_letter_in_docx(
             ]
     if not subject_line:
         clean_t = re.sub(r"^(?:ANNEXE|APPENDIX)\s+\d+\s*[:\-–.]\s*", "", str(ann.get("title") or ""), flags=re.IGNORECASE).strip()
+        clean_t = re.sub(r"^(?:MOD[ÈE]LE\s+DE\s+|TEMPLATE\s+(?:FOR\s+)?)", "", clean_t, flags=re.IGNORECASE).strip()
         subject_line = f"{'Subject:' if is_en else 'Objet :'} {clean_t or ('Research Authorization Request' if is_en else 'Demande d’autorisation de recherche')}"
+    else:
+        subject_line = re.sub(r"(?i)(Objet\s*:\s*)(?:MOD[ÈE]LE\s+DE\s+)", r"\1", subject_line)
 
     # 1. Top 2-column borderless table: Expéditeur (top-left) | Lieu & Date (top-right)
     top_tbl = doc.add_table(rows=1, cols=2)
@@ -1720,7 +1742,7 @@ def _render_administrative_letter_in_docx(
         if first_indent_cm > 0:
             po.paragraph_format.first_line_indent = Cm(first_indent_cm)
         run_p = po.add_run(text_val)
-        _apply_run_font(run_p, fmt, size_pt=fmt.body_font_size_pt, bold=bold, italic=italic)
+        _apply_run_font(run_p, fmt, size_pt=11, bold=bold, italic=italic)
         last_el = np
         return po
 
@@ -1796,27 +1818,30 @@ def _render_structured_form_in_docx(
     is_consent = sid == "annexe_consentement" or "consent" in raw_title.lower()
     is_notice = sid == "annexe_notice_information" or "notice" in raw_title.lower() or "information sheet" in raw_title.lower()
 
-    # 1. Official Framed Form Header Box
-    hdr_tbl = doc.add_table(rows=2, cols=1)
-    hdr_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
-    hdr_tbl.autofit = False
-    _set_table_borders_clean(hdr_tbl, border_color=accent_hex)
-    c0 = hdr_tbl.rows[0].cells[0]
-    c0.width = Cm(16.0)
-    _set_cell_shading(c0, "FDF8F8")
-    _set_cell_margins(c0, top=90, bottom=90, left=120, right=120)
-    p0 = c0.paragraphs[0]
-    p0.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p0.paragraph_format.space_before = Pt(0)
-    p0.paragraph_format.space_after = Pt(2)
+    # 1. Official Framed Study Identification Box (without repeating the Annex heading already shown above)
     inst_line = " — ".join(x for x in (ctx.get("university_name"), ctx.get("faculty_name")) if x)
     if inst_line:
-        r_inst = p0.add_run(f"{inst_line}\n")
-        _apply_run_font(r_inst, fmt, size_pt=9.0, bold=True, color_rgb=RGBColor(71, 85, 105))
-    r_ft = p0.add_run((raw_title or ("STANDARD RESEARCH FORM" if is_en else "FORMULAIRE OFFICIEL DE RECHERCHE")).upper())
-    _apply_run_font(r_ft, fmt, size_pt=11.5, bold=True, color_rgb=accent_rgb)
-
-    c1 = hdr_tbl.rows[1].cells[0]
+        hdr_tbl = doc.add_table(rows=2, cols=1)
+        hdr_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+        hdr_tbl.autofit = False
+        _set_table_borders_clean(hdr_tbl, border_color=accent_hex)
+        c0 = hdr_tbl.rows[0].cells[0]
+        c0.width = Cm(16.0)
+        _set_cell_shading(c0, "FDF8F8")
+        _set_cell_margins(c0, top=60, bottom=60, left=120, right=120)
+        p0 = c0.paragraphs[0]
+        p0.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p0.paragraph_format.space_before = Pt(0)
+        p0.paragraph_format.space_after = Pt(0)
+        r_inst = p0.add_run(inst_line.upper())
+        _apply_run_font(r_inst, fmt, size_pt=9.5, bold=True, color_rgb=accent_rgb)
+        c1 = hdr_tbl.rows[1].cells[0]
+    else:
+        hdr_tbl = doc.add_table(rows=1, cols=1)
+        hdr_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+        hdr_tbl.autofit = False
+        _set_table_borders_clean(hdr_tbl, border_color=accent_hex)
+        c1 = hdr_tbl.rows[0].cells[0]
     c1.width = Cm(16.0)
     _set_cell_margins(c1, top=60, bottom=60, left=120, right=120)
     p1 = c1.paragraphs[0]
@@ -2320,7 +2345,15 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
     synchronize_module1_to_module2_tables(project)
 
     # Unify & deduplicate Abbreviations, Vancouver References, Tables List, and Figures List before Word compilation
-    _, _, unified_abbrs = build_unified_abbreviations_list(project, mark_validated=False)
+    _abbr_sec_obj = project.sections.get("abbreviations")
+    if (
+        _abbr_sec_obj is not None
+        and str(getattr(_abbr_sec_obj.status, "value", _abbr_sec_obj.status)) == "validated"
+        and project.abbreviations
+    ):
+        unified_abbrs = sorted(project.abbreviations, key=lambda a: (a.acronym or "").lower())
+    else:
+        _, _, unified_abbrs = build_unified_abbreviations_list(project, mark_validated=False)
     build_and_validate_vancouver_references(project, use_gemini_decision=False, mark_validated=False)
     table_entries, figure_entries, pagination_plan = build_unified_tables_and_figures_lists(
         project, mark_validated=False, use_gemini_decision=True
@@ -2667,20 +2700,27 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             if matched_sp is not None:
                 target_c = matched_sp
                 advance_main = False
-            c_after = _insert_caption_with_seq(
+            c_after = _insert_table_after(
                 doc,
                 target_c,
+                ct.headers,
+                ct.rows,
+                fmt,
+                keep_with_caption_below=True,
+            )
+            c_after = _insert_caption_with_seq(
+                doc,
+                c_after,
                 seq_label=labels["table_seq"],
                 num_val=table_counter,
                 separator=table_sep,
                 title_text=ct.title,
                 fmt=fmt,
-                size_pt=11,
+                size_pt=10,
                 bold=True,
-                align=WD_ALIGN_PARAGRAPH.LEFT,
+                align=WD_ALIGN_PARAGRAPH.CENTER,
             )
             table_counter += 1
-            c_after = _insert_table_after(doc, c_after, ct.headers, ct.rows, fmt)
             if advance_main:
                 cursor_out = c_after
         return cursor_out
@@ -2913,23 +2953,6 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             )
 
             if spec.id == "chap1_variables" and project.variables and not _has_custom_tbl and not _suppressed_structured:
-                cursor = _insert_caption_with_seq(
-                    doc,
-                    cursor,
-                    seq_label=labels["table_seq"],
-                    num_val=table_counter,
-                    separator=table_sep,
-                    title_text=(
-                        "Operational list of study variables"
-                        if lang == "en"
-                        else "Liste opérationnelle des variables d'étude"
-                    ),
-                    fmt=fmt,
-                    size_pt=11,
-                    bold=True,
-                    align=WD_ALIGN_PARAGRAPH.LEFT,
-                )
-                table_counter += 1
                 var_rows = [
                     [v.name, v.role, v.definition or "—", v.measurement_scale or "—", v.collection_tool or "—"]
                     for v in project.variables
@@ -2945,9 +2968,8 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     var_headers,
                     var_rows,
                     fmt,
+                    keep_with_caption_below=True,
                 )
-
-            if spec.id == "chap2_etat_connaissances" and project.literature_synthesis and not _has_custom_tbl and not _suppressed_structured:
                 cursor = _insert_caption_with_seq(
                     doc,
                     cursor,
@@ -2955,16 +2977,18 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     num_val=table_counter,
                     separator=table_sep,
                     title_text=(
-                        "Summary of previous studies"
+                        "Operational list of study variables"
                         if lang == "en"
-                        else "Synthèse des études antérieures"
+                        else "Liste opérationnelle des variables d'étude"
                     ),
                     fmt=fmt,
-                    size_pt=11,
+                    size_pt=10,
                     bold=True,
-                    align=WD_ALIGN_PARAGRAPH.LEFT,
+                    align=WD_ALIGN_PARAGRAPH.CENTER,
                 )
                 table_counter += 1
+
+            if spec.id == "chap2_etat_connaissances" and project.literature_synthesis and not _has_custom_tbl and not _suppressed_structured:
                 syn_rows = [
                     [s.authors_country_year, s.study_design, s.population, s.main_results, s.limits or "—"]
                     for s in project.literature_synthesis
@@ -2980,22 +3004,27 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     syn_headers,
                     syn_rows,
                     fmt,
+                    keep_with_caption_below=True,
                 )
-
-            if spec.id == "chap3_chronogramme" and project.timeline_grid.rows and not _has_custom_tbl and not _suppressed_structured:
                 cursor = _insert_caption_with_seq(
                     doc,
                     cursor,
                     seq_label=labels["table_seq"],
                     num_val=table_counter,
                     separator=table_sep,
-                    title_text="Activity timeline" if lang == "en" else "Chronogramme des activités",
+                    title_text=(
+                        "Summary of previous studies"
+                        if lang == "en"
+                        else "Synthèse des études antérieures"
+                    ),
                     fmt=fmt,
-                    size_pt=11,
+                    size_pt=10,
                     bold=True,
-                    align=WD_ALIGN_PARAGRAPH.LEFT,
+                    align=WD_ALIGN_PARAGRAPH.CENTER,
                 )
                 table_counter += 1
+
+            if spec.id == "chap3_chronogramme" and project.timeline_grid.rows and not _has_custom_tbl and not _suppressed_structured:
                 periods = project.timeline_grid.periods
                 headers = [labels["chrono_header_activity"] if lang == "en" else "Activité"] + periods
                 gantt_rows: List[List[str]] = []
@@ -3012,22 +3041,31 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                         else:
                             vals.append("")
                     gantt_rows.append(vals)
-                cursor = _insert_table_after(doc, cursor, headers, gantt_rows, fmt, colored_cells=colored)
-
-            if spec.id == "chap3_budget" and _auth_budget_items and not _suppressed_structured:
+                cursor = _insert_table_after(
+                    doc,
+                    cursor,
+                    headers,
+                    gantt_rows,
+                    fmt,
+                    colored_cells=colored,
+                    compact=True,
+                    keep_with_caption_below=True,
+                )
                 cursor = _insert_caption_with_seq(
                     doc,
                     cursor,
                     seq_label=labels["table_seq"],
                     num_val=table_counter,
                     separator=table_sep,
-                    title_text="Estimated study budget" if lang == "en" else "Budget prévisionnel de l'étude",
+                    title_text="Activity timeline" if lang == "en" else "Chronogramme des activités",
                     fmt=fmt,
-                    size_pt=11,
+                    size_pt=10,
                     bold=True,
-                    align=WD_ALIGN_PARAGRAPH.LEFT,
+                    align=WD_ALIGN_PARAGRAPH.CENTER,
                 )
                 table_counter += 1
+
+            if spec.id == "chap3_budget" and _auth_budget_items and not _suppressed_structured:
                 budget_rows: List[List[str]] = []
                 for b in _auth_budget_items:
                     line_total = b.total_fcfa if b.total_fcfa > 0 else b.quantity * b.unit_cost_fcfa
@@ -3052,7 +3090,22 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     budget_rows,
                     fmt,
                     colored_cells={(len(budget_rows) - 1, c): "EFE6E6" for c in range(4)},
+                    compact=True,
+                    keep_with_caption_below=True,
                 )
+                cursor = _insert_caption_with_seq(
+                    doc,
+                    cursor,
+                    seq_label=labels["table_seq"],
+                    num_val=table_counter,
+                    separator=table_sep,
+                    title_text="Estimated study budget" if lang == "en" else "Budget prévisionnel de l'étude",
+                    fmt=fmt,
+                    size_pt=10,
+                    bold=True,
+                    align=WD_ALIGN_PARAGRAPH.CENTER,
+                )
+                table_counter += 1
 
             # Render centered approved figures (>= 12pt minimum legibility) + 9pt centered caption locked together
             for img in approved_images_by_section.get(spec.id, []):

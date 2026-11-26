@@ -321,11 +321,17 @@ def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
             if not sec or not (sec.content_markdown or "").strip():
                 continue
             if sid == "annexe_fiche_collecte":
+                clean_crf = re.sub(
+                    r"^(?:ANNEXE|APPENDIX)\s+(?:\d+|[IVX]+)\s*[:\-–.]\s*",
+                    "",
+                    crf_heading or "",
+                    flags=re.IGNORECASE,
+                ).strip() or ("DATA COLLECTION FORM (CRF)" if lang == "en" else "FICHE DE COLLECTE DES DONNÉES")
                 combined.append(
                     _build_data_collection_annex_entry(
                         project,
                         number=len(combined) + 1,
-                        custom_title=crf_heading or f"{prefix} {len(combined) + 1} : FICHE DE COLLECTE DES DONNÉES",
+                        custom_title=f"{prefix} {len(combined) + 1} : {clean_crf}",
                         paragraphs=crf_body or None,
                     )
                 )
@@ -338,6 +344,12 @@ def build_annexes_pack(project: ProtocolProject) -> List[Dict[str, object]]:
                     r"^(?:ANNEXE|APPENDIX)\s+(?:\d+|[IVX]+)\s*[:\-–.]\s*",
                     "",
                     h_title,
+                    flags=re.IGNORECASE,
+                ).strip()
+                clean_title = re.sub(
+                    r"^(?:MOD[ÈE]LE\s+DE\s+|TEMPLATE\s+(?:FOR\s+)?)",
+                    "",
+                    clean_title,
                     flags=re.IGNORECASE,
                 ).strip()
                 combined.append(

@@ -440,25 +440,8 @@ def insert_word_automatic_toc(
     usable_cm = max(12.0, 21.0 - 2.0 * float(fmt.margin_cm or 2.5))
     right_tab_dxa = int(round(usable_cm * 566.929))
 
-    # Subtle note paragraph (left-aligned, never justified)
-    lang = normalize_lang(getattr(project, "language", "fr"))
-    note_el = OxmlElement("w:p")
-    anchor_p._p.addnext(note_el)
-    note_p = doc.paragraphs[0].__class__(note_el, anchor_p._parent)
-    note_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    note_p.paragraph_format.space_before = Pt(0)
-    note_p.paragraph_format.space_after = Pt(6)
-    r_note = note_p.add_run(
-        "Automatic Table of Contents (updates automatically or press F9 in Word)."
-        if lang == "en"
-        else "Table des matières générée automatiquement (actualisation automatique ou touche F9 sous Word)."
-    )
-    _apply_toc_entry_font(r_note, font_family, size_pt=9, bold=False)
-    r_note.italic = True
-    r_note.font.color.rgb = RGBColor(100, 116, 139)
-
     entries = extract_project_toc_entries(project, pagination_plan=pagination_plan)
-    cursor_p = note_p
+    cursor_p = anchor_p
     toc_depth = max(1, min(3, int(getattr(fmt, "toc_depth", 2) or 2)))
     instr_code = f' TOC \\o "1-{toc_depth}" \\h \\z \\u '
 

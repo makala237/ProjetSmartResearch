@@ -89,6 +89,7 @@ def _build_firestore_client():
 
 def _build_gcs_blob_storage():
     from google.cloud import storage as gcs_storage
+    from app.services import blob_storage as bs_mod
     from app.services.blob_storage import GCSBlobStorage
 
     project_id = os.environ.get("FIRESTORE_PROJECT_ID", "smart-research-fmsb")
@@ -97,6 +98,9 @@ def _build_gcs_blob_storage():
     blob.bucket_name = bucket_name
     blob._client = gcs_storage.Client(project=project_id, credentials=_get_gcp_credentials())
     blob._bucket = blob._client.bucket(bucket_name)
+    # Also wire the module-level cache so media_transport/docx_template use the same gcloud token
+    bs_mod._build_cached_blob_storage.cache_clear()
+    bs_mod.get_blob_storage = lambda: blob
     return blob
 
 
@@ -268,6 +272,7 @@ def sync_and_validate_guardrails(proj: ProtocolProject) -> List[str]:
 
 
 def cmd_validate(project_id: str) -> None:
+    _build_gcs_blob_storage()
     ws = _find_workspace_dir(project_id)
     if ws is None or not (ws / "project.json").exists():
         raise SystemExit(f"No local workspace found for project_id={project_id} in {WORKSPACES_DIR}")
@@ -289,6 +294,7 @@ def cmd_push(
     note: str = "",
     force: bool = False,
 ) -> None:
+    _build_gcs_blob_storage()
     ws = _find_workspace_dir(project_id)
     if ws is None or not (ws / "project.json").exists():
         raise SystemExit(f"No local workspace found for project_id={project_id} in {WORKSPACES_DIR}")
