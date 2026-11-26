@@ -1379,6 +1379,77 @@ export const api = {
       { method: "POST" }
     ),
 
+  createUserUpdateRequest: (payload: {
+    project_id?: string;
+    project_name?: string;
+    module?: string;
+    section_id?: string;
+    category: "formatting" | "content" | "bug";
+    message: string;
+  }) =>
+    request<{
+      id: string;
+      created_at: string;
+      status: string;
+      project_id: string;
+      category: string;
+      message: string;
+    }>("/api/support/update-requests", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  listMyUpdateRequests: () =>
+    request<
+      Array<{
+        id: string;
+        created_at: string;
+        project_id: string;
+        project_name: string;
+        module: string;
+        section_id: string;
+        category: string;
+        message: string;
+        resolved: boolean;
+        resolved_at?: string | null;
+        resolution_note?: string;
+      }>
+    >("/api/support/update-requests/me"),
+
+  adminListUpdateRequests: (limit = 30) =>
+    request<
+      Array<{
+        id: string;
+        created_at: string;
+        user_id: string;
+        user_name: string;
+        user_email: string;
+        project_id: string;
+        project_name: string;
+        module: string;
+        section_id: string;
+        category: string;
+        message: string;
+        resolved: boolean;
+        resolved_at?: string | null;
+        resolved_by?: string;
+        resolution_note?: string;
+      }>
+    >(`/api/admin/update-requests?limit=${limit}`),
+
+  adminResolveUpdateRequest: (requestId: string, note = "") =>
+    request<{
+      resolved: boolean;
+      request_id: string;
+      target_user_id: string;
+      resolved_at: string;
+      resolved_by: string;
+      resolution_note: string;
+    }>(`/api/admin/update-requests/${encodeURIComponent(requestId)}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ note }),
+    }),
+
   adminListApiKeys: () =>
     request<GeminiApiKeyStatsOut[]>("/api/admin/api-keys"),
 

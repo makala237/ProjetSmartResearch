@@ -423,16 +423,17 @@ def list_user_resolved_error_notifications(
         out: List[Dict[str, Any]] = []
         seen_alert_ids: set[str] = set()
         for l in logs:
-            if l.action != "runtime_error_resolved" or l.target_user_id != current_user.id:
+            if l.action not in ("runtime_error_resolved", "user_update_request_resolved") or l.target_user_id != current_user.id:
                 continue
             if l.id in dismissed_ids:
                 continue
             d = l.details_json or {}
-            aid = str(d.get("alert_id") or l.id)
+            aid = str(d.get("alert_id") or d.get("request_id") or l.id)
             if aid in seen_alert_ids:
                 continue
             seen_alert_ids.add(aid)
             note = str(d.get("note") or "").strip()
+            is_update_req = l.action == "user_update_request_resolved"
             out.append(
                 {
                     "id": l.id,
@@ -440,11 +441,15 @@ def list_user_resolved_error_notifications(
                     "module": str(d.get("module") or ""),
                     "resolved_at": (ensure_utc(l.created_at) or now).isoformat(),
                     "message_fr": (
-                        "Bonne nouvelle ! L'incident technique que vous avez rencontré a été corrigé "
+                        "Votre demande d'ajustement a été traitée ! Actualisez votre document pour voir les mises à jour."
+                        if is_update_req
+                        else "Bonne nouvelle ! L'incident technique que vous avez rencontré a été corrigé "
                         "par notre équipe. Vous pouvez maintenant réessayer votre action sereinement."
                     ),
                     "message_en": (
-                        "Good news! The technical issue you encountered has been fixed by our team. "
+                        "Your document update request has been completed! Refresh your project to see the updated version."
+                        if is_update_req
+                        else "Good news! The technical issue you encountered has been fixed by our team. "
                         "You can now safely retry your action."
                     ),
                     "note": note,
@@ -479,6 +484,104 @@ def dismiss_user_resolved_error_notification(
         return {"dismissed": True, "notification_id": notification_id}
     except Exception:
         return {"dismissed": False, "notification_id": notification_id}
+
+
+class UserUpdateRequestCreate(BaseModel):
+    project_id: str = ""
+    project_name: str = ""
+    module: str = "module1"
+    section_id: str = ""
+    category: str = "formatting"  # "formatting" | "content" | "bug"
+    message: str = Field(..., min_length=4, max_length=2000)
+
+
+@app.post("/api/support/update-requests")
+def create_user_update_request(
+    payload: UserUpdateRequestCreate,
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Allow an authenticated user to request a document adjustment or technical fix from the Smart Research team."""
+    from app.core.security import ensure_utc
+    from app.db.datastore import as_store
+    from app.db.models import utcnow
+
+    store = as_store(db)
+    now = utcnow()
+    rec = store.create_audit_log(
+        admin_id=None,
+        target_user_id=current_user.id,
+        action="user_update_request",
+        details_json={
+            "user_name": current_user.full_name,
+            "user_email": current_user.email,
+            "project_id": (payload.project_id or "").strip(),
+            "project_name": (payload.project_name or "").strip()[:160],
+            "module": (payload.module or "module1").strip()[:40],
+            "section_id": (payload.section_id or "").strip()[:80],
+            "category": (payload.category or "formatting").strip()[:40],
+            "message": payload.message.strip()[:2000],
+        },
+        created_at=now,
+    )
+    return {
+        "id": rec.id,
+        "created_at": (ensure_utc(rec.created_at) or now).isoformat(),
+        "status": "pending",
+        "project_id": (payload.project_id or "").strip(),
+        "category": (payload.category or "formatting").strip(),
+        "message": payload.message.strip(),
+    }
+
+
+@app.get("/api/support/update-requests/me")
+def list_my_update_requests(
+    current_user: UserRecord = Depends(get_active_user),
+    db: Any = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Return the current user's recent document update requests and their resolution status."""
+    from app.core.security import ensure_utc
+    from app.db.datastore import as_store
+    from app.db.models import utcnow
+
+    store = as_store(db)
+    logs = store.list_audit_logs(limit=300)
+    now = utcnow()
+    resolved_by_id: Dict[str, Dict[str, Any]] = {}
+    for l in logs:
+        if l.action == "user_update_request_resolved" and l.target_user_id == current_user.id:
+            rd = l.details_json or {}
+            rid = str(rd.get("request_id") or "").strip()
+            if rid and rid not in resolved_by_id:
+                resolved_by_id[rid] = {
+                    "resolved_at": (ensure_utc(l.created_at) or now).isoformat(),
+                    "resolution_note": str(rd.get("note") or ""),
+                }
+
+    out: List[Dict[str, Any]] = []
+    for l in logs:
+        if l.action != "user_update_request" or l.target_user_id != current_user.id:
+            continue
+        d = l.details_json or {}
+        res_info = resolved_by_id.get(l.id)
+        out.append(
+            {
+                "id": l.id,
+                "created_at": (ensure_utc(l.created_at) or now).isoformat(),
+                "project_id": str(d.get("project_id") or ""),
+                "project_name": str(d.get("project_name") or ""),
+                "module": str(d.get("module") or ""),
+                "section_id": str(d.get("section_id") or ""),
+                "category": str(d.get("category") or "formatting"),
+                "message": str(d.get("message") or ""),
+                "resolved": res_info is not None,
+                "resolved_at": res_info["resolved_at"] if res_info else None,
+                "resolution_note": res_info["resolution_note"] if res_info else "",
+            }
+        )
+        if len(out) >= 15:
+            break
+    return out
 
 
 @app.post("/api/auth/login", response_model=TokenResponse)

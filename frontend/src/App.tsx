@@ -11,6 +11,7 @@ import {
   Globe,
   KeyRound,
   Layers,
+  LifeBuoy,
   Lightbulb,
   Lock,
   LogOut,
@@ -29,6 +30,7 @@ import {
 import { AdminPortal } from "./components/AdminPortal";
 import { AssistantSmartResearchWidget } from "./components/AssistantSmartResearchWidget";
 import { ChangePasswordModal } from "./components/ChangePasswordModal";
+import { SupportRequestModal } from "./components/SupportRequestModal";
 import { LoginScreen } from "./components/LoginScreen";
 import { Module1Assistant } from "./components/Module1Assistant";
 import { Module2Editor } from "./components/Module2Editor";
@@ -90,6 +92,7 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState<boolean>(() => Boolean(getAccessToken()));
   const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [showSupportModal, setShowSupportModal] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const [activeView, setActiveView] = useState<"studio" | "admin">(() =>
@@ -1033,6 +1036,21 @@ export default function App() {
               </>
             )}
 
+            {/* Subtle top-bar Technical/Document Assistance button (separate from AI tools) */}
+            <button
+              type="button"
+              onClick={() => setShowSupportModal(true)}
+              className="inline-flex items-center gap-1 rounded-lg border border-sky-200 bg-sky-50/80 px-2.5 py-1.5 text-xs font-semibold text-sky-700 hover:bg-sky-100"
+              title={
+                lang === "en"
+                  ? "Request a document adjustment or technical assistance"
+                  : "Demander un ajustement sur votre document ou une assistance technique"
+              }
+            >
+              <LifeBuoy className="h-3.5 w-3.5" />
+              <span>{lang === "en" ? "Support" : "Assistance"}</span>
+            </button>
+
             {/* User Badge & Account Actions */}
             <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs">
               <span className="max-w-[130px] truncate font-semibold text-slate-800">
@@ -1872,6 +1890,22 @@ export default function App() {
           )}
         </nav>
       )}
+
+      <SupportRequestModal
+        open={showSupportModal}
+        onClose={() => setShowSupportModal(false)}
+        lang={lang}
+        projectId={activeProject?.project_id}
+        projectName={activeProject?.cover?.title || activeProject?.name}
+        activeModule={activeModule}
+        sectionId={selectedSectionId}
+        sectionTitle={
+          (activeProject?.custom_canvas && activeProject.custom_canvas.length > 0
+            ? activeProject.custom_canvas
+            : canvas
+          ).find((c) => c.id === selectedSectionId)?.title || selectedSectionId
+        }
+      />
 
       {showPasswordModal && (
         <ChangePasswordModal

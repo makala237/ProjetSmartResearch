@@ -21,6 +21,7 @@ frontend/.vite/
 
 # Local runtime storage & exports
 backend/storage/
+user_workspaces/
 *.db
 *.sqlite*
 *.log

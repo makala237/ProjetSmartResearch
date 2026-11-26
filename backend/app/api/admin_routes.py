@@ -1261,6 +1261,98 @@ def resolve_admin_error_alert(
     }
 
 
+@router.get("/update-requests")
+def list_admin_update_requests(
+    limit: int = Query(default=30, ge=1, le=100),
+    db: Any = Depends(get_db),
+) -> List[Dict[str, Any]]:
+    """Return recent student document update / support requests."""
+    store = as_store(db)
+    logs = store.list_audit_logs(limit=max(limit * 6, 200))
+    now = datetime.now(timezone.utc)
+
+    resolved_by_id: Dict[str, Dict[str, Any]] = {}
+    for l in logs:
+        if l.action == "user_update_request_resolved":
+            rd = l.details_json or {}
+            rid = str(rd.get("request_id") or "").strip()
+            if rid and rid not in resolved_by_id:
+                resolved_by_id[rid] = {
+                    "resolved_at": (ensure_utc(l.created_at) or now).isoformat(),
+                    "resolved_by": str(rd.get("admin_name") or "Administrateur"),
+                    "resolution_note": str(rd.get("note") or ""),
+                }
+
+    reqs = [l for l in logs if l.action == "user_update_request"][:limit]
+    out: List[Dict[str, Any]] = []
+    for l in reqs:
+        d = l.details_json or {}
+        res_info = resolved_by_id.get(l.id)
+        out.append(
+            {
+                "id": l.id,
+                "created_at": (ensure_utc(l.created_at) or now).isoformat(),
+                "user_id": l.target_user_id or "",
+                "user_name": str(d.get("user_name") or ""),
+                "user_email": str(d.get("user_email") or ""),
+                "project_id": str(d.get("project_id") or ""),
+                "project_name": str(d.get("project_name") or ""),
+                "module": str(d.get("module") or ""),
+                "section_id": str(d.get("section_id") or ""),
+                "category": str(d.get("category") or "formatting"),
+                "message": str(d.get("message") or ""),
+                "resolved": res_info is not None,
+                "resolved_at": res_info["resolved_at"] if res_info else None,
+                "resolved_by": res_info["resolved_by"] if res_info else "",
+                "resolution_note": res_info["resolution_note"] if res_info else "",
+            }
+        )
+    return out
+
+
+@router.post("/update-requests/{request_id}/resolve")
+def resolve_admin_update_request(
+    request_id: str,
+    payload: Optional[Dict[str, Any]] = Body(default=None),
+    current_admin: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    """Mark a student document update request as resolved and notify the user."""
+    store = as_store(db)
+    logs = store.list_audit_logs(limit=400)
+    target = next(
+        (l for l in logs if l.action == "user_update_request" and l.id == request_id),
+        None,
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Demande introuvable.")
+
+    now = utcnow()
+    note = str((payload or {}).get("note") or "").strip()[:300]
+    td = target.details_json or {}
+    store.create_audit_log(
+        admin_id=current_admin.id,
+        target_user_id=target.target_user_id or "",
+        action="user_update_request_resolved",
+        details_json={
+            "request_id": request_id,
+            "project_id": str(td.get("project_id") or ""),
+            "module": str(td.get("module") or ""),
+            "admin_name": current_admin.full_name,
+            "note": note,
+        },
+        created_at=now,
+    )
+    return {
+        "resolved": True,
+        "request_id": request_id,
+        "target_user_id": target.target_user_id or "",
+        "resolved_at": now.isoformat(),
+        "resolved_by": current_admin.full_name,
+        "resolution_note": note,
+    }
+
+
 def _mask_api_key(raw: str) -> str:
     clean = (raw or "").strip()
     if not clean:
