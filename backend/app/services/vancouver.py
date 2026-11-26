@@ -1,5 +1,6 @@
 """Internal Vancouver (ICMJE / NLM / FMSB) reference generator and Gemini Decision 1 validator."""
 
+from datetime import datetime, timezone
 from html import escape, unescape
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -73,6 +74,12 @@ def _normalize_vancouver_punctuation(text: str) -> str:
 
     s = _URL_RE.sub(_stash_url, s)
     s = re.sub(r"\s+([;,.])", r"\1", s)
+    # Normalize spelled-out publication months after 4-digit year (e.g. '2024 January;' -> '2024 Jan;')
+    s = re.sub(
+        r"\b((?:19|20)\d{2})\s+([A-Za-zÀ-ÖØ-öø-ÿ]{3,10}\.?)(?=\s|\d|;)",
+        lambda m: f"{m.group(1)} {_NLM_MONTH_MAP.get(m.group(2).lower(), m.group(2))}",
+        s,
+    )
     s = re.sub(r"([12]\d{3})\s*;\s*", r"\1;", s)
     s = re.sub(r"(\w|\))\s*:\s*(\d)", r"\1:\2", s)
     s = re.sub(r"\bet\s+al\b(?!\.)", "et al.", s, flags=re.IGNORECASE)
@@ -128,8 +135,164 @@ def _abbreviate_page_range_nlm(pages: str) -> str:
     return f"{p1}{s1}-{s2[diff_idx:]}"
 
 
+_NLM_MONTH_MAP: Dict[str, str] = {
+    "january": "Jan", "janvier": "Jan", "jan.": "Jan",
+    "february": "Feb", "février": "Feb", "fevrier": "Feb", "feb.": "Feb", "févr.": "Feb",
+    "march": "Mar", "mars": "Mar", "mar.": "Mar",
+    "april": "Apr", "avril": "Apr", "apr.": "Apr", "avr.": "Apr",
+    "may": "May", "mai": "May",
+    "june": "Jun", "juin": "Jun", "jun.": "Jun",
+    "july": "Jul", "juillet": "Jul", "jul.": "Jul", "juil.": "Jul",
+    "august": "Aug", "août": "Aug", "aout": "Aug", "aug.": "Aug",
+    "september": "Sep", "septembre": "Sep", "sept.": "Sep", "sep.": "Sep",
+    "october": "Oct", "octobre": "Oct", "oct.": "Oct",
+    "november": "Nov", "novembre": "Nov", "nov.": "Nov",
+    "december": "Dec", "décembre": "Dec", "decembre": "Dec", "dec.": "Dec", "déc.": "Dec",
+}
+
+_FR_MONTHS_SHORT = ["jan", "fév", "mar", "avr", "mai", "juin", "juil", "août", "sep", "oct", "nov", "déc"]
+_EN_MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+# Official NLM Catalog / Index Medicus abbreviations for top global, African & FMSB/CAMES journals
+_NLM_JOURNAL_ABBREV_MAP: Dict[str, str] = {
+    "new england journal of medicine": "N Engl J Med",
+    "the new england journal of medicine": "N Engl J Med",
+    "the lancet": "Lancet",
+    "lancet global health": "Lancet Glob Health",
+    "the lancet global health": "Lancet Glob Health",
+    "lancet infectious diseases": "Lancet Infect Dis",
+    "the lancet infectious diseases": "Lancet Infect Dis",
+    "lancet hiv": "Lancet HIV",
+    "the lancet hiv": "Lancet HIV",
+    "lancet public health": "Lancet Public Health",
+    "journal of the american medical association": "JAMA",
+    "british medical journal": "BMJ",
+    "bmj global health": "BMJ Glob Health",
+    "bmj open": "BMJ Open",
+    "nature medicine": "Nat Med",
+    "pan african medical journal": "Pan Afr Med J",
+    "the pan african medical journal": "Pan Afr Med J",
+    "health sciences and disease": "Health Sci Dis",
+    "health sciences and diseases": "Health Sci Dis",
+    "plos one": "PLoS One",
+    "plos medicine": "PLoS Med",
+    "plos neglected tropical diseases": "PLoS Negl Trop Dis",
+    "bmc public health": "BMC Public Health",
+    "bmc infectious diseases": "BMC Infect Dis",
+    "bmc health services research": "BMC Health Serv Res",
+    "bmc medicine": "BMC Med",
+    "bmc pregnancy and childbirth": "BMC Pregnancy Childbirth",
+    "bmc pediatrics": "BMC Pediatr",
+    "bulletin of the world health organization": "Bull World Health Organ",
+    "weekly epidemiological record": "Wkly Epidemiol Rec",
+    "tropical medicine & international health": "Trop Med Int Health",
+    "tropical medicine and international health": "Trop Med Int Health",
+    "transactions of the royal society of tropical medicine and hygiene": "Trans R Soc Trop Med Hyg",
+    "american journal of tropical medicine and hygiene": "Am J Trop Med Hyg",
+    "clinical infectious diseases": "Clin Infect Dis",
+    "journal of infectious diseases": "J Infect Dis",
+    "the journal of infectious diseases": "J Infect Dis",
+    "journal of acquired immune deficiency syndromes": "J Acquir Immune Defic Syndr",
+    "journal of the international aids society": "J Int AIDS Soc",
+    "aids care": "AIDS Care",
+    "international journal of tuberculosis and lung disease": "Int J Tuberc Lung Dis",
+    "european respiratory journal": "Eur Respir J",
+    "journal of clinical oncology": "J Clin Oncol",
+    "annals of internal medicine": "Ann Intern Med",
+    "american journal of public health": "Am J Public Health",
+    "international journal of epidemiology": "Int J Epidemiol",
+    "european journal of epidemiology": "Eur J Epidemiol",
+    "journal of clinical epidemiology": "J Clin Epidemiol",
+    "cochrane database of systematic reviews": "Cochrane Database Syst Rev",
+    "medecine et maladies infectieuses": "Med Mal Infect",
+    "médecine et maladies infectieuses": "Med Mal Infect",
+    "medecine tropicale": "Med Trop",
+    "médecine tropicale": "Med Trop",
+    "medecine et sante tropicales": "Med Sante Trop",
+    "médecine et santé tropicales": "Med Sante Trop",
+    "revue d'epidemiologie et de sante publique": "Rev Epidemiol Sante Publique",
+    "revue d'épidémiologie et de santé publique": "Rev Epidemiol Sante Publique",
+    "sante publique": "Sante Publique",
+    "santé publique": "Sante Publique",
+    "bulletin de la societe de pathologie exotique": "Bull Soc Pathol Exot",
+    "bulletin de la société de pathologie exotique": "Bull Soc Pathol Exot",
+    "african health sciences": "Afr Health Sci",
+    "african journal of reproductive health": "Afr J Reprod Health",
+    "east african medical journal": "East Afr Med J",
+    "west african journal of medicine": "West Afr J Med",
+    "south african medical journal": "S Afr Med J",
+    "revue africaine de chirurgie et specialites": "Rev Afr Chir Spec",
+    "revue africaine de chirurgie et spécialités": "Rev Afr Chir Spec",
+    "journal of global health": "J Glob Health",
+    "global health action": "Glob Health Action",
+    "malaria journal": "Malar J",
+    "emerging infectious diseases": "Emerg Infect Dis",
+    "frontiers in public health": "Front Public Health",
+    "frontiers in medicine": "Front Med (Lausanne)",
+    "scientific reports": "Sci Rep",
+}
+
+_PRESERVE_UPPER_TOKENS = frozenset({
+    "HIV", "VIH", "AIDS", "SIDA", "WHO", "OMS", "PVVIH", "PLHIV", "TARV", "ARV", "ART",
+    "CD4", "PCR", "DNA", "ADN", "RNA", "ARN", "TB", "MDR-TB", "XDR-TB", "COVID-19",
+    "SARS-CoV-2", "SARS", "MERS", "HBV", "HCV", "VHB", "VHC", "HPV", "HTA", "IMC", "BMI",
+    "ECG", "EEG", "IRM", "MRI", "TDM", "CT", "FMSB", "CAMES", "CHUY", "HGY", "HCY",
+    "HGOPY", "HGD", "HLD", "MINSANTE", "CDC", "NIH", "NLM", "INSERM", "UNAIDS", "ONUSIDA",
+    "UNICEF", "CAMPHIA", "DHS", "EDS", "PRISMA", "CONSORT", "STROBE", "SPSS", "STATA",
+    "USA", "UK", "EU", "UN", "FCFA", "ICU", "US", "CI", "IC", "OR", "RR", "HR", "IQR",
+})
+
+_PROPER_NOUN_CASE_MAP: Dict[str, str] = {
+    "cameroon": "Cameroon", "cameroun": "Cameroun", "yaounde": "Yaoundé", "yaoundé": "Yaoundé",
+    "douala": "Douala", "africa": "Africa", "afrique": "Afrique", "sub-saharan": "Sub-Saharan",
+    "subsaharienne": "subsaharienne", "europe": "Europe", "france": "France", "paris": "Paris",
+    "geneva": "Geneva", "genève": "Genève", "buea": "Buea", "bamenda": "Bamenda",
+    "garoua": "Garoua", "maroua": "Maroua", "bafoussam": "Bafoussam", "ebolowa": "Ebolowa",
+}
+
+
+def _to_nlm_sentence_case(title: str) -> str:
+    """Fix ALL-CAPS scraped article titles into clean NLM sentence case while preserving acronyms & proper nouns."""
+    t = re.sub(r"\*+([^*]+)\*+", r"\1", (title or "").strip()).rstrip(".")
+    if not t:
+        return ""
+    letters = [c for c in t if c.isalpha()]
+    if not letters:
+        return t
+    upper_ratio = sum(1 for c in letters if c.isupper()) / len(letters)
+    # Only transform when title is predominantly ALL-CAPS (> 72% uppercase) so valid mixed-case titles stay untouched
+    if upper_ratio <= 0.72:
+        return t
+    words = t.split()
+    out: List[str] = []
+    for idx, w in enumerate(words):
+        core = w.strip(".,:;!?()[]{}\"'")
+        core_up = core.upper()
+        if core_up in _PRESERVE_UPPER_TOKENS or re.fullmatch(r"[A-Z]{2,5}\d+[A-Z0-9\-]*", core_up):
+            out.append(w)
+        elif core.lower() in _PROPER_NOUN_CASE_MAP:
+            repl = _PROPER_NOUN_CASE_MAP[core.lower()]
+            out.append(w.replace(core, repl))
+        else:
+            lw = w.lower()
+            if idx == 0 and lw:
+                lw = lw[0].upper() + lw[1:]
+            out.append(lw)
+    return " ".join(out)
+
+
+def _format_cited_date_nlm(lang: str = "fr") -> str:
+    """Return NLM/FMSB access date stamp: '[cité le 26 nov 2026]' (FR) or '[cited 2026 Nov 26]' (EN)."""
+    now = datetime.now(timezone.utc)
+    if (lang or "fr").lower().startswith("en"):
+        mon = _EN_MONTHS_SHORT[now.month - 1]
+        return f"[cited {now.year} {mon} {now.day}]"
+    mon = _FR_MONTHS_SHORT[now.month - 1]
+    return f"[cité le {now.day} {mon} {now.year}]"
+
+
 def _clean_journal_nlm(journal: str) -> str:
-    """Format NLM journal title: upright (no italics) and no internal periods in abbreviations."""
+    """Format NLM journal title: upright (no italics), official NLM abbreviation, and no internal periods."""
     j = (journal or "").strip()
     if not j:
         return ""
@@ -137,7 +300,8 @@ def _clean_journal_nlm(journal: str) -> str:
     # Remove periods after abbreviated words (e.g., 'N. Engl. J. Med.' -> 'N Engl J Med')
     j = re.sub(r"\.(?=\s|$)", "", j)
     j = re.sub(r"\s+", " ", j).strip(" .")
-    return j
+    mapped = _NLM_JOURNAL_ABBREV_MAP.get(j.lower())
+    return mapped if mapped else j
 
 
 def _normalize_single_author_vancouver(raw_author: str) -> str:
@@ -173,7 +337,11 @@ def _normalize_single_author_vancouver(raw_author: str) -> str:
         given_tokens = tokens[:-1]
         # Only flip if first token looks like a given name or initial (not all-caps surname)
         if not tokens[0].isupper() or len(tokens[0].rstrip(".")) == 1:
-            initials = "".join(t[0].upper() for t in given_tokens if t and t[0].isalpha())
+            initials = "".join(
+                t[0].upper()
+                for t in re.split(r"[\s.\-]+", " ".join(given_tokens))
+                if t and t[0].isalpha()
+            )
             if initials:
                 return f"{surname} {initials}"
     return a.replace(".", "")
@@ -202,18 +370,21 @@ def format_vancouver_citation(ref: ReferenceItem, lang: str = "fr") -> str:
     """Deterministically format a ReferenceItem according to full NLM / ICMJE / FMSB Vancouver rules."""
     is_en = (lang or "fr").lower().startswith("en")
     authors_str = _format_authors_vancouver(ref.authors)
-    title_str = re.sub(r"\*+([^*]+)\*+", r"\1", (ref.title or "").strip()).rstrip(".")
+    title_str = _to_nlm_sentence_case(ref.title or "")
     journal_str = _clean_journal_nlm(ref.journal or "")
 
     if ref.source_platform == "web" and not journal_str:
         parts = []
         if authors_str:
-            parts.append(f"{authors_str}.")
+            parts.append(f"{authors_str.rstrip('.')}.")
         if title_str:
             t_internet = title_str if "[internet]" in title_str.lower() else f"{title_str} [Internet]"
             parts.append(f"{t_internet}.")
+        cited_stamp = _format_cited_date_nlm(lang)
         if ref.year:
-            parts.append(f"{ref.year}.")
+            parts.append(f"{ref.year} {cited_stamp}.")
+        else:
+            parts.append(f"{cited_stamp}.")
         if ref.url:
             clean_url = ref.url.strip().rstrip(".,;)")
             avail_label = "Available from:" if is_en else "Disponible sur :"

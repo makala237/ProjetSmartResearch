@@ -1956,11 +1956,18 @@ export function Module2Editor({
                           </p>
                         ) : hasHtml ? (
                           <div
-                            className={`mt-2 prose prose-slate max-w-none text-sm text-slate-800 ${
+                            className={`mt-2 max-w-none text-sm text-slate-800 [&_h1]:mt-3 [&_h1]:mb-1.5 [&_h1]:font-bold [&_h1]:text-slate-900 [&_h2]:mt-3 [&_h2]:mb-1.5 [&_h2]:font-bold [&_h2]:text-slate-900 [&_h3]:mt-2.5 [&_h3]:mb-1 [&_h3]:font-bold [&_h3]:text-slate-900 [&_h4]:mt-2 [&_h4]:mb-1 [&_h4]:font-bold [&_h4]:text-slate-900 [&_h5]:mt-2 [&_h5]:font-bold [&_h5]:text-slate-900 [&_h6]:mt-2 [&_h6]:font-bold [&_h6]:text-slate-900 [&_strong]:font-bold [&_b]:font-bold ${
                               spec.id === "toc" ? "text-left" : ""
                             }`}
                             dangerouslySetInnerHTML={{
-                              __html: highlightPlaceholdersInHtml(cleanHtml),
+                              __html: highlightPlaceholdersInHtml(cleanHtml).replace(
+                                /<p([^>]*)>((?:(?:[IVXLCDM]{1,4}\.\d+(?:\.\d+)*\.?|\d+(?:\.\d+){1,3}\.?|\d{1,2}\s*[.)]|[A-Z]\s*[.)]|[a-z]\s*\))\s+[^<]{2,105}?))<\/p>/g,
+                                (full, attrs, inner) => {
+                                  const t = inner.trim();
+                                  if (!t || /[.?!;]$/.test(t)) return full;
+                                  return `<p${attrs}><strong class="font-bold text-slate-900">${inner}</strong></p>`;
+                                }
+                              ),
                             }}
                           />
                         ) : hasText ? (

@@ -1826,6 +1826,31 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             cursor_p = p_obj
         return cursor_p
 
+    _IMPLICIT_SUBTITLE_RE = re.compile(
+        r"^(?:"
+        r"(?:[IVXLCDM]{1,4}\.\d+(?:\.\d+)*\.?)"   # e.g. I.1.1. / III.3.2.
+        r"|(?:\d+(?:\.\d+){1,3}\.?)"              # e.g. 1.1. / 2.3.1
+        r"|(?:\d{1,2}\s*[.)])"                    # e.g. 1. / 2)
+        r"|(?:[A-Z]\s*[.)])"                      # e.g. A. / B)
+        r"|(?:[a-z]\s*\))"                        # e.g. a) / b)
+        r")\s+\S"
+    )
+
+    def _is_implicit_subtitle_line(text: str) -> bool:
+        """Detect standalone numbered/hierarchical sub-headings saved as plain <p> paragraphs."""
+        s = re.sub(r"\s+", " ", (text or "")).strip()
+        if not s or len(s) < 4 or len(s) > 110:
+            return False
+        # Exclude full prose sentences ending with a period, question mark, or semicolon
+        if s.endswith((".", "?", "!", ";")):
+            return False
+        if _IMPLICIT_SUBTITLE_RE.match(s):
+            return True
+        # Short standalone header line ending with ':' (e.g. 'Critères d’inclusion :')
+        if s.endswith(":") and len(s) <= 75 and len(s.split()) <= 10:
+            return True
+        return False
+
     def insert_rich_content(
         anchor_p,
         html_str: str,
@@ -1863,10 +1888,12 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     continue
 
                 is_bullet, heading_level, is_center, runs = payload
-                is_heading = heading_level > 0
+                plain_para_txt = "".join(r[0] for r in runs).strip()
+                is_heading = heading_level > 0 or (
+                    not is_bullet and _is_implicit_subtitle_line(plain_para_txt)
+                )
                 if is_heading and skip_duplicate_headings:
-                    heading_txt = "".join(r[0] for r in runs).strip()
-                    if is_duplicate_heading(heading_txt, skip_duplicate_headings):
+                    if is_duplicate_heading(plain_para_txt, skip_duplicate_headings):
                         continue
 
                 split_groups: List[List[Tuple[str, bool, bool, bool, bool, bool]]] = [[]]
