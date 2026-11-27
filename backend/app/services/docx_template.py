@@ -2449,27 +2449,43 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             if t.text and "II" in t.text and "III" not in t.text:
                 t.text = t.text.replace("II", "III")
 
-    # Synchronize all 5 grand chapter box titles in BOTH FR and EN (FMSB-CAMES 5-chapter layout)
+    # Synchronize all grand chapter box titles with custom_canvas (or FMSB-CAMES defaults)
+    custom_ch_titles: Dict[str, str] = {}
+    for _sp in localized_canvas:
+        if _sp.chapter_id and _sp.chapter_id not in custom_ch_titles and (_sp.chapter_title or "").strip():
+            custom_ch_titles[_sp.chapter_id] = _sp.chapter_title.strip().upper()
+
     banner_texts = {
         "toc": labels["anchor_toc"],
         "abbreviations": labels["anchor_abbreviations"],
-        "chapitre_1": chap_titles["chapitre_1"],
-        "chapitre_2": chap_titles["chapitre_2"],
-        "chapitre_3": chap_titles["chapitre_3"],
-        "references": chap_titles["references"],
-        "annexes": chap_titles["annexes"],
+        "chapitre_1": custom_ch_titles.get("chapitre_1") or chap_titles["chapitre_1"],
+        "chapitre_2": custom_ch_titles.get("chapitre_2") or chap_titles["chapitre_2"],
+        "chapitre_3": custom_ch_titles.get("chapitre_3") or chap_titles["chapitre_3"],
+        "references": custom_ch_titles.get("references") or chap_titles["references"],
+        "annexes": custom_ch_titles.get("annexes") or chap_titles["annexes"],
     }
     banner_font = fmt.font_family or "Times New Roman"
     for b_key, b_txt in banner_texts.items():
         if b_key in anchors:
             _set_anchor_box_text(anchors[b_key], b_txt, font_family=banner_font)
 
-    # Remove legacy standalone "INTRODUCTION" anchor when intro sections live inside chapitre_1
+    # Ensure standalone "introduction" anchor exists before chapitre_1 when custom_canvas has chapter_id == "introduction"
     active_chapter_ids = {spec.chapter_id for spec in localized_canvas}
     if "introduction" in anchors and "introduction" not in active_chapter_ids:
         intro_p = anchors.pop("introduction")
         if intro_p._p.getparent() is not None:
             intro_p._p.getparent().remove(intro_p._p)
+    elif "introduction" in active_chapter_ids and "introduction" not in anchors and "chapitre_1" in anchors:
+        intro_el = OxmlElement("w:p")
+        anchors["chapitre_1"]._p.addprevious(intro_el)
+        intro_p = doc.paragraphs[0].__class__(intro_el, anchors["chapitre_1"]._parent)
+        intro_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        intro_p.paragraph_format.page_break_before = True
+        intro_p.paragraph_format.space_before = Pt(220)
+        intro_p.paragraph_format.space_after = Pt(12)
+        r_intro = intro_p.add_run(custom_ch_titles.get("introduction") or "INTRODUCTION")
+        _apply_run_font(r_intro, fmt, size_pt=18, bold=True)
+        anchors["introduction"] = intro_p
 
     # Force clean page breaks before front-matter and major chapter boxes, and center grand titles on their own page
     for pb_key in ("toc", "abbreviations", "chapitre_1", "chapitre_2", "chapitre_3", "references", "annexes"):

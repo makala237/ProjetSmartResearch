@@ -756,7 +756,7 @@ def build_fmsb_cover_page(
         + 48  # academic year box + page border safety padding
     )
     available_pt = (29.7 - 2.0 * (fmt.margin_cm or 2.5)) * 28.35
-    bottom_push_pt = max(6, min(92, int(available_pt - approx_used_pt - 42)))
+    bottom_push_pt = max(14, min(145, int(available_pt - approx_used_pt + 22)))
 
     acad = (cover.academic_year or "2025-2026").strip()
     _create_inline_box_paragraph(

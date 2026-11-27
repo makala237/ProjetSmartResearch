@@ -613,7 +613,7 @@ def _build_layout_blocks(
 
         if spec.chapter_id not in seen_chapters:
             seen_chapters.add(spec.chapter_id)
-            ch_title = chap_titles.get(spec.chapter_id, spec.chapter_title.upper())
+            ch_title = (spec.chapter_title or "").strip().upper() or chap_titles.get(spec.chapter_id, spec.chapter_id.upper())
             # Grand framed chapter title sits ALONE, centered on its own page; body starts next page
             blocks.append(
                 LayoutBlock(
@@ -648,7 +648,7 @@ def _build_layout_blocks(
         )
 
         sec_state = project.sections.get(spec.id)
-        ch_title_ref = chap_titles.get(spec.chapter_id, spec.chapter_title.upper())
+        ch_title_ref = (spec.chapter_title or "").strip().upper() or chap_titles.get(spec.chapter_id, spec.chapter_id.upper())
         rich_items = (
             _extract_ordered_rich_items(sec_state.content_html, sec_state.content_markdown)
             if sec_state
