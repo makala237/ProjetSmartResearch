@@ -36,7 +36,7 @@ _NON_BODY_SECTION_IDS = frozenset(
         "references",
     }
 )
-_CITATION_GROUP_RE = re.compile(r"\[\s*(\d+(?:\s*(?:[-–,]\s*\d+))*)\s*\](?!\s*[\(:])")
+_CITATION_GROUP_RE = re.compile(r"\[\s*(\d+(?:\s*(?:[-–,]\s*\d+))*)\s*\](?!\s*\()")
 _HTML_TAG_SPLIT_RE = re.compile(r"(<[^>]+>)")
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
