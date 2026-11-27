@@ -653,7 +653,7 @@ def build_fmsb_cover_page(
     )
     line_h_cm = 0.66 if title_pt <= 14 else (0.72 if title_pt <= 15 else 0.80)
     title_box_h_cm = max(2.2, min(6.2, est_lines * line_h_cm + 0.72))
-    is_compact_cover = est_lines >= 5 or has_extra_tiers or len(cover.co_directors_info or []) >= 2
+    is_compact_cover = est_lines >= 5 or extra_header_lines > 0 or len(cover.co_directors_info or []) >= 2
     _create_inline_box_paragraph(
         anchor_el=toc_el,
         parent_container=toc_anchor_p._parent,
