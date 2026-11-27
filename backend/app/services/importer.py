@@ -36,17 +36,22 @@ from app.services.figure_extractor import extract_images_from_uploaded_document
 from app.services.gemini_client import gemini_router
 from app.services.pipeline_tracker import emit_pipeline_step
 from app.services.rich_formatter import markdown_to_clean_html
-from app.services.vancouver import refresh_vancouver_references
+from app.services.vancouver import (
+    format_vancouver_citation,
+    parse_raw_vancouver_line,
+    refresh_vancouver_references,
+)
 
 HEADING_PATTERN = re.compile(
     r"^("
     r"(?:CHAPITRE|CHAPTER)\s+[IVX0-9]+|"
-    r"INTRODUCTION(\s+(?:GENERALE|GENERAL))?|"
-    r"PROBLEMATIQUE|PROBLEM\s+STATEMENT|"
-    r"REVUE\s+DE\s+LA\s+LITTERATURE|LITERATURE\s+REVIEW|"
-    r"METHODOLOGIE|METHODOLOGY|MATERIELS?\s+ET\s+METHODES?|MATERIALS?\s+AND\s+METHODS?|"
-    r"REFERENCES|ANNEXES?|APPENDICES|"
-    r"ABREVIATIONS|ABBREVIATIONS|SOMMAIRE|TABLE\s+(?:DES\s+MATIERES|OF\s+CONTENTS)|"
+    r"INTRODUCTION(\s+(?:G[ÉE]N[ÉE]RALE|GENERAL))?|"
+    r"PROBL[ÉE]MATIQUE|PROBLEM\s+STATEMENT|"
+    r"REVUE\s+DE\s+LA\s+LITT[ÉE]RATURE|LITERATURE\s+REVIEW|"
+    r"M[ÉE]THODOLOGIE|METHODOLOGY|MAT[ÉE]RIELS?\s+ET\s+M[ÉE]THODES?|MATERIALS?\s+AND\s+METHODS?|"
+    r"(?:(?:[IVX]+|\d+)\s*[.\-–:]\s*)?(?:R[ÉE]F[ÉE]RENCES(?:\s+BIBLIOGRAPHIQUES)?|BIBLIOGRAPHIE|BIBLIOGRAPHY)|"
+    r"ANNEXES?|APPENDICES|"
+    r"ABR[ÉE]VIATIONS|ABBREVIATIONS|SOMMAIRE|TABLE\s+(?:DES\s+MATI[ÈE]RES|OF\s+CONTENTS)|"
     r"(?:LISTE\s+DES|LIST\s+OF)\s+(?:TABLEAUX|TABLES|FIGURES|ANNEXES|APPENDICES)|"
     r"(\d+\.){1,3}\s+[A-ZÉÈÊÀÂÎÔÙÇ]"
     r")",
@@ -216,37 +221,140 @@ def split_upload_into_blocks(filename: str, content_bytes: bytes) -> List[DocBlo
     raise ValueError("Format non supporté. Utilisez un fichier .docx, .pdf ou .txt/.md.")
 
 
-def _parse_imported_references(raw_ref_text: str) -> List[ReferenceItem]:
-    """Parse numbered or line-separated references from an imported protocol into ReferenceItem objects."""
-    refs: List[ReferenceItem] = []
-    # Split on newlines or numbered prefixes like "1. " / "[1] "
-    lines = [ln.strip() for ln in raw_ref_text.splitlines() if ln.strip()]
-    for line in lines:
-        if line.upper() in ("REFERENCES", "RÉFÉRENCES", "BIBLIOGRAPHIE"):
-            continue
-        cleaned = re.sub(r"^\s*(?:\[\d+\]|\d+[.)])\s*", "", line).strip()
-        if len(cleaned) < 15:
-            continue
-        year_match = re.search(r"\b(19|20)\d{2}\b", cleaned)
-        year = int(year_match.group(0)) if year_match else None
-        doi_match = re.search(r"(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)", cleaned)
-        doi = doi_match.group(1).rstrip(".") if doi_match else None
-        pmid_match = re.search(r"PMID\s*:?\s*(\d+)", cleaned, re.IGNORECASE)
-        pmid = pmid_match.group(1) if pmid_match else None
+_REF_HEADING_RE = re.compile(
+    r"^(?:#{1,6}\s*)?(?:(?:CHAPITRE|CHAPTER)\s+[IVX0-9]+\s*[:.\-–]?\s*)?"
+    r"(?:(?:[IVX]+|\d+)\s*[.\-–:]\s*)?"
+    r"(?:R[ÉE]F[ÉE]RENCES(?:\s+BIBLIOGRAPHIQUES)?|BIBLIOGRAPHIE|BIBLIOGRAPHY)"
+    r"(?:\s*\([^)]*\))?\s*[:.\-–]?\s*$",
+    re.IGNORECASE,
+)
 
-        refs.append(
-            ReferenceItem(
-                source_platform="imported",
-                authors=[],
-                title=cleaned[:250],
-                year=year,
-                doi=doi,
-                pmid=pmid,
-                vancouver_citation=cleaned,
-                verified=bool(doi or pmid),
+
+def _parse_imported_references(raw_ref_text: str, start_order: int = 1) -> List[ReferenceItem]:
+    """Parse numbered or line-separated references from an imported protocol into structured ReferenceItem objects."""
+    refs: List[ReferenceItem] = []
+    if not raw_ref_text or not raw_ref_text.strip():
+        return refs
+
+    # Split on newlines; also split inline numbered entries if a single block merged multiple refs
+    raw_lines = [ln.strip() for ln in raw_ref_text.splitlines() if ln.strip()]
+    expanded_lines: List[str] = []
+    for ln in raw_lines:
+        if _REF_HEADING_RE.match(ln):
+            continue
+        # Strip leading markdown heading markers
+        ln_clean = re.sub(r"^#{1,6}\s+", "", ln).strip()
+        if _REF_HEADING_RE.match(ln_clean):
+            continue
+        expanded_lines.append(ln_clean)
+
+    next_order = max(1, start_order)
+    for line in expanded_lines:
+        cleaned = re.sub(r"^\s*(?:[-*•]\s*)?(?:\[\d+\]|\d+[.)])\s*", "", line).strip()
+        if len(cleaned) < 18:
+            continue
+        # Skip obvious non-reference separator or page-number lines
+        if re.match(r"^(?:page\s+\d+|[-_*=]{3,})$", cleaned, re.IGNORECASE):
+            continue
+        try:
+            parsed = parse_raw_vancouver_line(cleaned, order_index=next_order)
+            parsed.source_platform = "imported"
+            if not parsed.vancouver_citation:
+                parsed.vancouver_citation = format_vancouver_citation(parsed) or cleaned
+            refs.append(parsed)
+            next_order += 1
+        except Exception:
+            year_match = re.search(r"\b(19|20)\d{2}\b", cleaned)
+            year = int(year_match.group(0)) if year_match else None
+            doi_match = re.search(r"(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)", cleaned)
+            doi = doi_match.group(1).rstrip(".") if doi_match else None
+            pmid_match = re.search(r"PMID\s*:?\s*(\d+)", cleaned, re.IGNORECASE)
+            pmid = pmid_match.group(1) if pmid_match else None
+            refs.append(
+                ReferenceItem(
+                    order_index=next_order,
+                    source_platform="imported",
+                    authors=[],
+                    title=cleaned[:250],
+                    year=year,
+                    doi=doi,
+                    pmid=pmid,
+                    vancouver_citation=cleaned,
+                    verified=bool(doi or pmid),
+                )
+            )
+            next_order += 1
+    return refs
+
+
+def _extract_reference_text_from_all_blocks(blocks: List[DocBlock]) -> str:
+    """Deterministically locate reference/bibliography blocks anywhere in the imported document."""
+    in_refs = False
+    collected: List[str] = []
+    for blk in blocks:
+        hd = (blk.heading or "").strip()
+        first_line = next((ln.strip() for ln in (blk.full_text or "").splitlines() if ln.strip()), "")
+        is_ref_start = bool(_REF_HEADING_RE.match(hd) or _REF_HEADING_RE.match(first_line))
+        is_annex_start = bool(
+            re.match(
+                r"^(?:#{1,6}\s*)?(?:(?:CHAPITRE|CHAPTER)\s+[IVX0-9]+\s*[:.\-–]?\s*)?(?:ANNEXES?|APPENDICES)\b",
+                hd or first_line,
+                re.IGNORECASE,
             )
         )
-    return refs
+        if is_ref_start:
+            in_refs = True
+            if blk.full_text:
+                collected.append(blk.full_text)
+            continue
+        if in_refs:
+            if is_annex_start:
+                break
+            if blk.full_text:
+                collected.append(blk.full_text)
+    return "\n".join(collected).strip()
+
+
+def _merge_imported_references_into_project(
+    project: ProtocolProject,
+    raw_ref_text: str,
+) -> int:
+    """Parse raw references text, merge deduplicated ReferenceItems into project.references, and sync section."""
+    start_idx = max((r.order_index for r in (project.references or [])), default=0) + 1
+    parsed_refs = _parse_imported_references(raw_ref_text, start_order=start_idx)
+    if not parsed_refs:
+        return 0
+
+    existing_keys = {
+        re.sub(r"[^a-z0-9]+", "", (r.vancouver_citation or r.title or "").lower())[:90]
+        for r in (project.references or [])
+    }
+    added = 0
+    for pr in parsed_refs:
+        k = re.sub(r"[^a-z0-9]+", "", (pr.vancouver_citation or pr.title or "").lower())[:90]
+        if k and k not in existing_keys:
+            pr.order_index = len(project.references) + 1
+            project.references.append(pr)
+            existing_keys.add(k)
+            added += 1
+
+    # Sync references section while preserving imported items if body doesn't yet use [n] brackets
+    refresh_vancouver_references(project)
+    ref_sec = project.sections.get("references")
+    if ref_sec is not None and added > 0:
+        # If refresh_vancouver_references left fewer lines than imported (e.g. superscript/author-year citations),
+        # render all project.references so the student sees their full imported bibliography immediately.
+        cited_lines = [ln for ln in (ref_sec.content_markdown or "").splitlines() if re.match(r"^\d+\.\s+", ln.strip())]
+        if len(cited_lines) < added:
+            lines_md = ["### RÉFÉRENCES BIBLIOGRAPHIQUES (VANCOUVER)", ""]
+            for idx_r, r in enumerate(project.references, start=1):
+                r.order_index = idx_r
+                cit = format_vancouver_citation(r, lang=getattr(project, "language", "fr") or "fr") or r.vancouver_citation or r.title
+                lines_md.append(f"{idx_r}. {cit}")
+            full_md = "\n".join(lines_md).strip()
+            ref_sec.content_markdown = full_md
+            ref_sec.content_html = markdown_to_clean_html(full_md)
+    return added
 
 
 def _fallback_map_blocks_to_sections(blocks: List[DocBlock]) -> ImportedProtocolIndexAnalysis:
@@ -843,14 +951,16 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
                 project.crf_fields = extract_crf_fields_from_project(project)
 
         if item.section_id == "references":
-            parsed_refs = _parse_imported_references(reassembled_text)
-            if parsed_refs:
-                existing_titles = {r.vancouver_citation.lower() for r in project.references}
-                for pr in parsed_refs:
-                    if pr.vancouver_citation.lower() not in existing_titles:
-                        project.references.append(pr)
-                        existing_titles.add(pr.vancouver_citation.lower())
-                refresh_vancouver_references(project)
+            _merge_imported_references_into_project(project, reassembled_text)
+
+    # Deterministic fallback: if AI omitted or missed the References/Bibliographie block, extract it directly
+    if "references" not in mapped_section_ids:
+        fallback_ref_text = _extract_reference_text_from_all_blocks(blocks)
+        if fallback_ref_text:
+            added_fb = _merge_imported_references_into_project(project, fallback_ref_text)
+            if added_fb > 0:
+                mapped_section_ids.add("references")
+                mapped_count += 1
 
     # Apply the surgical CRF extractor result into `annexe_fiche_collecte` + Masque de saisie
     crf_detected = False
