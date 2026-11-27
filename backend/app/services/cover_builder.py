@@ -639,14 +639,21 @@ def build_fmsb_cover_page(
             line_spacing=1.15,
         )
 
-    # 3. Title Box (wide, single-instance rounded/styled DrawingML inline box, 18pt, dynamic height)
+    # 3. Title Box (wide, single-instance rounded/styled DrawingML inline box, dynamic font & height so Page 1 never overflows)
     title_text = (cover.title or project.name or "TITRE DU PROTOCOLE DE RECHERCHE").strip()
-    chars_per_line = max(30, int((usable_width_cm - 0.8) / 0.32))
+    if len(title_text) > 175:
+        title_pt = min(title_pt, 14)
+    elif len(title_text) > 130:
+        title_pt = min(title_pt, 15)
+    char_w_cm = 0.27 if title_pt <= 14 else (0.29 if title_pt <= 15 else 0.32)
+    chars_per_line = max(32, int((usable_width_cm - 0.8) / char_w_cm))
     est_lines = sum(
         max(1, math.ceil(len(part.strip()) / chars_per_line))
         for part in (title_text.splitlines() or [title_text])
     )
-    title_box_h_cm = max(2.2, min(8.2, est_lines * 0.82 + 0.85))
+    line_h_cm = 0.66 if title_pt <= 14 else (0.72 if title_pt <= 15 else 0.80)
+    title_box_h_cm = max(2.2, min(6.2, est_lines * line_h_cm + 0.72))
+    is_compact_cover = est_lines >= 5 or has_extra_tiers or len(cover.co_directors_info or []) >= 2
     _create_inline_box_paragraph(
         anchor_el=toc_el,
         parent_container=toc_anchor_p._parent,
@@ -657,8 +664,8 @@ def build_fmsb_cover_page(
         font_family=font_family,
         size_pt=title_pt,
         fmt=fmt,
-        space_before_pt=6 if dept_above_title else 14,
-        space_after_pt=12,
+        space_before_pt=4 if (dept_above_title or is_compact_cover) else 12,
+        space_after_pt=6 if is_compact_cover else 10,
     )
 
     # 4. Exact FMSB thesis protocol line just below title box + Student identity
@@ -667,15 +674,21 @@ def build_fmsb_cover_page(
         labels["cover_written_by"].format(degree=degree),
         size_pt=12,
         italic=False,
-        space_before=6,
-        space_after=10,
+        space_before=4 if is_compact_cover else 6,
+        space_after=6 if is_compact_cover else 10,
     )
 
     author = (cover.author_name or ("Candidate Full Name" if lang == "en" else "Noms & Prénoms de l'étudiant")).strip()
-    add_cover_para(author, size_pt=13, bold=True, space_before=0, space_after=3)
+    add_cover_para(author, size_pt=13, bold=True, space_before=0, space_after=2)
 
     matricule = (cover.matricule or "—").strip()
-    add_cover_para(labels["cover_reg_no"].format(matricule=matricule), size_pt=12, bold=False, space_before=0, space_after=16)
+    add_cover_para(
+        labels["cover_reg_no"].format(matricule=matricule),
+        size_pt=12,
+        bold=False,
+        space_before=0,
+        space_after=8 if is_compact_cover else 14,
+    )
 
     # 5. Supervision table (Directeur / Supervisor | Co-directeur(s) / Co-supervisor(s))
     sup_tbl = doc.add_table(rows=1, cols=2)
@@ -732,18 +745,18 @@ def build_fmsb_cover_page(
     _render_supervisor_blocks(sup_tbl.cell(0, 1), labels["cover_cosupervisor"], codir_list)
     toc_el.addprevious(sup_tbl._tbl)
 
-    # 6. Academic year pushed toward the bottom of Page 1 inside a small matching bordered frame
+    # 6. Academic year anchored cleanly at the bottom of Page 1 (never overflowing to Page 2 in LibreOffice/Word)
     extra_codir_lines = max(0, len(codir_list) - 1) * 3
     approx_used_pt = (
-        130 + (extra_header_lines * 9)  # header table
-        + (32 if dept_above_title else 0)  # optional full-width department line
-        + (title_box_h_cm * 28.35)
-        + 105  # degree + student + matricule
-        + (95 + extra_codir_lines * 18)  # supervision table
-        + 40  # academic year box
+        185 + (extra_header_lines * 11)  # bilingual header table + logos
+        + (30 if dept_above_title else 0)  # optional full-width department line
+        + (title_box_h_cm * 28.35) + 18  # title box + margins
+        + (88 if is_compact_cover else 108)  # degree + student + matricule
+        + (125 + extra_codir_lines * 20)  # supervision table (accounts for 2-line prof names + rank + specialty)
+        + 48  # academic year box + page border safety padding
     )
     available_pt = (29.7 - 2.0 * (fmt.margin_cm or 2.5)) * 28.35
-    bottom_push_pt = max(14, min(140, int(available_pt - approx_used_pt - 28)))
+    bottom_push_pt = max(6, min(92, int(available_pt - approx_used_pt - 42)))
 
     acad = (cover.academic_year or "2025-2026").strip()
     _create_inline_box_paragraph(
@@ -752,7 +765,7 @@ def build_fmsb_cover_page(
         doc=doc,
         text=labels["cover_academic_year"].format(year=acad),
         width_cm=8.2,
-        height_cm=1.05,
+        height_cm=0.95,
         font_family="Times New Roman",
         size_pt=12,
         fmt=fmt,

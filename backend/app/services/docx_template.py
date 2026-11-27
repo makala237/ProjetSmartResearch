@@ -2892,13 +2892,36 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         if img.approved:
             approved_images_by_section.setdefault(img.target_section_id, []).append(img)
 
+    # Track cursor across chapters so custom chapter_ids not in master template anchors still render cleanly!
+    last_chapter_cursor = anchors.get("chapitre_3") or anchors.get("chapitre_2") or anchors.get("chapitre_1") or anchors.get("abbreviations")
     for chapter_id, specs in sections_by_chapter.items():
-        if chapter_id not in anchors:
-            continue
-        ch_toc_label = chap_titles.get(chapter_id, chapter_id.upper())
-        _set_paragraph_outline(anchors[chapter_id], 0, invisible_toc_label=ch_toc_label)
-        # Keep the framed grand chapter title alone on its own full page
-        cursor = insert_page_break_after(anchors[chapter_id])
+        custom_ch_title = (specs[0].chapter_title or "").strip() if specs else ""
+        ch_toc_label = custom_ch_title or chap_titles.get(chapter_id, chapter_id.upper())
+        if chapter_id in anchors:
+            # Keep master template chapter banner text synchronized with custom_canvas chapter_title
+            anchor_p = anchors[chapter_id]
+            if custom_ch_title:
+                t_nodes = list(anchor_p._p.iter(qn("w:t")))
+                if t_nodes:
+                    t_nodes[0].text = custom_ch_title
+                    for extra_t in t_nodes[1:]:
+                        extra_t.text = ""
+            _set_paragraph_outline(anchor_p, 0, invisible_toc_label=ch_toc_label)
+            # Keep the framed grand chapter title alone on its own full page
+            cursor = insert_page_break_after(anchor_p)
+        else:
+            if last_chapter_cursor is None:
+                continue
+            ch_p = insert_after(
+                last_chapter_cursor,
+                ch_toc_label.upper(),
+                bold=True,
+                size_pt=16,
+                align_override=WD_ALIGN_PARAGRAPH.CENTER,
+            )
+            ch_p.paragraph_format.page_break_before = True
+            _set_paragraph_outline(ch_p, 0, invisible_toc_label=ch_toc_label)
+            cursor = insert_page_break_after(ch_p)
         for spec in specs:
             sec_state = project.sections.get(spec.id)
             cursor = insert_after(
