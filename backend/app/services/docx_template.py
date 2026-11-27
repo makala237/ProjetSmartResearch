@@ -2928,14 +2928,25 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         else:
             if last_chapter_cursor is None:
                 continue
-            ch_p = insert_after(
-                last_chapter_cursor,
-                ch_toc_label.upper(),
-                bold=True,
-                size_pt=16,
-                align_override=WD_ALIGN_PARAGRAPH.CENTER,
-            )
-            ch_p.paragraph_format.page_break_before = True
+            template_ch = anchors.get("chapitre_3") or anchors.get("chapitre_2") or anchors.get("chapitre_1")
+            if template_ch is not None:
+                from copy import deepcopy
+
+                cloned_el = deepcopy(template_ch._p)
+                last_chapter_cursor._p.addnext(cloned_el)
+                ch_p = doc.paragraphs[0].__class__(cloned_el, last_chapter_cursor._parent)
+                ch_p.paragraph_format.page_break_before = True
+                _set_anchor_box_text(ch_p, ch_toc_label.upper(), font_family=banner_font)
+                _center_grand_chapter_box(ch_p, fmt)
+            else:
+                ch_p = insert_after(
+                    last_chapter_cursor,
+                    ch_toc_label.upper(),
+                    bold=True,
+                    size_pt=16,
+                    align_override=WD_ALIGN_PARAGRAPH.CENTER,
+                )
+                ch_p.paragraph_format.page_break_before = True
             _set_paragraph_outline(ch_p, 0, invisible_toc_label=ch_toc_label)
             cursor = insert_page_break_after(ch_p)
         for spec in specs:
@@ -3245,13 +3256,14 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
 
             # Render structured vector diagrams (high-DPI PNG sized for >= 12pt minimum character legibility)
             cursor = render_custom_diagrams(sec_state, cursor, section_paras)
+        last_chapter_cursor = cursor
 
     # Vancouver References (grand title alone on its page -> content starts next page)
     if "references" in anchors:
         _set_paragraph_outline(
             anchors["references"],
             0,
-            invisible_toc_label=chap_titles["references"],
+            invisible_toc_label=custom_ch_titles.get("references") or chap_titles["references"],
         )
         cursor = insert_page_break_after(anchors["references"])
         ref_heading = (
