@@ -105,6 +105,7 @@ from app.schemas.protocol import (
     PatientRecord,
     ProtocolProject,
     SectionDiagram,
+    SectionState,
     SectionTable,
     StepStatus,
     SupervisorDirectiveItem,
