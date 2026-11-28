@@ -941,7 +941,8 @@ def draft_section_with_ai(
     cames_block = _format_cames_granularity_block(spec, lang=lang)
     from app.services.section_precision_engine import build_plan_guidance_block
 
-    plan_guidance_block = build_plan_guidance_block(getattr(sec, "writing_plan", None) if sec else None)
+    _target_sec = project.sections.get(section_id)
+    plan_guidance_block = build_plan_guidance_block(getattr(_target_sec, "writing_plan", None) if _target_sec else None)
     intro_budget_block = _build_intro_shared_budget_block(project, section_id, lang=lang)
     supervisor_block = format_supervisor_directives_block(project, section_id=section_id)
     lang_directive = get_language_prompt_directive(lang)
@@ -1527,7 +1528,8 @@ def fix_section_issues_with_ai(
     cames_block = _format_cames_granularity_block(spec, lang=lang)
     from app.services.section_precision_engine import build_plan_guidance_block
 
-    plan_guidance_block = build_plan_guidance_block(getattr(sec, "writing_plan", None) if sec else None)
+    _target_sec = project.sections.get(section_id)
+    plan_guidance_block = build_plan_guidance_block(getattr(_target_sec, "writing_plan", None) if _target_sec else None)
     intro_budget_block = _build_intro_shared_budget_block(project, section_id, lang=lang)
     supervisor_block = format_supervisor_directives_block(project, section_id=section_id)
     lang_directive = get_language_prompt_directive(lang)
