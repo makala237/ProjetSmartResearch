@@ -1,8 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
-  ArrowDown,
-  ArrowUp,
   CheckCircle2,
   Download,
   Eye,
@@ -2606,52 +2604,6 @@ export function Module2Editor({
                                   onClick={async () => {
                                     setDeletingMediaId(ct.table_id);
                                     try {
-                                      const updated = await api.moveSectionMedia(
-                                        project.project_id,
-                                        spec.id,
-                                        { media_kind: "table", media_id: ct.table_id, direction: "up" }
-                                      );
-                                      onProjectUpdated(updated);
-                                    } catch (err) {
-                                      onError(err instanceof Error ? err.message : String(err));
-                                    } finally {
-                                      setDeletingMediaId(null);
-                                    }
-                                  }}
-                                  className="inline-flex items-center rounded border border-slate-200 bg-white px-1.5 py-0.5 font-sans text-[11px] font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-40"
-                                  title={lang === "en" ? "Move table up" : "Monter ce tableau"}
-                                >
-                                  <ArrowUp className="h-3 w-3" />
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={deletingMediaId === ct.table_id}
-                                  onClick={async () => {
-                                    setDeletingMediaId(ct.table_id);
-                                    try {
-                                      const updated = await api.moveSectionMedia(
-                                        project.project_id,
-                                        spec.id,
-                                        { media_kind: "table", media_id: ct.table_id, direction: "down" }
-                                      );
-                                      onProjectUpdated(updated);
-                                    } catch (err) {
-                                      onError(err instanceof Error ? err.message : String(err));
-                                    } finally {
-                                      setDeletingMediaId(null);
-                                    }
-                                  }}
-                                  className="inline-flex items-center rounded border border-slate-200 bg-white px-1.5 py-0.5 font-sans text-[11px] font-medium text-slate-600 hover:bg-slate-100 disabled:opacity-40"
-                                  title={lang === "en" ? "Move table down" : "Descendre ce tableau"}
-                                >
-                                  <ArrowDown className="h-3 w-3" />
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={deletingMediaId === ct.table_id}
-                                  onClick={async () => {
-                                    setDeletingMediaId(ct.table_id);
-                                    try {
                                       const updated = await api.deleteSectionTable(
                                         project.project_id,
                                         spec.id,
@@ -2699,16 +2651,77 @@ export function Module2Editor({
                           </div>
                         ))}
 
-                        {/* Pipeline & Approved Figures Preview */}
+                        {/* Pipeline & Section Figures Preview (visible + masked with unmask button) */}
                         {project.images
-                          .filter(
-                            (img) =>
-                              img.target_section_id === spec.id && img.approved
-                          )
+                          .filter((img) => img.target_section_id === spec.id)
                           .map((img) => {
                             const imgSrc = img.local_path
                               ? withAuthToken(`/api/projects/${project.project_id}/images/${img.asset_id}/file`)
                               : img.source_url || "";
+                            if (!img.approved) {
+                              return (
+                                <div
+                                  key={img.asset_id}
+                                  className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-dashed border-amber-300 bg-amber-50/60 px-3.5 py-2.5 text-left"
+                                >
+                                  <div className="min-w-0">
+                                    <span className="inline-block rounded bg-amber-100 px-1.5 py-0.5 font-sans text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                                      {lang === "en" ? "Hidden from export" : "Masquée du rendu"}
+                                    </span>
+                                    <span className="ml-2 text-xs font-medium text-slate-700">
+                                      Figure. {img.title}
+                                    </span>
+                                  </div>
+                                  <div className="flex items-center gap-2 text-[11px]">
+                                    <button
+                                      type="button"
+                                      disabled={deletingMediaId === img.asset_id}
+                                      onClick={async () => {
+                                        setDeletingMediaId(img.asset_id);
+                                        try {
+                                          const updated = await api.toggleImage(
+                                            project.project_id,
+                                            img.asset_id,
+                                            { approved: true }
+                                          );
+                                          onProjectUpdated(updated);
+                                        } catch (err) {
+                                          onError(err instanceof Error ? err.message : String(err));
+                                        } finally {
+                                          setDeletingMediaId(null);
+                                        }
+                                      }}
+                                      className="rounded border border-emerald-300 bg-emerald-50 px-2 py-0.5 font-sans font-semibold text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
+                                    >
+                                      {lang === "en" ? "Show in export" : "Démasquer (Afficher)"}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={deletingMediaId === img.asset_id}
+                                      onClick={async () => {
+                                        setDeletingMediaId(img.asset_id);
+                                        try {
+                                          const updated = await api.deleteImage(
+                                            project.project_id,
+                                            img.asset_id
+                                          );
+                                          onProjectUpdated(updated);
+                                        } catch (err) {
+                                          onError(err instanceof Error ? err.message : String(err));
+                                        } finally {
+                                          setDeletingMediaId(null);
+                                        }
+                                      }}
+                                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-sans font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-50"
+                                      title={lang === "en" ? "Delete this figure" : "Supprimer cette figure"}
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                      {lang === "en" ? "Remove" : "Retirer"}
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            }
                             return (
                               <div key={img.asset_id} className="mt-4 rounded-lg border border-slate-200 bg-slate-50/70 p-3 text-center">
                                 {imgSrc && (
@@ -2735,52 +2748,6 @@ export function Module2Editor({
                                   {img.license_info && (
                                     <span className="text-slate-500">{img.license_info}</span>
                                   )}
-                                  <button
-                                    type="button"
-                                    disabled={deletingMediaId === img.asset_id}
-                                    onClick={async () => {
-                                      setDeletingMediaId(img.asset_id);
-                                      try {
-                                        const updated = await api.moveSectionMedia(
-                                          project.project_id,
-                                          spec.id,
-                                          { media_kind: "image", media_id: img.asset_id, direction: "up" }
-                                        );
-                                        onProjectUpdated(updated);
-                                      } catch (err) {
-                                        onError(err instanceof Error ? err.message : String(err));
-                                      } finally {
-                                        setDeletingMediaId(null);
-                                      }
-                                    }}
-                                    className="inline-flex items-center rounded border border-slate-200 bg-white px-1.5 py-0.5 font-sans text-slate-600 hover:bg-slate-100 disabled:opacity-40"
-                                    title={lang === "en" ? "Move figure up" : "Monter cette figure"}
-                                  >
-                                    <ArrowUp className="h-3 w-3" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={deletingMediaId === img.asset_id}
-                                    onClick={async () => {
-                                      setDeletingMediaId(img.asset_id);
-                                      try {
-                                        const updated = await api.moveSectionMedia(
-                                          project.project_id,
-                                          spec.id,
-                                          { media_kind: "image", media_id: img.asset_id, direction: "down" }
-                                        );
-                                        onProjectUpdated(updated);
-                                      } catch (err) {
-                                        onError(err instanceof Error ? err.message : String(err));
-                                      } finally {
-                                        setDeletingMediaId(null);
-                                      }
-                                    }}
-                                    className="inline-flex items-center rounded border border-slate-200 bg-white px-1.5 py-0.5 font-sans text-slate-600 hover:bg-slate-100 disabled:opacity-40"
-                                    title={lang === "en" ? "Move figure down" : "Descendre cette figure"}
-                                  >
-                                    <ArrowDown className="h-3 w-3" />
-                                  </button>
                                   <button
                                     type="button"
                                     disabled={deletingMediaId === img.asset_id}
@@ -2850,52 +2817,6 @@ export function Module2Editor({
                                 {dg.caption ? ` — ${dg.caption}` : ""}
                                 {dg.anchor_hint ? ` (${lang === "en" ? "After" : "Après"} « ${dg.anchor_hint.slice(0, 28)}… »)` : ""}
                               </span>
-                              <button
-                                type="button"
-                                disabled={deletingMediaId === dg.diagram_id}
-                                onClick={async () => {
-                                  setDeletingMediaId(dg.diagram_id);
-                                  try {
-                                    const updated = await api.moveSectionMedia(
-                                      project.project_id,
-                                      spec.id,
-                                      { media_kind: "diagram", media_id: dg.diagram_id, direction: "up" }
-                                    );
-                                    onProjectUpdated(updated);
-                                  } catch (err) {
-                                    onError(err instanceof Error ? err.message : String(err));
-                                  } finally {
-                                    setDeletingMediaId(null);
-                                  }
-                                }}
-                                className="inline-flex items-center rounded border border-slate-200 bg-white px-1.5 py-0.5 font-sans not-italic text-slate-600 hover:bg-slate-100 disabled:opacity-40"
-                                title={lang === "en" ? "Move diagram up" : "Monter ce schéma"}
-                              >
-                                <ArrowUp className="h-3 w-3" />
-                              </button>
-                              <button
-                                type="button"
-                                disabled={deletingMediaId === dg.diagram_id}
-                                onClick={async () => {
-                                  setDeletingMediaId(dg.diagram_id);
-                                  try {
-                                    const updated = await api.moveSectionMedia(
-                                      project.project_id,
-                                      spec.id,
-                                      { media_kind: "diagram", media_id: dg.diagram_id, direction: "down" }
-                                    );
-                                    onProjectUpdated(updated);
-                                  } catch (err) {
-                                    onError(err instanceof Error ? err.message : String(err));
-                                  } finally {
-                                    setDeletingMediaId(null);
-                                  }
-                                }}
-                                className="inline-flex items-center rounded border border-slate-200 bg-white px-1.5 py-0.5 font-sans not-italic text-slate-600 hover:bg-slate-100 disabled:opacity-40"
-                                title={lang === "en" ? "Move diagram down" : "Descendre ce schéma"}
-                              >
-                                <ArrowDown className="h-3 w-3" />
-                              </button>
                               <button
                                 type="button"
                                 disabled={deletingMediaId === dg.diagram_id}

@@ -884,11 +884,18 @@ def _ensure_local_or_blob(project_id: str, path_str: Optional[str]) -> Optional[
         p = WORKSPACE_DIR / p
     if p.exists() and p.is_file():
         return p
+    # Normalize Windows-style backslashes when running on Linux Cloud Run
+    fname = path_str.replace("\\", "/").rsplit("/", 1)[-1].strip()
+    if not fname:
+        return None
+    canonical = UPLOADS_DIR / project_id / fname
+    if canonical.exists() and canonical.is_file():
+        return canonical
     blob = get_blob_storage()
     if blob.is_remote:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        if blob.download_to_path(build_object_key("uploads", project_id, p.name), p):
-            return p
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        if blob.download_to_path(build_object_key("uploads", project_id, fname), canonical):
+            return canonical
     return None
 
 
