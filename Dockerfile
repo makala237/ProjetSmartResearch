@@ -46,10 +46,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY backend/requirements.txt backend/requirements-cloud.txt /app/backend/
 RUN pip install --no-cache-dir -r /app/backend/requirements.txt -r /app/backend/requirements-cloud.txt
 
-# Copy backend source, master docx canvas, presentation templates, and built frontend assets
+# Copy backend source, master docx canvas, presentation templates, pedagogy notes, and built frontend assets
 COPY backend /app/backend
 COPY 2025_Canevas_protocole.docx /app/2025_Canevas_protocole.docx
 COPY tamplates /app/tamplates
+COPY pedagogie /app/pedagogie
 COPY --from=frontend-builder /build/frontend/dist /app/frontend/dist
 COPY docker/entrypoint.sh /app/docker/entrypoint.sh
 
