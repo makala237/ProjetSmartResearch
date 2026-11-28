@@ -127,15 +127,16 @@ def _protect_sensitive_segments(text: str) -> Tuple[str, List[str]]:
     masked = re.sub(r"(?<!\$)\$(?!\$)[^$\n]+?(?<!\$)\$(?!\$)", _stash, masked)
     masked = re.sub(r"(?m)^\s*\|.*\|\s*$", _stash, masked)
     masked = re.sub(r"https?://[^\s<>\"')]+", _stash, masked)
-    masked = re.sub(r"<[^>]+>", _stash, masked)
+    # Only match real HTML tags (e.g., <p>, </tr>, <br/>), never math inequalities like "< 15 ... > 10"
+    masked = re.sub(r"</?[a-zA-Z][a-zA-Z0-9]*(?:\s+[^<>]*)?/?>", _stash, masked)
     return masked, placeholders
 
 
 def _restore_sensitive_segments(text: str, placeholders: List[str]) -> str:
-    """Restore protected LaTeX, table lines, URLs, and HTML tags."""
+    """Restore protected LaTeX, table lines, URLs, and HTML tags in reverse order so nested tokens expand cleanly."""
     out = text
-    for idx, val in enumerate(placeholders):
-        out = out.replace(f"@@SMRPROT{idx}@@", val)
+    for idx in range(len(placeholders) - 1, -1, -1):
+        out = out.replace(f"@@SMRPROT{idx}@@", placeholders[idx])
     return out
 
 

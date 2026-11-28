@@ -2146,25 +2146,100 @@ export function Module2Editor({
                             })}
                           </div>
                         ) : hasText ? (
-                          <p
-                            className={`mt-1 whitespace-pre-wrap text-slate-800 ${
-                              spec.id === "toc" ? "text-left" : ""
-                            }`}
-                          >
-                            {splitTextWithPlaceholders(cleanMd).map(
-                              (part, pIdx) =>
-                                part.isPlaceholder ? (
-                                  <mark
-                                    key={pIdx}
-                                    className="sr-placeholder-highlight"
-                                  >
-                                    {part.text}
-                                  </mark>
-                                ) : (
-                                  <span key={pIdx}>{part.text}</span>
-                                )
-                            )}
-                          </p>
+                          (() => {
+                            const hasPipeTable = /(?:^|\n)\s*\|.+\|\s*\n\s*\|[\s:|-]+\|\s*(?:\n|$)/.test(cleanMd);
+                            if (!hasPipeTable) {
+                              return (
+                                <p
+                                  className={`mt-1 whitespace-pre-wrap text-slate-800 ${
+                                    spec.id === "toc" ? "text-left" : ""
+                                  }`}
+                                >
+                                  {splitTextWithPlaceholders(cleanMd).map(
+                                    (part, pIdx) =>
+                                      part.isPlaceholder ? (
+                                        <mark
+                                          key={pIdx}
+                                          className="sr-placeholder-highlight"
+                                        >
+                                          {part.text}
+                                        </mark>
+                                      ) : (
+                                        <span key={pIdx}>{part.text}</span>
+                                      )
+                                  )}
+                                </p>
+                              );
+                            }
+                            // Lightweight Markdown pipe-table renderer fallback when content_html is empty
+                            const blocks: React.ReactNode[] = [];
+                            const lines = cleanMd.split("\n");
+                            const sepRe = /^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$/;
+                            let textBuf: string[] = [];
+                            const flushText = (keyPrefix: string) => {
+                              const joined = textBuf.join("\n").trim();
+                              textBuf = [];
+                              if (joined) {
+                                blocks.push(
+                                  <p key={keyPrefix} className="mt-1 whitespace-pre-wrap text-slate-800">
+                                    {joined}
+                                  </p>
+                                );
+                              }
+                            };
+                            let idx = 0;
+                            while (idx < lines.length) {
+                              const ln = lines[idx];
+                              if (
+                                ln.trim().startsWith("|") &&
+                                ln.trim().endsWith("|") &&
+                                idx + 1 < lines.length &&
+                                sepRe.test(lines[idx + 1])
+                              ) {
+                                flushText(`txt-${idx}`);
+                                const parseRow = (r: string) =>
+                                  r.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+                                const headers = parseRow(ln);
+                                idx += 2;
+                                const rows: string[][] = [];
+                                while (idx < lines.length && lines[idx].trim().startsWith("|") && lines[idx].trim().endsWith("|")) {
+                                  rows.push(parseRow(lines[idx]));
+                                  idx++;
+                                }
+                                blocks.push(
+                                  <div key={`tbl-${idx}`} className="my-3 overflow-x-auto">
+                                    <table className="w-full border-collapse border border-slate-300 text-xs text-slate-800">
+                                      <thead>
+                                        <tr className="bg-slate-100">
+                                          {headers.map((h, hi) => (
+                                            <th key={hi} className="border border-slate-300 px-2.5 py-1.5 text-left font-semibold text-slate-900">
+                                              {h.replace(/\*\*/g, "")}
+                                            </th>
+                                          ))}
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {rows.map((r, ri) => (
+                                          <tr key={ri} className={ri % 2 === 1 ? "bg-slate-50/60" : "bg-white"}>
+                                            {r.map((c, ci) => (
+                                              <td key={ci} className="border border-slate-300 px-2.5 py-1.5 align-top">
+                                                {c.replace(/\*\*/g, "")}
+                                              </td>
+                                            ))}
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                );
+                                continue;
+                              }
+                              textBuf.push(ln);
+                              idx++;
+                            }
+                            flushText("txt-end");
+                            return <div className="space-y-1">{blocks}</div>;
+                          })()
                         ) : matchedAutoAnnex ? (
                           <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50/70 p-3.5 text-left text-sm text-slate-800">
                             <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-200 pb-1.5 text-[11px] font-sans">

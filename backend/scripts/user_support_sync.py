@@ -222,9 +222,24 @@ def sync_and_validate_guardrails(proj: ProtocolProject) -> List[str]:
     """Sync Vancouver + TOC/Lists and verify 100% compliance with CAMES/FMSB & Vancouver guardrails."""
     violations: List[str] = []
 
-    # 1. Sync Vancouver numbering/formatting & front-matter lists/TOC
+    # 1. Sync Vancouver numbering/formatting & front-matter lists/TOC (preserve curated validated abbreviations)
+    abbr_sec = proj.sections.get("abbreviations")
+    keep_curated_abbrs = bool(
+        abbr_sec is not None
+        and str(getattr(abbr_sec.status, "value", abbr_sec.status)) == "validated"
+        and proj.abbreviations
+    )
+    saved_abbrs = list(proj.abbreviations) if keep_curated_abbrs else []
+    saved_abbr_md = abbr_sec.content_markdown if keep_curated_abbrs else ""
+    saved_abbr_html = abbr_sec.content_html if keep_curated_abbrs else ""
+
     renumber_and_sync_vancouver_references(proj)
     generate_all_lists_and_toc(proj, use_gemini_decision=False)
+
+    if keep_curated_abbrs and abbr_sec is not None:
+        proj.abbreviations = saved_abbrs
+        abbr_sec.content_markdown = saved_abbr_md
+        abbr_sec.content_html = saved_abbr_html
 
     # 2. Refresh deterministic CAMES/FMSB audit notes on every section
     for sid, sec in proj.sections.items():

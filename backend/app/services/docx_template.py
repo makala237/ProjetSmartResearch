@@ -284,9 +284,17 @@ def _markdown_with_tables_to_html(markdown_text: str) -> str:
             while i < len(lines) and lines[i].strip().startswith("|") and lines[i].strip().endswith("|"):
                 rows.append(_parse_pipe_row(lines[i]))
                 i += 1
-            th_html = "".join(f"<th>{h}</th>" for h in headers)
+            def _esc_cell(val: str) -> str:
+                import html as _html
+                escaped = _html.escape(val or "", quote=False)
+                # Preserve inline bold/italic markdown inside cells
+                escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+                escaped = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", escaped)
+                return escaped
+
+            th_html = "".join(f"<th>{_esc_cell(h)}</th>" for h in headers)
             tr_html = "".join(
-                "<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>"
+                "<tr>" + "".join(f"<td>{_esc_cell(c)}</td>" for c in r) + "</tr>"
                 for r in rows
             )
             html_blocks.append(f"<table><thead><tr>{th_html}</tr></thead><tbody>{tr_html}</tbody></table>")

@@ -206,8 +206,14 @@ def strip_ascii_diagrams(text: str) -> str:
             continue
         if in_ascii_block:
             continue
-        if re.match(r"^\+[-+=]+\+$", s) or (s.startswith("|") and s.endswith("|") and len(s) > 4):
+        if re.match(r"^\+[-+=]+\+$", s):
             continue
+        # Only strip ASCII box-drawing lines (e.g. |   Box   | without inner cell separators),
+        # NEVER strip real Markdown pipe tables (which have 2+ cells separated by `|`).
+        if s.startswith("|") and s.endswith("|") and len(s) > 4:
+            inner_cells = [c.strip() for c in s[1:-1].split("|")]
+            if len(inner_cells) < 2:
+                continue
         if s in ("v", "^", "|"):
             continue
         cleaned.append(ln)
@@ -237,8 +243,11 @@ def _is_pipe_table_line(line: str) -> bool:
     non_empty = [c for c in cells if c]
     if len(cells) >= 3 and len(non_empty) >= 2:
         return True
-    if len(cells) == 2 and len(non_empty) == 2 and len(s) <= 180:
-        return True
+    if len(cells) == 2 and len(non_empty) == 2:
+        # Allow any explicit Markdown pipe row `| col1 | col2 |` regardless of length;
+        # for bare `col1 | col2` without outer pipes, allow up to 600 chars.
+        if (s.startswith("|") and s.endswith("|")) or len(s) <= 600:
+            return True
     return False
 
 
