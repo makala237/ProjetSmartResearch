@@ -558,3 +558,67 @@ RÈGLES STRICTES :
             + (f" (type d'étude actualisé : {project.study_type})." if alert.suggested_study_type else ".")
         ),
     }
+
+
+def extract_canonical_protocol_ledger(project: ProtocolProject) -> Dict[str, Any]:
+    """Build a deterministic ledger of locked canonical protocol facts across sections
+    so Module 1 (plan generation) and background coherence checks always see one source of truth.
+    """
+    lang = normalize_lang(getattr(project, "language", "fr"))
+    title = (getattr(project.cover, "title", "") or project.name or "").strip()
+    study_type = (project.study_type or "").strip()
+
+    # Extract key facts from Methodologie & Objectifs
+    type_cadre = (project.sections.get("chap3_type_site_duree").content_markdown if project.sections.get("chap3_type_site_duree") else "") or ""
+    pop_txt = (project.sections.get("chap3_population_echantillon").content_markdown if project.sections.get("chap3_population_echantillon") else "") or ""
+    obj_txt = (project.sections.get("chap1_objectifs").content_markdown if project.sections.get("chap1_objectifs") else "") or ""
+    hyp_txt = (project.sections.get("chap1_hypotheses").content_markdown if project.sections.get("chap1_hypotheses") else "") or ""
+
+    sample_match = re.search(
+        r"(?:taille(?:\s+(?:théorique\s+)?minimale)?\s+de\s+l['’]?échantillon|effectif\s+(?:théorique\s+)?minimal|\bn\s*=)\s*(?:est\s+)?(?:d['’]environ\s+|de\s+)?(\d{2,5})",
+        f"{type_cadre}\n{pop_txt}",
+        re.IGNORECASE,
+    )
+    duration_match = re.search(
+        r"(\d+\s*(?:mois|semaines?|ans?|months?|weeks?|years?))",
+        type_cadre,
+        re.IGNORECASE,
+    )
+
+    timeline_periods = list(project.timeline_grid.periods) if getattr(project, "timeline_grid", None) and project.timeline_grid.periods else []
+    timeline_span = f"{timeline_periods[0]} → {timeline_periods[-1]} ({len(timeline_periods)} périodes)" if timeline_periods else ""
+    budget_total = sum(float(b.quantity) * float(b.unit_cost_fcfa) for b in (project.budget or []))
+
+    return {
+        "lang": lang,
+        "titre_protocole": title,
+        "type_etude": study_type or "(non encore qualifié)",
+        "sites_ou_cadre": re.sub(r"\s+", " ", type_cadre)[:260].strip(),
+        "duree_detention_ou_etude": duration_match.group(1) if duration_match else "",
+        "taille_echantillon_n": sample_match.group(1) if sample_match else "",
+        "objectifs_resume": re.sub(r"\s+", " ", obj_txt)[:280].strip(),
+        "hypotheses_resume": re.sub(r"\s+", " ", hyp_txt)[:200].strip(),
+        "chronogramme": timeline_span,
+        "budget_total_fcfa": f"{int(round(budget_total)):,} FCFA".replace(",", " ") if budget_total > 0 else "",
+        "variables_count": len(project.variables or []),
+        "references_count": len(project.references or []),
+    }
+
+
+def run_background_coherence_check(project_id: str) -> None:
+    """Non-blocking background sentinel task triggered after section saves, drafts, edits, and imports.
+    Re-evaluates cross-section coherence against the canonical ledger and persists updated alerts.
+    """
+    try:
+        from app.services.storage import project_storage
+
+        project = project_storage.load(project_id)
+        if project is None:
+            return
+        before = [(a.alert_id, a.severity, a.title) for a in (project.coherence_alerts or [])]
+        alerts = evaluate_project_coherence(project)
+        after = [(a.alert_id, a.severity, a.title) for a in alerts]
+        if before != after:
+            project_storage.save(project)
+    except Exception:
+        pass

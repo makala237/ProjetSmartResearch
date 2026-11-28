@@ -3,7 +3,8 @@ import math
 import secrets
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
 
 from app.api.deps import require_admin
 from app.core.config import get_settings
@@ -1631,3 +1632,139 @@ def get_admin_model_catalog() -> ModelCatalogResponse:
         presets=[ModelRoutingPresetOut(**p) for p in MODEL_ROUTING_PRESETS],
         note=FREE_TIER_REFERENCE_NOTE,
     )
+
+
+# =========================================================================
+# PEDAGOGY / COURSE NOTES MANAGEMENT (MODULE 1 LEARNING BASE)
+# =========================================================================
+class AdminCourseNoteCreateRequest(BaseModel):
+    title: str
+    content: str
+    section_ids: List[str] = Field(default_factory=list)
+
+
+class AdminCourseNoteUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    section_ids: Optional[List[str]] = None
+    enabled: Optional[bool] = None
+
+
+@router.get("/pedagogy/notes")
+def list_admin_pedagogy_notes(
+    section_id: Optional[str] = Query(default=None),
+    admin_user: UserRecord = Depends(require_admin),
+) -> Dict[str, Any]:
+    """List built-in course notes (`pedagogie/`) and admin-created section course notes."""
+    from app.data.fmsb_canvas import FMSB_SECTIONS
+    from app.services.pedagogy_service import list_course_notes
+
+    notes = list_course_notes(section_id=section_id, include_disabled=True)
+    sections_catalog = [
+        {"id": s.id, "title": s.title, "chapter_id": s.chapter_id, "chapter_title": s.chapter_title}
+        for s in FMSB_SECTIONS
+    ]
+    return {
+        "notes": [n.model_dump(mode="json") for n in notes],
+        "sections_catalog": sections_catalog,
+    }
+
+
+@router.post("/pedagogy/notes")
+def create_admin_pedagogy_note(
+    payload: AdminCourseNoteCreateRequest,
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    from app.services.pedagogy_service import create_course_note
+
+    try:
+        rec = create_course_note(
+            title=payload.title,
+            content=payload.content,
+            section_ids=payload.section_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    as_store(db).create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=None,
+        action="create_pedagogy_note",
+        details_json={"note_id": rec.note_id, "title": rec.title, "section_ids": rec.section_ids},
+        created_at=utcnow(),
+    )
+    return {"note": rec.model_dump(mode="json")}
+
+
+@router.post("/pedagogy/notes/upload")
+async def upload_admin_pedagogy_note(
+    file: UploadFile = File(...),
+    title: str = Form(""),
+    section_ids_json: str = Form("[]"),
+    admin_user: UserRecord = Depends(require_admin),
+    db: Any = Depends(get_db),
+) -> Dict[str, Any]:
+    import json as _json
+    from app.services.pedagogy_service import create_course_note, extract_text_from_course_upload
+
+    raw = await file.read()
+    extracted = extract_text_from_course_upload(file.filename or "note.txt", raw)
+    try:
+        sec_ids = [str(s) for s in _json.loads(section_ids_json or "[]") if str(s).strip()]
+    except Exception:
+        sec_ids = [s.strip() for s in (section_ids_json or "").split(",") if s.strip()]
+    eff_title = (title or "").strip() or (file.filename or "Note de cours").rsplit(".", 1)[0]
+    try:
+        rec = create_course_note(
+            title=eff_title,
+            content=extracted,
+            section_ids=sec_ids,
+            filename=file.filename or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    as_store(db).create_audit_log(
+        admin_id=admin_user.id,
+        target_user_id=None,
+        action="upload_pedagogy_note",
+        details_json={"note_id": rec.note_id, "filename": rec.filename, "section_ids": rec.section_ids},
+        created_at=utcnow(),
+    )
+    return {"note": rec.model_dump(mode="json")}
+
+
+@router.patch("/pedagogy/notes/{note_id}")
+def update_admin_pedagogy_note(
+    note_id: str,
+    payload: AdminCourseNoteUpdateRequest,
+    admin_user: UserRecord = Depends(require_admin),
+) -> Dict[str, Any]:
+    from app.services.pedagogy_service import update_course_note
+
+    try:
+        rec = update_course_note(
+            note_id=note_id,
+            title=payload.title,
+            content=payload.content,
+            section_ids=payload.section_ids,
+            enabled=payload.enabled,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"note": rec.model_dump(mode="json")}
+
+
+@router.delete("/pedagogy/notes/{note_id}")
+def delete_admin_pedagogy_note(
+    note_id: str,
+    admin_user: UserRecord = Depends(require_admin),
+) -> Dict[str, Any]:
+    from app.services.pedagogy_service import delete_course_note
+
+    try:
+        ok = delete_course_note(note_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not ok:
+        raise HTTPException(status_code=404, detail="Note de cours introuvable.")
+    return {"deleted": True, "note_id": note_id}

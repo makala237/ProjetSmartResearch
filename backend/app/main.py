@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import uuid
 
 from fastapi import (
+    BackgroundTasks,
     Body,
     Depends,
     FastAPI,
@@ -1011,6 +1012,7 @@ def update_section(
     project_id: str,
     section_id: str,
     payload: UpdateSectionRequest,
+    background_tasks: BackgroundTasks,
     current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     if section_id == "cover_page":
@@ -1072,6 +1074,9 @@ def update_section(
     saved = project_storage.save(project)
     if payload.content_markdown is not None or payload.content_html is not None:
         update_section_working_memory(saved, section_id)
+    from app.services.coherence_sentinel import run_background_coherence_check
+
+    background_tasks.add_task(run_background_coherence_check, project_id)
     return scope_project_copilot_for_user(saved, current_user.id)
 
 
@@ -1371,12 +1376,51 @@ def delete_image_asset(
     return project_storage.save(project)
 
 
+@app.post("/api/projects/{project_id}/sections/{section_id}/generate-plan")
+def generate_section_plan_endpoint(
+    project_id: str,
+    section_id: str,
+    payload: Optional[DraftSectionRequest] = Body(default=None),
+    request: Request = None,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+    db: Any = Depends(get_db),
+) -> Dict[str, object]:
+    """Module 1: Learn CAMES/FMSB norms + section course notes and generate a weighted SectionWritingPlan."""
+    from app.services.section_precision_engine import generate_section_writing_plan
+
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+    cost = assert_ai_quota_available(db, current_user, module_key="module1", action="draft_section")
+    instruction = payload.instruction if payload else None
+    plan = generate_section_writing_plan(
+        project=project,
+        section_id=section_id,
+        user_instruction=instruction,
+        force_regenerate=True,
+    )
+    saved = project_storage.save(project)
+    if request is not None:
+        record_usage_and_debit(
+            db=db,
+            user=current_user,
+            module_key="module1",
+            action="generate_section_plan",
+            credits_cost=cost,
+            project_id=project_id,
+            model_used=str(plan.model_used or ""),
+            ip_address=get_client_ip(request),
+        )
+    return {"project": saved.model_dump(mode="json"), "writing_plan": plan.model_dump(mode="json")}
+
+
 @app.post("/api/projects/{project_id}/sections/{section_id}/draft")
 def draft_section(
     project_id: str,
     section_id: str,
     payload: DraftSectionRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user: UserRecord = Depends(get_active_user),
     db: Any = Depends(get_db),
 ) -> Dict[str, object]:
@@ -1478,6 +1522,10 @@ def draft_section(
         )
         if tracked:
             finish_pipeline_task("done")
+        if background_tasks is not None:
+            from app.services.coherence_sentinel import run_background_coherence_check
+
+            background_tasks.add_task(run_background_coherence_check, project_id)
         return {"project": project.model_dump(mode="json"), "result": result}
     except Exception as exc:
         if tracked:
@@ -1490,6 +1538,7 @@ def audit_section(
     project_id: str,
     section_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user: UserRecord = Depends(get_active_user),
     db: Any = Depends(get_db),
 ) -> Dict[str, object]:
@@ -1520,6 +1569,10 @@ def audit_section(
         )
         if tracked:
             finish_pipeline_task("done")
+        if background_tasks is not None:
+            from app.services.coherence_sentinel import run_background_coherence_check
+
+            background_tasks.add_task(run_background_coherence_check, project_id)
         return {"project": project.model_dump(mode="json"), "result": result}
     except Exception as exc:
         if tracked:
@@ -1532,6 +1585,7 @@ def fix_section(
     project_id: str,
     section_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     current_user: UserRecord = Depends(get_active_user),
     db: Any = Depends(get_db),
 ) -> Dict[str, object]:
@@ -1570,6 +1624,10 @@ def fix_section(
         )
         if tracked:
             finish_pipeline_task("done")
+        if background_tasks is not None:
+            from app.services.coherence_sentinel import run_background_coherence_check
+
+            background_tasks.add_task(run_background_coherence_check, project_id)
         return {"project": project.model_dump(mode="json"), "result": result}
     except Exception as exc:
         if tracked:
@@ -1681,6 +1739,7 @@ def apply_reformulation_endpoint(
     project_id: str,
     section_id: str,
     payload: ApplyReformulationRequest,
+    background_tasks: BackgroundTasks,
     current_user: UserRecord = Depends(require_module_write("module1")),
 ) -> ProtocolProject:
     """Commit a validated selective reformulation / selection transform after snapshotting the previous version."""
@@ -1746,6 +1805,9 @@ def apply_reformulation_endpoint(
     evaluate_project_coherence(project, changed_section_id=section_id)
     saved = project_storage.save(project)
     update_section_working_memory(saved, section_id)
+    from app.services.coherence_sentinel import run_background_coherence_check
+
+    background_tasks.add_task(run_background_coherence_check, project_id)
     return scope_project_copilot_for_user(saved, current_user.id)
 
 
@@ -1836,6 +1898,7 @@ def humanize_section(
     project_id: str,
     section_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     payload: Optional[HumanizeRequest] = None,
     current_user: UserRecord = Depends(get_active_user),
     db: Any = Depends(get_db),
@@ -1878,6 +1941,10 @@ def humanize_section(
         )
         if tracked:
             finish_pipeline_task("done")
+        if background_tasks is not None:
+            from app.services.coherence_sentinel import run_background_coherence_check
+
+            background_tasks.add_task(run_background_coherence_check, project_id)
         return {"project": project.model_dump(mode="json"), "result": result}
     except Exception as exc:
         if tracked:
@@ -2795,6 +2862,7 @@ def manage_project_structure(
 async def import_existing_protocol(
     project_id: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     import_mode: str = Form("skeleton"),
     current_user: UserRecord = Depends(get_active_user),
@@ -2847,6 +2915,9 @@ async def import_existing_protocol(
             if cover_sec_snapshot is not None:
                 project.sections["cover_page"] = cover_sec_snapshot
         project_storage.save(project)
+        from app.services.coherence_sentinel import run_background_coherence_check
+
+        background_tasks.add_task(run_background_coherence_check, project_id)
         record_usage_and_debit(
             db=db,
             user=current_user,

@@ -301,6 +301,8 @@ export function Module1Assistant({
     message: string;
     isFinalStep?: boolean;
   } | null>(null);
+  const [showWritingPlan, setShowWritingPlan] = useState(false);
+  const [busyPlan, setBusyPlan] = useState(false);
   const toastTimerRef = useRef<number | null>(null);
 
   function showToast(
@@ -2870,6 +2872,108 @@ export function Module1Assistant({
                     </strong>{" "}
                     {lastDraftResult.assistant_commentary.replace(/gemini[^,.;)]*/gi, "Smart Research")}
                   </div>
+                </div>
+              )}
+
+              {(activeState?.last_validation || activeState?.writing_plan) && (
+                <div className="rounded-lg border border-slate-200 bg-slate-50/80 p-3 text-xs">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {activeState?.last_validation && (
+                        <span
+                          className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[11px] font-bold ${
+                            activeState.last_validation.passed
+                              ? "bg-emerald-100 text-emerald-800"
+                              : "bg-amber-100 text-amber-900"
+                          }`}
+                        >
+                          <ShieldCheck className="h-3.5 w-3.5" />
+                          {lang === "en"
+                            ? `Plan execution: ${activeState.last_validation.execution_score_pct.toFixed(1)}% (target ≥ ${activeState.last_validation.threshold_pct}%)`
+                            : `Validation du plan (Module 3) : ${activeState.last_validation.execution_score_pct.toFixed(1)} % (seuil ≥ ${activeState.last_validation.threshold_pct} %)`}
+                        </span>
+                      )}
+                      {activeState?.writing_plan && (
+                        <span className="text-[11px] text-slate-600">
+                          {activeState.writing_plan.items.length}{" "}
+                          {lang === "en" ? "plan blocks" : "blocs du plan (Module 1)"}
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={busyPlan}
+                        onClick={async () => {
+                          setBusyPlan(true);
+                          try {
+                            const res = await api.generateSectionPlan(
+                              project.project_id,
+                              activeSpec.id,
+                              aiInstruction.trim() || undefined
+                            );
+                            onProjectUpdated(mergeSectionProjectUpdate(res.project, activeSpec.id));
+                            setShowWritingPlan(true);
+                          } catch (err) {
+                            onError(err instanceof Error ? err.message : String(err));
+                          } finally {
+                            setBusyPlan(false);
+                          }
+                        }}
+                        className="inline-flex items-center gap-1 rounded border border-indigo-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-indigo-700 hover:bg-indigo-50 disabled:opacity-50"
+                      >
+                        <RefreshCw className={`h-3 w-3 ${busyPlan ? "animate-spin" : ""}`} />
+                        {lang === "en" ? "Refresh Plan" : "Actualiser Plan M1"}
+                      </button>
+                      {activeState?.writing_plan && (
+                        <button
+                          type="button"
+                          onClick={() => setShowWritingPlan((v) => !v)}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-700 hover:text-slate-900"
+                        >
+                          {showWritingPlan ? (
+                            <>
+                              <ChevronUp className="h-3.5 w-3.5" />
+                              {lang === "en" ? "Hide plan" : "Masquer le plan"}
+                            </>
+                          ) : (
+                            <>
+                              <ChevronDown className="h-3.5 w-3.5" />
+                              {lang === "en" ? "View writing plan" : "Voir le plan détaillé"}
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {showWritingPlan && activeState?.writing_plan && (
+                    <div className="mt-2.5 space-y-2 border-t border-slate-200 pt-2">
+                      {activeState.writing_plan.pedagogy_sources_used?.length > 0 && (
+                        <p className="text-[11px] text-indigo-800">
+                          <strong>{lang === "en" ? "Course notes:" : "Notes de cours intégrées :"}</strong>{" "}
+                          {activeState.writing_plan.pedagogy_sources_used.join(", ")}
+                        </p>
+                      )}
+                      {activeState.writing_plan.items.map((it, idx) => (
+                        <div key={it.item_id} className="rounded border border-slate-200 bg-white p-2 text-[11px]">
+                          <div className="flex items-center justify-between font-bold text-slate-800">
+                            <span>
+                              {idx + 1}. {it.title}
+                            </span>
+                            <span className="text-slate-500">
+                              {it.weight.toFixed(0)} % · ~{it.target_words} mots
+                            </span>
+                          </div>
+                          {it.objective && <p className="mt-0.5 text-slate-600">{it.objective}</p>}
+                          {it.required_elements?.length > 0 && (
+                            <p className="mt-0.5 text-slate-500">
+                              Attendus : {it.required_elements.join(" ; ")}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 

@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   BarChart3,
+  BookOpen,
   CheckCircle2,
   ClipboardCopy,
   Clock,
@@ -37,7 +38,12 @@ import {
   withStructuredSupervisors,
 } from "./CoverPageForm";
 import { ModelRoutingEditor } from "./ModelRoutingEditor";
-import type { CoverMetadata, SupervisorInfo } from "../types/protocol";
+import type {
+  CourseNoteRecord,
+  CoverMetadata,
+  PedagogySectionCatalogItem,
+  SupervisorInfo,
+} from "../types/protocol";
 import type {
   AdminAuditLogOut,
   AdminDashboardStatsOut,
@@ -56,7 +62,7 @@ interface AdminPortalProps {
   onOpenUserWorkspace?: (projectId: string, studentName: string) => void | Promise<void>;
 }
 
-type AdminTab = "dashboard" | "users" | "assistance" | "plans" | "api_keys" | "stats";
+type AdminTab = "dashboard" | "users" | "assistance" | "plans" | "api_keys" | "pedagogy" | "stats";
 
 interface AdminSupportRequestItem {
   id: string;
@@ -249,6 +255,18 @@ export function AdminPortal({
   const [resolveNotes, setResolveNotes] = useState<Record<string, string>>({});
   const [resolvingRequestId, setResolvingRequestId] = useState<string | null>(null);
 
+  // Pedagogy / Course notes state
+  const [pedagogyNotes, setPedagogyNotes] = useState<CourseNoteRecord[]>([]);
+  const [pedagogySectionsCatalog, setPedagogySectionsCatalog] = useState<PedagogySectionCatalogItem[]>([]);
+  const [pedagogyFilterSectionId, setPedagogyFilterSectionId] = useState<string>("");
+  const [newNoteTitle, setNewNoteTitle] = useState("");
+  const [newNoteContent, setNewNoteContent] = useState("");
+  const [newNoteFile, setNewNoteFile] = useState<File | null>(null);
+  const [newNoteSectionIds, setNewNoteSectionIds] = useState<string[]>([]);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteSectionIds, setEditingNoteSectionIds] = useState<string[]>([]);
+  const [pedagogyBusy, setPedagogyBusy] = useState(false);
+
   const loadAllCore = useCallback(async () => {
     setError(null);
     try {
@@ -355,6 +373,16 @@ export function AdminPortal({
     }
   }, [statsSearch, statsSortBy]);
 
+  const loadPedagogyTab = useCallback(async () => {
+    try {
+      const res = await api.adminListPedagogyNotes(pedagogyFilterSectionId || undefined);
+      setPedagogyNotes(res.notes);
+      setPedagogySectionsCatalog(res.sections_catalog);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }, [pedagogyFilterSectionId]);
+
   useEffect(() => {
     loadAllCore();
   }, [loadAllCore]);
@@ -368,14 +396,17 @@ export function AdminPortal({
   useEffect(() => {
     if (tab === "stats") {
       loadStatsTab();
+    } else if (tab === "pedagogy") {
+      loadPedagogyTab();
     }
-  }, [tab, loadStatsTab]);
+  }, [tab, loadStatsTab, loadPedagogyTab]);
 
   async function refreshAll() {
     setBusy(true);
     await loadAllCore();
     if (selectedUserId) await loadUserDetail(selectedUserId);
     if (tab === "stats") await loadStatsTab();
+    if (tab === "pedagogy") await loadPedagogyTab();
     setBusy(false);
   }
 
@@ -914,6 +945,7 @@ export function AdminPortal({
             },
             { id: "plans", label: "Plans & Tarifs", icon: CreditCard, badge: 0 },
             { id: "api_keys", label: `Clés API Gemini (${apiKeys.length})`, icon: KeyRound, badge: 0 },
+            { id: "pedagogy", label: "Notes de cours", icon: BookOpen, badge: 0 },
             { id: "stats", label: "Statistiques Étudiants & Journaux", icon: BarChart3, badge: 0 },
           ] as const
         ).map((t) => {
@@ -2992,6 +3024,302 @@ export function AdminPortal({
               </div>
             );
           })()}
+        </div>
+      )}
+
+      {/* ================================================================ */}
+      {/* TAB: PEDAGOGY / COURSE NOTES (MODULE 1 LEARNING BASE)           */}
+      {/* ================================================================ */}
+      {tab === "pedagogy" && (
+        <div className="space-y-4">
+          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-xs">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="flex items-center gap-2 text-base font-bold text-slate-900">
+                  <BookOpen className="h-4 w-4 text-[#004A8F]" />
+                  Notes de cours & Référentiel pédagogique (Module 1)
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Associez manuellement des notes de cours (texte ou fichier .txt, .md, .docx, .pdf) aux sections du protocole pour guider le Module 1 (Génération du plan) et le Module 3 (Validation ≥ 97 %).
+                </p>
+              </div>
+              <select
+                value={pedagogyFilterSectionId}
+                onChange={(e) => setPedagogyFilterSectionId(e.target.value)}
+                className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-800"
+              >
+                <option value="">Toutes les sections ({pedagogyNotes.length})</option>
+                {pedagogySectionsCatalog.map((sec) => (
+                  <option key={sec.id} value={sec.id}>
+                    {sec.title} ({sec.id})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Form to create/upload a new course note */}
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!newNoteSectionIds.length) {
+                  setError("Sélectionnez au moins une section à associer.");
+                  return;
+                }
+                setPedagogyBusy(true);
+                setError(null);
+                setNotice(null);
+                try {
+                  if (newNoteFile) {
+                    await api.adminUploadPedagogyNote(
+                      newNoteFile,
+                      newNoteTitle.trim(),
+                      newNoteSectionIds
+                    );
+                  } else {
+                    await api.adminCreatePedagogyNote({
+                      title: newNoteTitle.trim(),
+                      content: newNoteContent.trim(),
+                      section_ids: newNoteSectionIds,
+                    });
+                  }
+                  setNewNoteTitle("");
+                  setNewNoteContent("");
+                  setNewNoteFile(null);
+                  setNewNoteSectionIds([]);
+                  setNotice("Note de cours enregistrée et associée avec succès.");
+                  await loadPedagogyTab();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : String(err));
+                } finally {
+                  setPedagogyBusy(false);
+                }
+              }}
+              className="mt-4 space-y-3 rounded-xl border border-slate-200 bg-slate-50/70 p-4"
+            >
+              <div className="text-xs font-bold uppercase tracking-wide text-slate-700">
+                Ajouter une note de cours
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <input
+                  type="text"
+                  value={newNoteTitle}
+                  onChange={(e) => setNewNoteTitle(e.target.value)}
+                  placeholder="Titre de la note (ex. Méthode de calcul de Schwartz)"
+                  required={!newNoteFile}
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs text-slate-900"
+                />
+                <input
+                  type="file"
+                  accept=".txt,.md,.docx,.pdf"
+                  onChange={(e) => setNewNoteFile(e.target.files?.[0] ?? null)}
+                  className="rounded-xl border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700"
+                />
+              </div>
+              {!newNoteFile && (
+                <textarea
+                  value={newNoteContent}
+                  onChange={(e) => setNewNoteContent(e.target.value)}
+                  rows={4}
+                  required
+                  placeholder="Collez ici les principes méthodologiques, critères d'évaluation et consignes de cours pour la section..."
+                  className="w-full rounded-xl border border-slate-300 bg-white p-3 text-xs text-slate-900"
+                />
+              )}
+              <div>
+                <div className="mb-1.5 text-[11px] font-semibold text-slate-700">
+                  Sections associées ({newNoteSectionIds.length} sélectionnée(s)) :
+                </div>
+                <div className="grid max-h-40 grid-cols-1 gap-1.5 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2.5 sm:grid-cols-2 md:grid-cols-3">
+                  {pedagogySectionsCatalog.map((sec) => {
+                    const checked = newNoteSectionIds.includes(sec.id);
+                    return (
+                      <label
+                        key={sec.id}
+                        className={`flex cursor-pointer items-center gap-1.5 rounded-lg px-2 py-1 text-[11px] ${
+                          checked ? "bg-sky-50 font-semibold text-[#004A8F]" : "text-slate-700 hover:bg-slate-50"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() =>
+                            setNewNoteSectionIds((prev) =>
+                              prev.includes(sec.id)
+                                ? prev.filter((id) => id !== sec.id)
+                                : [...prev, sec.id]
+                            )
+                          }
+                        />
+                        <span className="truncate">{sec.title}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <button
+                  type="submit"
+                  disabled={pedagogyBusy}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-[#004A8F] px-4 py-2 text-xs font-semibold text-white hover:bg-[#003a72] disabled:opacity-50"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {pedagogyBusy ? "Enregistrement..." : "Associer cette note de cours"}
+                </button>
+              </div>
+            </form>
+          </div>
+
+          {/* List of existing notes (built-in + admin) */}
+          <div className="space-y-3">
+            {pedagogyNotes.map((note) => {
+              const isEditing = editingNoteId === note.note_id;
+              return (
+                <div
+                  key={note.note_id}
+                  className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-sm font-bold text-slate-900">{note.title}</span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-bold uppercase ${
+                            note.source === "builtin"
+                              ? "bg-indigo-100 text-indigo-800"
+                              : "bg-emerald-100 text-emerald-800"
+                          }`}
+                        >
+                          {note.source === "builtin" ? "Intégrée (pedagogie/)" : "Admin"}
+                        </span>
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                            note.enabled
+                              ? "bg-emerald-50 text-emerald-700"
+                              : "bg-slate-200 text-slate-600"
+                          }`}
+                        >
+                          {note.enabled ? "Active" : "Désactivée"}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {note.section_ids.map((sid) => {
+                          const found = pedagogySectionsCatalog.find((s) => s.id === sid);
+                          return (
+                            <span
+                              key={sid}
+                              className="rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-medium text-slate-700"
+                            >
+                              {found ? found.title : sid}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await api.adminUpdatePedagogyNote(note.note_id, {
+                              enabled: !note.enabled,
+                            });
+                            await loadPedagogyTab();
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : String(err));
+                          }
+                        }}
+                        className="rounded-lg border border-slate-200 px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
+                      >
+                        {note.enabled ? "Désactiver" : "Activer"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (isEditing) {
+                            setEditingNoteId(null);
+                          } else {
+                            setEditingNoteId(note.note_id);
+                            setEditingNoteSectionIds([...note.section_ids]);
+                          }
+                        }}
+                        className="rounded-lg border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-semibold text-[#004A8F] hover:bg-sky-100"
+                      >
+                        {isEditing ? "Fermer" : "Sections"}
+                      </button>
+                      {note.source !== "builtin" && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await api.adminDeletePedagogyNote(note.note_id);
+                              await loadPedagogyTab();
+                            } catch (err) {
+                              setError(err instanceof Error ? err.message : String(err));
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 rounded-lg border border-rose-200 px-2.5 py-1 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                          Supprimer
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <p className="mt-2 line-clamp-3 whitespace-pre-wrap text-xs text-slate-600">
+                    {note.content}
+                  </p>
+                  {isEditing && (
+                    <div className="mt-3 rounded-xl border border-sky-200 bg-sky-50/50 p-3">
+                      <div className="mb-2 text-[11px] font-bold text-[#004A8F]">
+                        Modifier l'association aux sections :
+                      </div>
+                      <div className="grid max-h-40 grid-cols-1 gap-1.5 overflow-y-auto rounded-lg bg-white p-2 sm:grid-cols-2 md:grid-cols-3">
+                        {pedagogySectionsCatalog.map((sec) => {
+                          const checked = editingNoteSectionIds.includes(sec.id);
+                          return (
+                            <label key={sec.id} className="flex cursor-pointer items-center gap-1.5 text-[11px] text-slate-700">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() =>
+                                  setEditingNoteSectionIds((prev) =>
+                                    prev.includes(sec.id)
+                                      ? prev.filter((id) => id !== sec.id)
+                                      : [...prev, sec.id]
+                                  )
+                                }
+                              />
+                              <span className="truncate">{sec.title}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <div className="mt-2 flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await api.adminUpdatePedagogyNote(note.note_id, {
+                                section_ids: editingNoteSectionIds,
+                              });
+                              setEditingNoteId(null);
+                              setNotice("Association de sections mise à jour.");
+                              await loadPedagogyTab();
+                            } catch (err) {
+                              setError(err instanceof Error ? err.message : String(err));
+                            }
+                          }}
+                          className="rounded-lg bg-[#004A8F] px-3 py-1 text-xs font-semibold text-white hover:bg-[#003a72]"
+                        >
+                          Enregistrer les sections
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

@@ -1746,6 +1746,8 @@ export const api = {
         reason?: string;
       }>;
       matched_in_section: boolean;
+      matched_plan_item_id?: string;
+      matched_plan_item_title?: string;
       summary: string;
       model_used: string;
     }>(
@@ -1775,6 +1777,105 @@ export const api = {
       {
         method: "POST",
         body: JSON.stringify(payload),
+      }
+    ),
+
+  generateSectionPlan: (
+    projectId: string,
+    sectionId: string,
+    instruction?: string
+  ) =>
+    request<{
+      project: ProtocolProject;
+      writing_plan: Record<string, unknown>;
+    }>(
+      `/api/projects/${encodeURIComponent(projectId)}/sections/${encodeURIComponent(
+        sectionId
+      )}/generate-plan`,
+      {
+        method: "POST",
+        body: JSON.stringify({ instruction: instruction ?? null }),
+      }
+    ),
+
+  // =========================================================================
+  // ADMIN PEDAGOGY / COURSE NOTES (MODULE 1 LEARNING BASE)
+  // =========================================================================
+  adminListPedagogyNotes: (sectionId?: string) =>
+    request<{
+      notes: Array<{
+        note_id: string;
+        title: string;
+        section_ids: string[];
+        content: string;
+        source: string;
+        filename: string;
+        enabled: boolean;
+        created_at: string;
+        updated_at: string;
+      }>;
+      sections_catalog: Array<{
+        id: string;
+        title: string;
+        chapter_id: string;
+        chapter_title: string;
+      }>;
+    }>(
+      `/api/admin/pedagogy/notes${
+        sectionId ? `?section_id=${encodeURIComponent(sectionId)}` : ""
+      }`
+    ),
+
+  adminCreatePedagogyNote: (payload: {
+    title: string;
+    content: string;
+    section_ids: string[];
+  }) =>
+    request<{ note: Record<string, unknown> }>("/api/admin/pedagogy/notes", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
+  adminUploadPedagogyNote: async (
+    file: File,
+    title: string,
+    sectionIds: string[]
+  ) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("title", title);
+    fd.append("section_ids_json", JSON.stringify(sectionIds));
+    return request<{ note: Record<string, unknown> }>(
+      "/api/admin/pedagogy/notes/upload",
+      {
+        method: "POST",
+        body: fd,
+      }
+    );
+  },
+
+  adminUpdatePedagogyNote: (
+    noteId: string,
+    payload: {
+      title?: string;
+      content?: string;
+      section_ids?: string[];
+      enabled?: boolean;
+    }
+  ) =>
+    request<{ note: Record<string, unknown> }>(
+      `/api/admin/pedagogy/notes/${encodeURIComponent(noteId)}`,
+      {
+        method: "PATCH",
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  adminDeletePedagogyNote: (noteId: string) =>
+    request<{ deleted: boolean; note_id: string }>(
+      `/api/admin/pedagogy/notes/${encodeURIComponent(noteId)}`,
+      {
+        method: "DELETE",
       }
     ),
 };

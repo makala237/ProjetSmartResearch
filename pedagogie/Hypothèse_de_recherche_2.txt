@@ -1,0 +1,32 @@
+Votre question parle de X et Y. Votre objectif parle de X et Z. Puis votre hypothèse introduit encore une autre variable. Dans ce cas, votre étude est déjà incohérente avant même l'analyse.
+
+La cohérence méthodologique commence bien avant le traitement des données. Une étude bien construite suit une chaîne logique : problématique, question de recherche, objectif général, objectifs spécifiques, hypothèses lorsque celles-ci sont nécessaires, variables, puis méthode d'analyse. Chaque maillon doit découler du précédent. La problématique identifie le problème. La question précise ce que l'on veut savoir. L'objectif général transforme cette question en action. Les objectifs spécifiques décomposent cette action en étapes concrètes.
+
+Prenons un exemple cohérent :
+
+* **Question :** « Dans quelle mesure l'accès au crédit bancaire est-il associé à la performance des petites entreprises ? »
+* **Objectif général :** Analyser la relation entre accès au crédit et performance des petites entreprises.
+* **Objectif spécifique :** Estimer la relation entre accès au crédit bancaire et performance.
+* **Hypothèse possible :** L'accès au crédit bancaire est positivement associé à la performance des petites entreprises.
+
+Ici, la même relation traverse toute la chaîne. On retrouve les mêmes concepts, la même population et la même logique analytique. C'est exactement ce que l'on recherche lorsqu'on parle de cohérence interne.
+
+Regardons maintenant un exemple incohérent. Si la question porte sur l'accès au crédit et la performance, mais que l'objectif spécifique cherche à mesurer la satisfaction des clients, une nouvelle variable apparaît sans justification. Même problème si l'hypothèse affirme que la formation des dirigeants améliore la rentabilité, alors que la question de recherche ne parle ni de formation ni de rentabilité. Une hypothèse ne doit pas surgir de nulle part.
+
+Une bonne hypothèse est une proposition testable qui découle d'une question analytique ou d'un objectif précis. Elle relie généralement des variables de manière explicite, par exemple une relation positive, négative ou une différence attendue entre groupes. Mais toutes les études n'ont pas forcément besoin d'hypothèse. Une recherche exploratoire, descriptive ou qualitative peut s'appuyer sur des questions de recherche sans formuler d'hypothèse statistique formelle. Une erreur fréquente consiste à croire qu'une hypothèse rend automatiquement un travail plus scientifique. Une hypothèse n'a de sens que si elle est justifiée théoriquement, reliée aux objectifs et réellement testable avec les données disponibles.
+
+La cohérence doit aussi atteindre les variables et la méthode. Si votre hypothèse porte sur l'accès au crédit et la performance, vous devez savoir comment ces concepts seront mesurés, puis choisir une méthode d'analyse compatible avec la question posée.
+
+Pour vérifier toute votre chaîne, posez six questions :
+
+1. La question répond-elle au problème ?
+2. L'objectif général reformule-t-il la question ?
+3. Les objectifs spécifiques servent-ils l'objectif général ?
+4. Les hypothèses découlent-elles des objectifs ?
+5. Les variables sont-elles observables ?
+6. La méthode permet-elle réellement de répondre à la question ?
+
+Cette logique vaut aussi pour les ONG et les centres de recherche. Une question sur la faible adoption d'un service doit conduire à des objectifs, des indicateurs et des analyses qui portent réellement sur l'adoption et ses facteurs, pas sur un autre problème apparu en cours de route.
+
+Retenez ceci : une bonne étude ressemble à une chaîne — **problème, question, objectifs, hypothèses (si elles sont nécessaires), variables et méthodes**. Si un seul maillon parle d'autre chose, la solidité de l'ensemble diminue. La prochaine étape sera de voir dans quel cas il faut réellement formuler des hypothèses et comment rédiger une hypothèse testable sans confondre association et causalité.
+

@@ -1,0 +1,36 @@
+Votre question de recherche peut être correcte, mais si vos objectifs ne correspondent pas exactement à cette question, toute votre méthodologie risque de devenir incohérente. Les objectifs ne sont pas une formalité : ils annoncent ce que votre étude va réellement faire.
+
+La logique générale est simple : la problématique fait apparaître un problème, la question de recherche transforme ce problème en interrogation, puis l'objectif général reformule cette interrogation sous forme d'action de recherche.
+
+Prenons une question simple : « Dans quelle mesure l'accès au crédit bancaire est-il associé à la performance des petites entreprises ? » L'objectif général peut devenir : « Analyser la relation entre l'accès au crédit bancaire et la performance des petites entreprises. » L'objectif général doit rester très proche de la question principale. Il ne doit pas introduire un nouveau sujet, une nouvelle population ou une nouvelle variable qui n'apparaît nulle part dans la problématique.
+
+Les objectifs spécifiques décomposent l'objectif général en étapes concrètes. Ils répondent à la question suivante : quelles opérations précises faudra-t-il réaliser pour atteindre l'objectif général ? Dans notre exemple, on peut d'abord décrire les caractéristiques des entreprises étudiées, puis mesurer leur niveau d'accès au crédit, évaluer leur performance et enfin estimer la relation entre accès au crédit et performance.
+
+Le choix du verbe est important :
+
+* **Décrire** sert à présenter une situation.
+* **Comparer** sert à confronter des groupes.
+* **Mesurer** sert à quantifier.
+* **Identifier** sert à repérer des facteurs.
+* **Estimer** sert à produire une mesure statistique.
+* **Évaluer** sert à apprécier un résultat ou un effet selon une méthode définie.
+
+Des verbes comme *comprendre*, *connaître* ou *étudier* ne sont pas toujours faux, mais ils peuvent être trop vagues s'ils ne précisent pas l'action méthodologique attendue. Un bon objectif doit indiquer clairement ce que vous allez faire.
+
+Une règle pratique est la suivante : chaque objectif spécifique doit pouvoir être relié à une variable, un indicateur, une analyse, un tableau, une comparaison ou une étape méthodologique concrète.
+
+Autre erreur fréquente : multiplier les objectifs spécifiques. Six, huit ou dix objectifs ne rendent pas automatiquement une étude plus solide. Trop d'objectifs peuvent disperser la recherche et rendre le plan d'analyse difficile à maîtriser. Il faut aussi éviter les objectifs qui se répètent : « mesurer la performance », puis « analyser le niveau de performance » peuvent parfois désigner pratiquement la même opération. Chaque objectif doit apporter une étape réellement distincte.
+
+Pour une étude qualitative, les verbes peuvent être différents : explorer les perceptions, comprendre les mécanismes, décrire les expériences, analyser les discours ou identifier les logiques d'action. Le verbe doit correspondre au type de données et à la méthode retenue.
+
+Pour les ONG et les centres de recherche, les objectifs doivent aussi être opérationnels. Si une étude porte sur la faible adoption d'un service, on peut décrire le profil des utilisateurs, identifier les obstacles, comparer les groupes et analyser les facteurs associés à l'adoption.
+
+Avant de valider vos objectifs, utilisez ce test :
+
+* L'objectif général répond-il directement à la question principale ?
+* Chaque objectif spécifique contribue-t-il réellement à l'objectif général ?
+* Chaque objectif peut-il être relié à des données et à une méthode ?
+* Y a-t-il des répétitions ?
+
+Retenez surtout cette chaîne : **problématique → question de recherche → objectif général → objectifs spécifiques**. Si l'un de ces éléments parle d'autre chose que les précédents, la cohérence méthodologique est rompue. La prochaine étape sera de vérifier l'alignement entre question, objectif et hypothèse, et de voir dans quel cas une hypothèse est réellement nécessaire.
+

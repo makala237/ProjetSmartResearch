@@ -457,6 +457,52 @@ class CopilotMessage(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class SectionWritingPlanItem(BaseModel):
+    item_id: str = Field(default_factory=lambda: f"p-{uuid4().hex[:6]}")
+    title: str
+    objective: str = ""
+    required_elements: List[str] = Field(default_factory=list)
+    pedagogical_rules: List[str] = Field(default_factory=list)
+    target_words: int = 120
+    data_needs: List[str] = Field(default_factory=list)
+    weight: float = 20.0
+
+
+class SectionWritingPlan(BaseModel):
+    section_id: str
+    summary: str = ""
+    items: List[SectionWritingPlanItem] = Field(default_factory=list)
+    cames_norms_summary: str = ""
+    pedagogy_sources_used: List[str] = Field(default_factory=list)
+    min_words: int = 100
+    max_words: int = 800
+    min_citations: int = 0
+    model_used: str = ""
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class SectionValidationItemResult(BaseModel):
+    item_id: str
+    title: str = ""
+    status: str = "passed"  # passed | partial | missing
+    score_pct: float = 100.0
+    rectification_note: str = ""
+
+
+class SectionValidationReport(BaseModel):
+    execution_score_pct: float = 100.0
+    threshold_pct: float = 97.0
+    passed: bool = True
+    attempts: int = 1
+    word_count: int = 0
+    citation_count: int = 0
+    deterministic_issues: List[str] = Field(default_factory=list)
+    item_results: List[SectionValidationItemResult] = Field(default_factory=list)
+    rectification_instructions: List[str] = Field(default_factory=list)
+    model_used: str = ""
+    validated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class SectionState(BaseModel):
     section_id: str
     status: StepStatus = StepStatus.PENDING
@@ -470,6 +516,8 @@ class SectionState(BaseModel):
     custom_diagrams: List[SectionDiagram] = Field(default_factory=list)
     internal_library: List[InternalLibraryEntry] = Field(default_factory=list)
     versions: List[SectionVersionEntry] = Field(default_factory=list)
+    writing_plan: Optional[SectionWritingPlan] = None
+    last_validation: Optional[SectionValidationReport] = None
     suppress_structured_table: bool = False
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

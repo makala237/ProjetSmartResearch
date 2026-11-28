@@ -1,0 +1,65 @@
+Vous avez choisi un thème de mémoire, votre encadrant le valide. Vous rédigez trois pages de contexte, vous ajoutez quelques statistiques, puis vous recevez cette remarque : « Où est exactement votre problème de recherche ? » Si cette question vous bloque, cette vidéo va vous montrer comment construire une problématique convaincante, étape par étape.
+
+Première distinction : le contexte décrit une situation ; la problématique explique pourquoi cette situation soulève une véritable question scientifique. Dire que les étudiants utilisent beaucoup les réseaux sociaux, c'est un constat possible, à documenter. Cela ne suffit pas à montrer ce qui mérite d'être étudié. Une bonne problématique est un raisonnement, pas une accumulation de chiffres.
+
+Voici notre méthode en cinq mouvements :
+
+1. Délimiter le sujet.
+2. Établir un constat documenté.
+3. Examiner la littérature et identifier une lacune justifiée.
+4. Expliquer pourquoi cette lacune est importante.
+5. Formuler une question de recherche précise et réalisable.
+
+Chaque étape prépare la suivante : on ne saute pas directement du thème à l'hypothèse.
+
+Prenons un exemple entièrement pédagogique : l'usage des réseaux sociaux et les résultats académiques des étudiants à Cotonou. Au départ, le thème est trop large. Quels réseaux sociaux ? Quel type d'usage ? Quels étudiants ? Quelle mesure des résultats ? Notre travail consiste à transformer ce thème en objet de recherche suffisamment précis pour être étudié.
+
+**Première étape : préciser qui, où, quand et quel phénomène.** Par exemple, on peut s'intéresser aux étudiants de première année d'un établissement universitaire à Cotonou durant une année académique donnée, et distinguer l'usage récréatif de l'usage pédagogique des réseaux sociaux. Cette délimitation est illustrative : elle devra être adaptée aux personnes et aux données réellement accessibles.
+
+**Deuxième étape : documenter le phénomène.** Recherchez des statistiques fiables, des enquêtes institutionnelles ou des travaux scientifiques pertinents. Mais n'inventez jamais un pourcentage pour rendre votre texte impressionnant. Et surtout, demandez-vous ce que chaque information apporte au raisonnement. Un chiffre est utile s'il aide à comprendre le problème, pas simplement s'il occupe une ligne.
+
+**Troisième étape : examiner les études existantes.** Qu'ont-elles réellement mesuré ? Quelle population ont-elles étudiée ? Quelle méthode ont-elles utilisée ? Les résultats convergent-ils ou se contredisent-ils ? L'objectif n'est pas d'aligner 20 auteurs ; il est de comparer les connaissances, leurs limites et les questions qui restent insuffisamment résolues. Pour travailler efficacement, créez une matrice de lecture. Pour chaque article, relevez la question, la population, les variables, les données, la méthode, le résultat principal et les limites. Vous pourrez alors comparer les études par thème, plutôt que de les résumer une par une. Attention : notre matrice à l'écran est un modèle de travail, pas une liste de publications réelles.
+
+Comment repérer une lacune ? Dans notre exemple, vous pourriez vérifier si les travaux distinguent suffisamment les usages pédagogiques et récréatifs. Mais vous ne pouvez pas déclarer cette lacune établie avant d'avoir lu et comparé des études pertinentes. Et l'absence d'article trouvé dans votre pays ne constitue pas à elle seule une contribution scientifique.
+
+**Quatrième étape : justifier l'intérêt de la question.** Si votre analyse de la littérature révèle une difficulté réelle à distinguer plusieurs formes d'utilisation, expliquez pourquoi cette distinction pourrait changer l'interprétation des résultats. Votre problématique doit faire apparaître ce qui demeure incertain et l'utilité scientifique ou pratique de le clarifier, sans annoncer la réponse à l'avance.
+
+**Cinquième étape : transformer ce raisonnement en question.** Par exemple : « Quelle association existe-t-il entre le temps d'utilisation récréative des réseaux sociaux et les résultats académiques d'étudiants de première année à Cotonou ? » C'est une question plus précise. Elle n'affirme pas encore une causalité. Elle demande ensuite une mesure des usages et des résultats académiques qui soit crédible.
+
+Un avertissement essentiel : observer une association ne démontre pas un effet causal. Les habitudes de travail, l'environnement familial ou les compétences initiales peuvent être liés à la fois à l'utilisation des réseaux sociaux et aux notes. Si votre titre annonce un impact, votre stratégie d'identification doit pouvoir justifier cette ambition. Sinon, reformulez honnêtement votre question.
+
+Une problématique réussie commande la suite du protocole :
+
+* La question précise ce que l'on veut comprendre.
+* L'objectif décrit ce que l'on va analyser.
+* Les variables indiquent ce qu'il faut mesurer.
+* Les données définissent ce qui est observable.
+* La méthode précise comment répondre.
+
+Si une flèche de cette chaîne se rompt, le projet risque de devenir incohérent.
+
+Comparons deux formulations :
+
+* **Première version :** « Les réseaux sociaux détruisent la réussite des étudiants. » C'est une affirmation générale et orientée, sans démonstration.
+* **Seconde version :** « Dans quelle mesure les usages récréatifs des réseaux sociaux sont-ils associés aux résultats académiques d'une population étudiante définie ? » La deuxième formulation est plus précise et peut être examinée avec des données adaptées.
+
+**Selon votre niveau :**
+
+* **En licence**, l'enjeu est souvent de construire une question délimitée, compréhensible et réalisable. Avec notre exemple, une enquête accessible peut viser à décrire les usages déclarés des réseaux sociaux et leur répartition selon les étudiants. Si les notes officielles ne sont pas accessibles, ne promettez pas d'en mesurer l'effet : adaptez les objectifs aux informations disponibles.
+* **En master**, on attend généralement une discussion plus approfondie des travaux antérieurs, des mécanismes possibles et des choix méthodologiques. Vous pourriez étudier une association entre usages récréatifs et résultats académiques en tenant compte de facteurs pertinents et mesurables. Mais ajouter des variables de contrôle à une régression ne garantit pas, à elle seule, une identification causale.
+* **Au doctorat**, la question centrale devient aussi celle de la contribution scientifique originale. Le doctorant doit démontrer sa place dans la littérature, défendre une lacune réelle et justifier une stratégie d'analyse solide. Il peut approfondir un mécanisme, une théorie ou une stratégie d'identification. Un doctorat n'est pas simplement un mémoire plus long, et une nouveauté géographique ne suffit pas toujours.
+
+Retenez ces erreurs fréquentes : remplacer la problématique par un historique général, empiler des citations sans les comparer, inventer une lacune, confondre intérêt social et problème scientifique, formuler une question trop large, choisir une technique avant les données, ou annoncer un impact sans identification crédible. La meilleure façon de progresser est de vérifier la logique qui relie chaque paragraphe au suivant.
+
+Avant de présenter votre texte à votre encadrant, faites cinq vérifications :
+
+1. Mon sujet est-il clairement délimité ?
+2. Mon constat est-il étayé ?
+3. Ai-je comparé des études scientifiques pertinentes ?
+4. Ma lacune est-elle justifiée ?
+5. Ma question est-elle précise, importante et réalisable ?
+
+Si vous ne pouvez pas répondre, revenez au point concerné avant d'ajouter de nouvelles pages.
+
+Retenez ceci : une problématique convaincante ne se mesure pas au nombre de pages. Elle montre ce que l'on sait, ce qui reste à comprendre, pourquoi cela importe et comment la recherche peut y répondre.
+

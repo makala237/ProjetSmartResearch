@@ -859,17 +859,44 @@ def draft_section_with_ai(
                 "deterministic_notes": [],
             }
 
+    from app.services.section_precision_engine import (
+        build_plan_guidance_block,
+        generate_section_writing_plan,
+        run_module3_validation_loop,
+    )
+
     current_sec = project.sections.get(section_id)
     current_text = current_sec.content_markdown if current_sec else ""
+
+    # Module 1: Learn FMSB/CAMES norms + course notes (`pedagogie/`) + canonical facts -> writing plan
+    writing_plan = generate_section_writing_plan(
+        project=project,
+        section_id=section_id,
+        user_instruction=user_instruction,
+        force_regenerate=bool(user_instruction and user_instruction.strip()),
+    )
+    plan_guidance_block = build_plan_guidance_block(writing_plan)
+    plan_instruction_hint = user_instruction
+    if writing_plan.items:
+        needs_summary = "; ".join(
+            d for it in writing_plan.items for d in (it.data_needs or [])[:2] if d
+        )[:320]
+        if needs_summary:
+            plan_instruction_hint = (
+                f"{user_instruction or ''}\nBesoins du plan (Module 1) : {needs_summary}"
+            ).strip()
 
     orch = orchestrate_section_action(
         project=project,
         section_id=section_id,
         action="draft",
-        user_instruction=user_instruction,
+        user_instruction=plan_instruction_hint,
         force_external_research=force_external_research,
     )
     orch_trace = orch["orchestration_trace"]
+    orch_trace["module1_plan_items"] = len(writing_plan.items)
+    orch_trace["module1_pedagogy_sources"] = list(writing_plan.pedagogy_sources_used)
+    orch_trace["module1_model_used"] = writing_plan.model_used
     cross_memory = orch["cross_section_memory"]
     internal_library_ctx = (orch.get("internal_library_context") or "").strip()
 
@@ -912,6 +939,9 @@ def draft_section_with_ai(
         )
 
     cames_block = _format_cames_granularity_block(spec, lang=lang)
+    from app.services.section_precision_engine import build_plan_guidance_block
+
+    plan_guidance_block = build_plan_guidance_block(getattr(sec, "writing_plan", None) if sec else None)
     intro_budget_block = _build_intro_shared_budget_block(project, section_id, lang=lang)
     supervisor_block = format_supervisor_directives_block(project, section_id=section_id)
     lang_directive = get_language_prompt_directive(lang)
@@ -931,6 +961,8 @@ EXPECTED POINTS:
 {supervisor_block}
 
 {cames_block}
+
+{plan_guidance_block}
 
 {intro_budget_block}
 
@@ -1069,8 +1101,32 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
     )
     orch_trace["word_count_tightening"] = max_wc_trace
 
+    # Module 3 Verification & 97% Plan Execution Gate (loops back to Module 2 if < 97%)
+    validation_report = None
+    if writing_plan.items:
+        clean_md, validation_report = run_module3_validation_loop(
+            project=project,
+            section_id=section_id,
+            plan=writing_plan,
+            initial_draft_md=clean_md,
+            refs_ctx=segments_context,
+        )
+        clean_md, _ = sanitize_llm_typography(clean_md, lang=lang)
+        orch_trace["module3_validation"] = {
+            "score_pct": validation_report.execution_score_pct,
+            "threshold_pct": validation_report.threshold_pct,
+            "passed": validation_report.passed,
+            "attempts": validation_report.attempts,
+            "model_used": validation_report.model_used,
+            "rectifications_remaining": len(validation_report.rectification_instructions),
+        }
+
     clean_html = markdown_to_clean_html(clean_md)
     det_notes = deterministic_section_checks(project, section_id, clean_md)
+    if validation_report and not validation_report.passed:
+        for ri in validation_report.rectification_instructions[:3]:
+            if ri not in det_notes:
+                det_notes.append(ri)
 
     if current_sec is not None:
         snapshot_section_version(
@@ -1083,6 +1139,8 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
         current_sec.status = StepStatus.IN_PROGRESS
         current_sec.cited_ref_ids = cited_ref_ids
         current_sec.audit_notes = det_notes
+        current_sec.writing_plan = writing_plan
+        current_sec.last_validation = validation_report
         _append_structured_elements(current_sec, dto)
         if section_id == "chap3_chronogramme":
             # Preserve existing Module 2 Gantt if user already configured it; otherwise sync from AI table or seed standard FMSB Gantt
@@ -1108,6 +1166,8 @@ STRICT ANTI-HALLUCINATION & ANTI-REDUNDANCY RULES:
         "cited_ref_ids": cited_ref_ids,
         "assistant_commentary": dto.assistant_commentary,
         "deterministic_notes": det_notes,
+        "writing_plan": writing_plan.model_dump(mode="json") if writing_plan else None,
+        "validation_report": validation_report.model_dump(mode="json") if validation_report else None,
         "orchestration_trace": orch_trace,
         "used_internal_library_only": bool(orch.get("used_internal_library_only", False)),
         "internal_library_entries_used": int(orch.get("internal_library_entries_used", 0) or 0),
@@ -1465,6 +1525,9 @@ def fix_section_issues_with_ai(
     )
 
     cames_block = _format_cames_granularity_block(spec, lang=lang)
+    from app.services.section_precision_engine import build_plan_guidance_block
+
+    plan_guidance_block = build_plan_guidance_block(getattr(sec, "writing_plan", None) if sec else None)
     intro_budget_block = _build_intro_shared_budget_block(project, section_id, lang=lang)
     supervisor_block = format_supervisor_directives_block(project, section_id=section_id)
     lang_directive = get_language_prompt_directive(lang)
@@ -1480,6 +1543,8 @@ EXPECTATIONS: {spec.guidance_points}
 {supervisor_block}
 
 {cames_block}
+
+{plan_guidance_block}
 
 {intro_budget_block}
 

@@ -1,0 +1,57 @@
+Votre encadrant a validé votre thème de mémoire. Vous ouvrez Word, vous écrivez « Introduction générale » et vous restez devant une page blanche. Faut-il commencer par les articles, par le plan ou par un modèle statistique ? Attention : choisir une méthode avant de définir son problème scientifique, c'est souvent commencer à l'envers.
+
+Premier réflexe : télécharger des dizaines de PDF sans savoir ce que l'on cherche. Deuxième réflexe : copier le plan d'un ancien mémoire. Troisième réflexe : choisir directement une régression, une enquête ou des entretiens. Aucune de ces décisions ne remplace une démarche de recherche cohérente.
+
+Voici cinq étapes pour avancer dans le bon ordre. Notre parcours est simple :
+
+1. Délimiter le sujet.
+2. Examiner la littérature.
+3. Construire la problématique.
+4. Aligner les objectifs et les méthodes.
+5. Organiser le plan et la feuille de route.
+
+Nous allons suivre un même exemple pour voir comment un thème général devient progressivement un projet de recherche défendable.
+
+Prenons un thème général : « Éducation financière et épargne ». À ce stade, il est trop large. De quelle population parle-t-on ? Dans quelle ville ? Pendant quelle période ? Que signifie exactement « épargner » ? Pour rendre le projet faisable, il faut fixer des frontières claires, sans transformer ses choix pédagogiques en faits déjà observés.
+
+À titre d'exemple, nous pourrions étudier des jeunes actifs de 18 à 35 ans vivant à Abidjan, interrogés en 2026. Le phénomène étudié serait l'association entre leurs connaissances financières et leur comportement d'épargne. La tranche d'âge, la période et le terrain doivent être justifiés dans le protocole réel.
+
+Avant d'affirmer qu'il existe un problème scientifique, recherchez des articles évalués par les pairs et directement liés à votre sujet. Notez les questions étudiées, les pays, les données, les méthodes et les résultats. Une revue de littérature n'est pas une collection de résumés, c'est une comparaison structurée de travaux scientifiques. Dans votre tableau de lecture, distinguez les résultats qui convergent, ceux qui divergent et les limites méthodologiques. Demandez-vous si les travaux disponibles concernent réellement votre population et vos indicateurs. N'inventez jamais une lacune pour justifier votre thème : elle doit émerger d'une lecture vérifiable des publications.
+
+La problématique relie trois éléments : un constat documenté, une interrogation scientifique et une raison précise de conduire l'étude. Dans notre exemple, il ne suffit pas de dire que les jeunes épargnent peu. Il faudrait d'abord vérifier ce constat avec des données fiables, puis expliquer ce que la littérature permet ou non de comprendre.
+
+Le thème « Éducation financière et épargne » n'est pas encore une question de recherche. Une question plus précise serait : « Dans quelle mesure le niveau d'éducation financière est-il associé au comportement d'épargne des jeunes actifs à Abidjan ? » Cette formulation cible une relation à examiner. Elle ne présume pas que l'éducation financière cause directement l'épargne. Un problème social peut motiver une recherche, mais il ne suffit pas à constituer une lacune scientifique. La question est aussi de savoir ce que les études antérieures ont montré, quelles limites subsistent et ce que votre recherche peut apporter. Cette justification doit être argumentée avec des sources réelles et non avec des formules toutes faites.
+
+La question centrale doit guider l'objectif général, les objectifs spécifiques, puis le choix des données et de l'analyse. Les hypothèses, lorsqu'elles sont appropriées à la démarche retenue, doivent découler du raisonnement théorique et de la littérature. Si ces éléments ne se répondent pas, même une technique statistique sophistiquée ne réparera pas le projet.
+
+Dans notre exemple, l'objectif général serait d'examiner l'association entre éducation financière et comportement d'épargne. Deux objectifs spécifiques possibles : décrire les connaissances financières des répondants, puis analyser leur relation avec des indicateurs d'épargne. Chaque objectif doit correspondre à une opération réalisable et non à une simple intention vague.
+
+Pour une étude quantitative explicative, une hypothèse illustrative serait : « Un niveau plus élevé de connaissances financières est associé à une plus grande propension à épargner. » Ce n'est pas une conclusion : elle doit être justifiée, opérationnalisée et confrontée aux données. Attention, toutes les recherches, notamment certaines approches qualitatives exploratoires, ne nécessitent pas d'hypothèse formelle.
+
+Comment mesurer ces idées ? Les connaissances financières pourraient être appréciées à l'aide de questions portant sur les intérêts, l'inflation ou le risque. L'épargne pourrait être décrite par la pratique d'épargne ou les montants épargnés sur une période définie. Prévoyez aussi des facteurs de contexte, comme le revenu et l'âge, sans croire qu'une simple régression garantit la causalité.
+
+Une enquête transversale peut aider à décrire les pratiques et à estimer des associations, si l'échantillonnage et les mesures sont adaptés. Elle ne suffit pas, à elle seule, à identifier un effet causal. Si le projet cherche plutôt à comprendre les motivations ou les obstacles, des entretiens qualitatifs peuvent être pertinents. La méthode sert la question, jamais l'inverse.
+
+Regardez la chaîne complète :
+
+* Le thème est délimité.
+* La littérature aide à justifier la question.
+* La question définit les objectifs.
+* Les indicateurs et les méthodes permettent d'y répondre.
+
+Chaque flèche doit être défendable. Si vous ne savez pas expliquer pourquoi une variable figure dans votre questionnaire, revenez à votre question de recherche.
+
+Le plan n'est pas un modèle universel à recopier : il doit organiser les arguments nécessaires pour répondre à la question. On peut prévoir un cadre théorique et une revue critique, une démarche méthodologique, puis les résultats et leur discussion. Adaptez cette architecture aux exigences de votre établissement et aux conseils de votre encadrant.
+
+Avant de rédiger 50 pages, planifiez les prochaines actions : précisez le périmètre du sujet, constituez une bibliographie commentée, rédigez une première problématique, formalisez les questions et objectifs, puis vérifiez la faisabilité des données. Présentez cette base à votre encadrant pour validation avant de vous engager dans une collecte ou une analyse coûteuse.
+
+Résumons :
+
+1. Délimitez votre sujet.
+2. Lisez et comparez les articles scientifiques.
+3. Formulez une problématique justifiée.
+4. Alignez vos objectifs, vos hypothèses éventuelles et votre méthode.
+5. Construisez un plan et une feuille de route réaliste.
+
+Vous aurez alors un projet cohérent sur lequel commencer à rédiger. Retenez ceci : avoir un thème validé ne signifie pas avoir un projet de recherche construit. Avant de rédiger 50 pages, sachez quelles questions vous voulez résoudre, pourquoi elles méritent d'être étudiées et comment vous allez y répondre.
+

@@ -13,10 +13,11 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 from app.data.i18n import normalize_lang
-from app.schemas.protocol import ProtocolProject
+from app.schemas.protocol import ProtocolProject, SectionWritingPlan, SectionWritingPlanItem
 from app.services.copilot_tools import apply_surgical_text_patches
 from app.services.gemini_client import gemini_router
 from app.services.humanizer import sanitize_llm_typography
+from app.services.pedagogy_service import format_pedagogy_notes_for_section
 from app.services.rich_formatter import markdown_to_clean_html
 
 
@@ -83,6 +84,96 @@ class SelectionTransformOutput(BaseModel):
     )
 
 
+class _MatchedPlanItemOut(BaseModel):
+    item_id: str = ""
+
+
+def identify_plan_item_for_selection(
+    plan: Optional[SectionWritingPlan],
+    selected_text: str,
+    use_llm_fallback: bool = True,
+) -> Optional[SectionWritingPlanItem]:
+    """Module 4 helper: map a highlighted selection to its exact SectionWritingPlanItem."""
+    if plan is None or not plan.items:
+        return None
+    sel = (selected_text or "").strip()
+    if not sel:
+        return None
+    if len(plan.items) == 1:
+        return plan.items[0]
+
+    sel_tokens = set(re.findall(r"[a-zà-ÿ]{4,}", sel.lower()))
+    best_item: Optional[SectionWritingPlanItem] = None
+    best_score = -1.0
+    second_score = -1.0
+
+    for it in plan.items:
+        ref_txt = " ".join(
+            [it.title, it.objective, *it.required_elements, *it.pedagogical_rules]
+        ).lower()
+        it_tokens = set(re.findall(r"[a-zà-ÿ]{4,}", ref_txt))
+        overlap = len(sel_tokens & it_tokens)
+        score = overlap / max(1.0, len(it_tokens) ** 0.5) if sel_tokens and it_tokens else 0.0
+        if score > best_score:
+            second_score = best_score
+            best_score = score
+            best_item = it
+        elif score > second_score:
+            second_score = score
+
+    # Clear lexical match found
+    if best_item is not None and best_score >= 0.45 and (best_score - second_score) >= 0.15:
+        return best_item
+
+    if use_llm_fallback:
+        try:
+            catalog = "\n".join(
+                f"- {it.item_id}: {it.title} ({it.objective})" for it in plan.items
+            )
+            prompt = (
+                "Identifie uniquement `item_id` correspondant le mieux au passage sélectionné.\n"
+                f"OPTIONS DU PLAN :\n{catalog}\n\n"
+                f"PASSAGE SÉLECTIONNÉ :\n{sel[:1200]}"
+            )
+            res = gemini_router.generate_structured(
+                role="reasoning",
+                contents=prompt,
+                schema=_MatchedPlanItemOut,
+                temperature=0.0,
+            )
+            chosen_id = (res["data"].item_id or "").strip()
+            for it in plan.items:
+                if it.item_id == chosen_id:
+                    return it
+        except Exception:
+            pass
+
+    return best_item or plan.items[0]
+
+
+def _format_plan_item_directive(
+    section_id: str,
+    plan: Optional[SectionWritingPlan],
+    matched_item: Optional[SectionWritingPlanItem],
+) -> str:
+    if matched_item is not None:
+        lines = [
+            f"BLOC DU PLAN DE RÉDACTION CONCERNÉ ([{matched_item.item_id}] {matched_item.title}) :",
+            f"- Objectif du bloc : {matched_item.objective}" if matched_item.objective else "",
+            ("- Éléments obligatoires à respecter : " + " ; ".join(matched_item.required_elements)) if matched_item.required_elements else "",
+            ("- Règles pédagogiques (cours) : " + " ; ".join(matched_item.pedagogical_rules)) if matched_item.pedagogical_rules else "",
+        ]
+        return "\n".join(ln for ln in lines if ln)
+    if plan is not None and plan.items:
+        return "PLAN DE RÉDACTION DE LA SECTION :\n" + "\n".join(
+            f"- [{it.item_id}] {it.title} : {' ; '.join(it.required_elements[:3])}" for it in plan.items
+        )
+    ped = format_pedagogy_notes_for_section(section_id, max_chars=2200)
+    if ped:
+        return f"RAPPELS PÉDAGOGIQUES (NOTES DE COURS) :\n{ped}"
+    return ""
+
+
 def _format_refs_context(project: ProtocolProject, limit: int = 18) -> str:
     lines: List[str] = []
     for r in (project.references or [])[:limit]:
@@ -114,6 +205,11 @@ def smart_reformulate_section(
     ).strip()
 
     directives_block = format_supervisor_directives_block(project, section_id=section_id)
+    plan_directive = _format_plan_item_directive(
+        section_id,
+        getattr(sec, "writing_plan", None),
+        identify_plan_item_for_selection(getattr(sec, "writing_plan", None), instruction or original_md[:800], use_llm_fallback=False),
+    )
     refs_ctx = _format_refs_context(project)
     issues = [i.strip() for i in (audit_issues or []) if i and i.strip()]
     if mode == "audit_fix" and not issues and sec.audit_notes:
@@ -163,6 +259,7 @@ DEMANDE DE L'UTILISATEUR : {(instruction or '').strip() or 'Améliorer et corrig
 
 {issues_block}
 {directives_block if directives_block else ''}
+{plan_directive if plan_directive else ''}
 
 TEXTE ACTUEL DE LA SECTION :
 {original_md or '(Section vide)'}
@@ -343,17 +440,25 @@ def transform_selected_text(
     if instruction.strip() and action_norm not in ("modify", "complement"):
         task_desc += f"\nConsigne complémentaire : {instruction.strip()}"
 
+    # Module 4: Identify the matching Module 1 plan item for this highlighted selection
+    section_plan = getattr(sec, "writing_plan", None)
+    matched_item = identify_plan_item_for_selection(section_plan, clean_sel, use_llm_fallback=True)
+    plan_directive = _format_plan_item_directive(section_id, section_plan, matched_item)
+
     # Provide only brief surrounding context so Gemini matches tone/grammar without rewriting the whole section
     context_excerpt = original_md[:2400] if original_md else ""
 
     prompt = f"""
-Tu es un éditeur scientifique de précision (FMSB / CAMES).
+Tu es le **Module 2 (Raisonnement & Rédaction)** sollicité par le **Module 4 (Reformulation sélective consciente du plan)** (FMSB / CAMES).
 TÂCHE : {task_desc}
 
 RÈGLES ABSOLUES :
 - Renvoie dans `replacement_text` UNIQUEMENT le texte destiné à remplacer le PASSAGE SÉLECTIONNÉ (ne renvoie JAMAIS le reste de la section).
 - Pas de préambule, pas de guillemets décoratifs autour du texte, pas de commentaires méta.
+- Respecte fidèlement le bloc du plan et les règles pédagogiques applicables ci-dessous.
 - Langue : {"English" if lang == "en" else "Français"}.
+
+{plan_directive if plan_directive else ''}
 
 PASSAGE SÉLECTIONNÉ PAR L'UTILISATEUR :
 {clean_sel}
@@ -412,6 +517,8 @@ RÉFÉRENCES DU PROJET :
             }
         ],
         "matched_in_section": patch_res["applied_count"] > 0,
+        "matched_plan_item_id": matched_item.item_id if matched_item else "",
+        "matched_plan_item_title": matched_item.title if matched_item else "",
         "summary": summary,
         "model_used": model_used,
     }

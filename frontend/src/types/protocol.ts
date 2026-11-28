@@ -366,6 +366,71 @@ export interface CopilotChatResponse {
   active_voice_models: string[];
 }
 
+export interface SectionWritingPlanItem {
+  item_id: string;
+  title: string;
+  objective: string;
+  required_elements: string[];
+  pedagogical_rules: string[];
+  target_words: number;
+  data_needs: string[];
+  weight: number;
+}
+
+export interface SectionWritingPlan {
+  section_id: string;
+  summary: string;
+  items: SectionWritingPlanItem[];
+  cames_norms_summary: string;
+  pedagogy_sources_used: string[];
+  min_words: number;
+  max_words: number;
+  min_citations: number;
+  model_used: string;
+  generated_at: string;
+}
+
+export interface SectionValidationItemResult {
+  item_id: string;
+  title: string;
+  status: "passed" | "partial" | "missing" | string;
+  score_pct: number;
+  rectification_note: string;
+}
+
+export interface SectionValidationReport {
+  execution_score_pct: number;
+  threshold_pct: number;
+  passed: boolean;
+  attempts: number;
+  word_count: number;
+  citation_count: number;
+  deterministic_issues: string[];
+  item_results: SectionValidationItemResult[];
+  rectification_instructions: string[];
+  model_used: string;
+  validated_at: string;
+}
+
+export interface CourseNoteRecord {
+  note_id: string;
+  title: string;
+  section_ids: string[];
+  content: string;
+  source: "builtin" | "admin" | string;
+  filename: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PedagogySectionCatalogItem {
+  id: string;
+  title: string;
+  chapter_id: string;
+  chapter_title: string;
+}
+
 export interface SectionState {
   section_id: string;
   status: StepStatus;
@@ -378,6 +443,8 @@ export interface SectionState {
   custom_diagrams?: SectionDiagram[];
   internal_library?: InternalLibraryEntry[];
   versions?: SectionVersionEntry[];
+  writing_plan?: SectionWritingPlan | null;
+  last_validation?: SectionValidationReport | null;
   suppress_structured_table?: boolean;
   user_notes: string;
   updated_at: string;
