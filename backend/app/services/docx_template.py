@@ -1035,8 +1035,25 @@ def _insert_table_after(
             p.paragraph_format.line_spacing = 1.0 if use_compact else 1.15
             if (keep_all_rows and not is_last_row) or (keep_with_caption_below and is_last_row):
                 p.paragraph_format.keep_with_next = True
-            run = p.add_run(val)
-            _apply_run_font(run, fmt, size_pt=cell_size_pt, bold=(use_compact and is_last_row and ci in (0, len(safe_headers) - 1)))
+            base_bold = bool(use_compact and is_last_row and ci in (0, len(safe_headers) - 1))
+            # Render inline Markdown **bold** and *italic* cleanly inside table cells
+            cell_str = str(val or "")
+            if "**" in cell_str or "*" in cell_str:
+                for tok in re.split(r"(\*\*[^*]+\*\*|\*[^*]+\*)", cell_str):
+                    if not tok:
+                        continue
+                    if tok.startswith("**") and tok.endswith("**") and len(tok) > 4:
+                        r = p.add_run(tok[2:-2])
+                        _apply_run_font(r, fmt, size_pt=cell_size_pt, bold=True)
+                    elif tok.startswith("*") and tok.endswith("*") and len(tok) > 2:
+                        r = p.add_run(tok[1:-1])
+                        _apply_run_font(r, fmt, size_pt=cell_size_pt, bold=base_bold, italic=True)
+                    else:
+                        r = p.add_run(tok)
+                        _apply_run_font(r, fmt, size_pt=cell_size_pt, bold=base_bold)
+            else:
+                run = p.add_run(cell_str)
+                _apply_run_font(run, fmt, size_pt=cell_size_pt, bold=base_bold)
 
     # Move table XML right after anchor_p
     anchor_p._p.addnext(tbl._tbl)
@@ -2739,17 +2756,9 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             if matched_sp is not None:
                 target_c = matched_sp
                 advance_main = False
-            c_after = _insert_table_after(
+            c_cap = _insert_caption_with_seq(
                 doc,
                 target_c,
-                ct.headers,
-                ct.rows,
-                fmt,
-                keep_with_caption_below=True,
-            )
-            c_after = _insert_caption_with_seq(
-                doc,
-                c_after,
                 seq_label=labels["table_seq"],
                 num_val=table_counter,
                 separator=table_sep,
@@ -2758,6 +2767,15 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                 size_pt=10,
                 bold=True,
                 align=WD_ALIGN_PARAGRAPH.CENTER,
+                keep_with_next_override=True,
+            )
+            c_after = _insert_table_after(
+                doc,
+                c_cap,
+                ct.headers,
+                ct.rows,
+                fmt,
+                keep_with_caption_below=False,
             )
             table_counter += 1
             if advance_main:
@@ -3035,14 +3053,6 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     if lang == "en"
                     else ["Variable", "Rôle", "Définition", "Échelle", "Outil"]
                 )
-                cursor = _insert_table_after(
-                    doc,
-                    cursor,
-                    var_headers,
-                    var_rows,
-                    fmt,
-                    keep_with_caption_below=True,
-                )
                 cursor = _insert_caption_with_seq(
                     doc,
                     cursor,
@@ -3058,6 +3068,15 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     size_pt=10,
                     bold=True,
                     align=WD_ALIGN_PARAGRAPH.CENTER,
+                    keep_with_next_override=True,
+                )
+                cursor = _insert_table_after(
+                    doc,
+                    cursor,
+                    var_headers,
+                    var_rows,
+                    fmt,
+                    keep_with_caption_below=False,
                 )
                 table_counter += 1
 
@@ -3070,14 +3089,6 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     ["Author(s), Country (Year)", "Design", "Population", "Main results", "Limitations"]
                     if lang == "en"
                     else ["Auteur(s), Pays (Année)", "Devis", "Population", "Résultats principaux", "Limites"]
-                )
-                cursor = _insert_table_after(
-                    doc,
-                    cursor,
-                    syn_headers,
-                    syn_rows,
-                    fmt,
-                    keep_with_caption_below=True,
                 )
                 cursor = _insert_caption_with_seq(
                     doc,
@@ -3094,6 +3105,15 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     size_pt=10,
                     bold=True,
                     align=WD_ALIGN_PARAGRAPH.CENTER,
+                    keep_with_next_override=True,
+                )
+                cursor = _insert_table_after(
+                    doc,
+                    cursor,
+                    syn_headers,
+                    syn_rows,
+                    fmt,
+                    keep_with_caption_below=False,
                 )
                 table_counter += 1
 
@@ -3114,16 +3134,6 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                         else:
                             vals.append("")
                     gantt_rows.append(vals)
-                cursor = _insert_table_after(
-                    doc,
-                    cursor,
-                    headers,
-                    gantt_rows,
-                    fmt,
-                    colored_cells=colored,
-                    compact=True,
-                    keep_with_caption_below=True,
-                )
                 cursor = _insert_caption_with_seq(
                     doc,
                     cursor,
@@ -3135,6 +3145,17 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     size_pt=10,
                     bold=True,
                     align=WD_ALIGN_PARAGRAPH.CENTER,
+                    keep_with_next_override=True,
+                )
+                cursor = _insert_table_after(
+                    doc,
+                    cursor,
+                    headers,
+                    gantt_rows,
+                    fmt,
+                    colored_cells=colored,
+                    compact=True,
+                    keep_with_caption_below=False,
                 )
                 table_counter += 1
 
@@ -3156,16 +3177,6 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     if lang == "en"
                     else ["Désignation", "Prix unitaire (FCFA)", "Quantité", "Prix total (FCFA)"]
                 )
-                cursor = _insert_table_after(
-                    doc,
-                    cursor,
-                    budget_headers,
-                    budget_rows,
-                    fmt,
-                    colored_cells={(len(budget_rows) - 1, c): "EFE6E6" for c in range(4)},
-                    compact=True,
-                    keep_with_caption_below=True,
-                )
                 cursor = _insert_caption_with_seq(
                     doc,
                     cursor,
@@ -3177,6 +3188,17 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                     size_pt=10,
                     bold=True,
                     align=WD_ALIGN_PARAGRAPH.CENTER,
+                    keep_with_next_override=True,
+                )
+                cursor = _insert_table_after(
+                    doc,
+                    cursor,
+                    budget_headers,
+                    budget_rows,
+                    fmt,
+                    colored_cells={(len(budget_rows) - 1, c): "EFE6E6" for c in range(4)},
+                    compact=True,
+                    keep_with_caption_below=False,
                 )
                 table_counter += 1
 
