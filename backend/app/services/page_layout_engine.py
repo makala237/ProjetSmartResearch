@@ -208,6 +208,32 @@ def is_duplicate_heading(candidate: str, references: List[str]) -> bool:
     return False
 
 
+_IMPLICIT_SUBHEADING_RE = re.compile(
+    r"^(?:"
+    r"(?:[IVXLCDM]{1,4}\.\d+(?:\.\d+)*\.?)"
+    r"|(?:\d+(?:\.\d+){1,3}\.?)"
+    r"|(?:[A-Z]\s*[.)])"
+    r"|(?:[a-z]\s*\))"
+    r"|Objectif\s+(?:général|spécifique)"
+    r"|(?:General|Specific)\s+objective"
+    r")\s+\S",
+    re.IGNORECASE,
+)
+
+
+def _is_implicit_subheading(text: str) -> bool:
+    s = re.sub(r"\s+", " ", (text or "")).strip()
+    if not s or len(s) < 4 or len(s) > 115:
+        return False
+    if s.endswith((".", "?", "!", ";")):
+        return False
+    if _IMPLICIT_SUBHEADING_RE.match(s):
+        return True
+    if s.endswith(":") and len(s) <= 75 and len(s.split()) <= 10:
+        return True
+    return False
+
+
 class _BlockExtractorHTMLParser(HTMLParser):
     """Lightweight HTML parser extracting ordered paragraphs, headings, bullets, and tables."""
 
@@ -233,6 +259,8 @@ class _BlockExtractorHTMLParser(HTMLParser):
             return
         if kind == "heading" and self._heading_level > 0:
             self.items.append(("heading", (self._heading_level, txt)))
+        elif not self._in_li and _is_implicit_subheading(txt):
+            self.items.append(("heading", (3, txt)))
         else:
             self.items.append(("para", (self._in_li, txt)))
 
@@ -355,7 +383,10 @@ def _parse_markdown_items(md_str: str) -> List[Tuple[str, Any]]:
         plain = re.sub(r"^(?:[-*•])\s+", "", stripped)
         plain = plain.replace("**", "").replace("__", "").strip()
         if plain:
-            items.append(("para", (is_bullet, plain)))
+            if not is_bullet and _is_implicit_subheading(plain):
+                items.append(("heading", (3, clean_heading_text(plain))))
+            else:
+                items.append(("para", (is_bullet, plain)))
         i += 1
     return items
 
@@ -1229,7 +1260,10 @@ def plan_document_pagination(
     arabic_pages, borderline = _simulate_stream(arabic_blocks, usable_height_pt, stream="arabic")
 
     model_used = "deterministic-a4-solver"
-    decision_notes = "Allocation géométrique A4 exacte appliquée."
+    decision_notes = (
+        "Allocation géométrique A4 exacte appliquée — règle anti-titres orphelins active "
+        "(chaque titre/sous-titre hors cadre de chapitre reste sur la même page que son texte)."
+    )
     force_breaks: set[str] = set()
 
     if use_gemini_decision:

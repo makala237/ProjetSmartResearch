@@ -47,6 +47,59 @@ interface Module2Props {
   saving: boolean;
 }
 
+interface InlineMediaSegment {
+  kind: "html" | "table" | "image";
+  content: string;
+  mediaIndex: number;
+}
+
+function splitHtmlAroundInlineMedia(html: string): InlineMediaSegment[] {
+  const src = html || "";
+  const regex = /(<table\b[^>]*>[\s\S]*?<\/table>|<figure\b[^>]*>[\s\S]*?<\/figure>|<img\b[^>]*>)/gi;
+  const segments: InlineMediaSegment[] = [];
+  let lastIndex = 0;
+  let tableIdx = 0;
+  let imageIdx = 0;
+  let m: RegExpExecArray | null;
+
+  while ((m = regex.exec(src)) !== null) {
+    if (m.index > lastIndex) {
+      const before = src.slice(lastIndex, m.index);
+      if (before.trim()) {
+        segments.push({ kind: "html", content: before, mediaIndex: -1 });
+      }
+    }
+    const token = m[0];
+    if (/^<table\b/i.test(token)) {
+      segments.push({ kind: "table", content: token, mediaIndex: tableIdx });
+      tableIdx += 1;
+    } else {
+      segments.push({ kind: "image", content: token, mediaIndex: imageIdx });
+      imageIdx += 1;
+    }
+    lastIndex = regex.lastIndex;
+  }
+
+  if (lastIndex < src.length) {
+    const tail = src.slice(lastIndex);
+    if (tail.trim()) {
+      segments.push({ kind: "html", content: tail, mediaIndex: -1 });
+    }
+  }
+  return segments;
+}
+
+function formatPreviewHtmlChunk(htmlChunk: string): string {
+  return highlightPlaceholdersInHtml(htmlChunk).replace(
+    /<p([^>]*)>((?:(?:[IVXLCDM]{1,4}\.\d+(?:\.\d+)*\.?|\d+(?:\.\d+){1,3}\.?|\d{1,2}\s*[.)]|[A-Z]\s*[.)]|[a-z]\s*\))\s+[^<]{2,105}?))<\/p>/g,
+    (full, attrs, inner) => {
+      const t = inner.trim();
+      if (!t || /[.?!;]$/.test(t)) return full;
+      return `<p${attrs}><strong class="font-bold text-slate-900">${inner}</strong></p>`;
+    }
+  );
+}
+
 const DEDICATED_SUB_ANNEX_IDS = new Set([
   "annexe_notice_information",
   "annexe_consentement",
@@ -1956,20 +2009,142 @@ export function Module2Editor({
                           </p>
                         ) : hasHtml ? (
                           <div
-                            className={`mt-2 max-w-none text-sm text-slate-800 [&_h1]:mt-3 [&_h1]:mb-1.5 [&_h1]:font-bold [&_h1]:text-slate-900 [&_h2]:mt-3 [&_h2]:mb-1.5 [&_h2]:font-bold [&_h2]:text-slate-900 [&_h3]:mt-2.5 [&_h3]:mb-1 [&_h3]:font-bold [&_h3]:text-slate-900 [&_h4]:mt-2 [&_h4]:mb-1 [&_h4]:font-bold [&_h4]:text-slate-900 [&_h5]:mt-2 [&_h5]:font-bold [&_h5]:text-slate-900 [&_h6]:mt-2 [&_h6]:font-bold [&_h6]:text-slate-900 [&_strong]:font-bold [&_b]:font-bold ${
+                            className={`mt-2 max-w-none space-y-2 text-sm text-slate-800 [&_h1]:mt-3 [&_h1]:mb-1.5 [&_h1]:font-bold [&_h1]:text-slate-900 [&_h2]:mt-3 [&_h2]:mb-1.5 [&_h2]:font-bold [&_h2]:text-slate-900 [&_h3]:mt-2.5 [&_h3]:mb-1 [&_h3]:font-bold [&_h3]:text-slate-900 [&_h4]:mt-2 [&_h4]:mb-1 [&_h4]:font-bold [&_h4]:text-slate-900 [&_h5]:mt-2 [&_h5]:font-bold [&_h5]:text-slate-900 [&_h6]:mt-2 [&_h6]:font-bold [&_h6]:text-slate-900 [&_strong]:font-bold [&_b]:font-bold ${
                               spec.id === "toc" ? "text-left" : ""
                             }`}
-                            dangerouslySetInnerHTML={{
-                              __html: highlightPlaceholdersInHtml(cleanHtml).replace(
-                                /<p([^>]*)>((?:(?:[IVXLCDM]{1,4}\.\d+(?:\.\d+)*\.?|\d+(?:\.\d+){1,3}\.?|\d{1,2}\s*[.)]|[A-Z]\s*[.)]|[a-z]\s*\))\s+[^<]{2,105}?))<\/p>/g,
-                                (full, attrs, inner) => {
-                                  const t = inner.trim();
-                                  if (!t || /[.?!;]$/.test(t)) return full;
-                                  return `<p${attrs}><strong class="font-bold text-slate-900">${inner}</strong></p>`;
-                                }
-                              ),
-                            }}
-                          />
+                          >
+                            {splitHtmlAroundInlineMedia(cleanHtml).map((seg, sIdx) => {
+                              if (seg.kind === "html") {
+                                return (
+                                  <div
+                                    key={`h-${sIdx}`}
+                                    dangerouslySetInnerHTML={{
+                                      __html: formatPreviewHtmlChunk(seg.content),
+                                    }}
+                                  />
+                                );
+                              }
+                              const actionKey = `inline-${seg.kind}-${spec.id}-${seg.mediaIndex}`;
+                              if (seg.kind === "table") {
+                                return (
+                                  <div
+                                    key={`t-${sIdx}`}
+                                    className="my-3 rounded-lg border border-slate-200 bg-white p-2 shadow-xs"
+                                  >
+                                    <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-1 font-sans text-[11px]">
+                                      <span className="font-semibold text-slate-600">
+                                        {lang === "en"
+                                          ? `Embedded table #${seg.mediaIndex + 1}`
+                                          : `Tableau intégré n°${seg.mediaIndex + 1}`}
+                                      </span>
+                                      <div className="flex items-center gap-1.5">
+                                        <button
+                                          type="button"
+                                          disabled={deletingMediaId === actionKey}
+                                          onClick={async () => {
+                                            setDeletingMediaId(actionKey);
+                                            try {
+                                              const updated = await api.convertInlineTable(
+                                                project.project_id,
+                                                spec.id,
+                                                seg.mediaIndex
+                                              );
+                                              onProjectUpdated(updated);
+                                            } catch (err) {
+                                              onError(err instanceof Error ? err.message : String(err));
+                                            } finally {
+                                              setDeletingMediaId(null);
+                                            }
+                                          }}
+                                          className="inline-flex items-center gap-1 rounded border border-indigo-200 bg-indigo-50 px-2 py-0.5 font-medium text-indigo-700 hover:bg-indigo-100 disabled:opacity-40"
+                                          title={
+                                            lang === "en"
+                                              ? "Convert into an editable tool table"
+                                              : "Convertir en tableau éditable par l'outil"
+                                          }
+                                        >
+                                          <TableProperties className="h-3 w-3" />
+                                          {lang === "en" ? "Make editable" : "Rendre éditable"}
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={deletingMediaId === actionKey}
+                                          onClick={async () => {
+                                            setDeletingMediaId(actionKey);
+                                            try {
+                                              const updated = await api.removeInlineMedia(
+                                                project.project_id,
+                                                spec.id,
+                                                "table",
+                                                seg.mediaIndex
+                                              );
+                                              onProjectUpdated(updated);
+                                            } catch (err) {
+                                              onError(err instanceof Error ? err.message : String(err));
+                                            } finally {
+                                              setDeletingMediaId(null);
+                                            }
+                                          }}
+                                          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-40"
+                                          title={lang === "en" ? "Delete this table" : "Supprimer ce tableau"}
+                                        >
+                                          <Trash2 className="h-3 w-3" />
+                                          {lang === "en" ? "Remove" : "Retirer"}
+                                        </button>
+                                      </div>
+                                    </div>
+                                    <div
+                                      className="overflow-x-auto [&_table]:w-full [&_table]:border-collapse [&_table]:text-xs [&_td]:border [&_td]:border-slate-200 [&_td]:p-1.5 [&_th]:border [&_th]:border-slate-200 [&_th]:bg-slate-50 [&_th]:p-1.5 [&_th]:text-left [&_th]:font-semibold"
+                                      dangerouslySetInnerHTML={{ __html: seg.content }}
+                                    />
+                                  </div>
+                                );
+                              }
+                              return (
+                                <div
+                                  key={`img-${sIdx}`}
+                                  className="my-3 rounded-lg border border-slate-200 bg-white p-2 shadow-xs"
+                                >
+                                  <div className="mb-1.5 flex items-center justify-between border-b border-slate-100 pb-1 font-sans text-[11px]">
+                                    <span className="font-semibold text-slate-600">
+                                      {lang === "en"
+                                        ? `Embedded figure #${seg.mediaIndex + 1}`
+                                        : `Figure intégrée n°${seg.mediaIndex + 1}`}
+                                    </span>
+                                    <button
+                                      type="button"
+                                      disabled={deletingMediaId === actionKey}
+                                      onClick={async () => {
+                                        setDeletingMediaId(actionKey);
+                                        try {
+                                          const updated = await api.removeInlineMedia(
+                                            project.project_id,
+                                            spec.id,
+                                            "image",
+                                            seg.mediaIndex
+                                          );
+                                          onProjectUpdated(updated);
+                                        } catch (err) {
+                                          onError(err instanceof Error ? err.message : String(err));
+                                        } finally {
+                                          setDeletingMediaId(null);
+                                        }
+                                      }}
+                                      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-medium text-rose-600 hover:bg-rose-50 disabled:opacity-40"
+                                      title={lang === "en" ? "Delete this figure" : "Supprimer cette figure"}
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                      {lang === "en" ? "Remove" : "Retirer"}
+                                    </button>
+                                  </div>
+                                  <div
+                                    className="flex justify-center [&_img]:max-h-96 [&_img]:rounded"
+                                    dangerouslySetInnerHTML={{ __html: seg.content }}
+                                  />
+                                </div>
+                              );
+                            })}
+                          </div>
                         ) : hasText ? (
                           <p
                             className={`mt-1 whitespace-pre-wrap text-slate-800 ${
@@ -2014,7 +2189,30 @@ export function Module2Editor({
                                   )}
                                 {Array.isArray(matchedAutoAnnex.crf_fields) &&
                                 matchedAutoAnnex.crf_fields.length > 0 ? (
-                                  <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+                                  <div className="space-y-1.5">
+                                    <div className="flex items-center justify-end">
+                                      <button
+                                        type="button"
+                                        onClick={async () => {
+                                          try {
+                                            const updated = await api.deleteSectionTable(
+                                              project.project_id,
+                                              spec.id,
+                                              "__structured_crf__"
+                                            );
+                                            onProjectUpdated(updated);
+                                          } catch (err) {
+                                            onError(err instanceof Error ? err.message : String(err));
+                                          }
+                                        }}
+                                        className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-sans text-[11px] font-medium text-rose-600 hover:bg-rose-50"
+                                        title={lang === "en" ? "Delete this table" : "Supprimer ce tableau"}
+                                      >
+                                        <Trash2 className="h-3 w-3" />
+                                        {lang === "en" ? "Remove" : "Retirer"}
+                                      </button>
+                                    </div>
+                                    <div className="overflow-x-auto rounded border border-slate-200 bg-white">
                                     <table className="w-full text-left text-xs">
                                       <thead
                                         className="text-white"
@@ -2052,6 +2250,7 @@ export function Module2Editor({
                                         )}
                                       </tbody>
                                     </table>
+                                    </div>
                                   </div>
                                 ) : (
                                   <p className="font-sans text-xs italic text-slate-500">

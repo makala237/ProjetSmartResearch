@@ -2594,8 +2594,18 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
 
                 is_bullet, heading_level, is_center, runs = payload
                 plain_para_txt = "".join(r[0] for r in runs).strip()
-                is_heading = heading_level > 0 or (
-                    not is_bullet and _is_implicit_subtitle_line(plain_para_txt)
+                non_empty_runs = [r for r in runs if r[0].strip()]
+                is_short_all_bold = (
+                    not is_bullet
+                    and bool(non_empty_runs)
+                    and all(r[1] for r in non_empty_runs)
+                    and 3 <= len(plain_para_txt) <= 130
+                    and not plain_para_txt.endswith((".", "?", "!", ";"))
+                )
+                is_heading = (
+                    heading_level > 0
+                    or (not is_bullet and _is_implicit_subtitle_line(plain_para_txt))
+                    or is_short_all_bold
                 )
                 if is_heading and skip_duplicate_headings:
                     if is_duplicate_heading(plain_para_txt, skip_duplicate_headings):
@@ -2621,6 +2631,11 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
                         else (WD_ALIGN_PARAGRAPH.LEFT if is_heading else None)
                     )
                     _apply_paragraph_rules(p_obj, fmt, align_override=align_ov)
+                    if is_heading:
+                        # Rule: every heading/subheading (outside boxed full-page chapter dividers)
+                        # MUST stay on the same page as the start of its accompanying text.
+                        p_obj.paragraph_format.keep_with_next = True
+                        p_obj.paragraph_format.keep_together = True
                     if is_heading and int(getattr(fmt, "toc_depth", 2) or 2) >= 3:
                         _set_paragraph_outline(p_obj, level_zero_based=2)
                     if is_bullet:
@@ -3436,6 +3451,8 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
             cursor = insert_after(cursor, ann["title"], bold=True, size_pt=13, align_override=WD_ALIGN_PARAGRAPH.LEFT)
             if idx_ann > 0:
                 cursor.paragraph_format.page_break_before = True
+            cursor.paragraph_format.keep_with_next = True
+            cursor.paragraph_format.keep_together = True
             _set_paragraph_outline(cursor, 1)
             if ann.get("kind") == "data_collection":
                 cursor = _render_crf_form_in_docx(doc, cursor, ann, fmt, lang=lang)
@@ -3496,8 +3513,96 @@ def compile_protocol_docx(project: ProtocolProject, output_path: Path) -> Path:
         fmt,
         project=project,
     )
+    _enforce_no_orphan_headings(doc)
     apply_human_author_metadata_docx(doc, project)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
     return output_path
+
+
+def _enforce_no_orphan_headings(doc: Document) -> int:
+    """Guarantee that every heading/subheading (excluding full-page boxed chapter dividers)
+    stays on the same page as the start of its accompanying text via keep_with_next + keep_together.
+    Also removes empty spacer paragraphs trapped directly between a heading and its text.
+    """
+    heading_pat = re.compile(
+        r"^(?:"
+        r"[IVXLCDM]{1,4}\.\d+(?:\.\d+)*\.?\s+\S"
+        r"|\d+(?:\.\d+){1,3}\.?\s+\S"
+        r"|[a-z]\)\s+\S"
+        r"|[A-Z]\.\s+\S"
+        r"|ANNEXE\s+\d"
+        r"|ANNEX\s+\d"
+        r"|Objectif\s+(?:général|spécifique)"
+        r"|(?:General|Specific)\s+objective"
+        r"|IV\.\s+(?:Références|References)"
+        r")",
+        re.IGNORECASE,
+    )
+    caption_pat = re.compile(r"^(?:Figure|Tableau|Table)\s+\d", re.IGNORECASE)
+
+    def _is_boxed_or_pagebreak(el) -> bool:
+        if el is None:
+            return False
+        if el.xpath(".//*[local-name()='txbxContent']"):
+            return True
+        if el.xpath(".//*[local-name()='br' and @*[local-name()='type']='page']"):
+            return True
+        return False
+
+    body_started = False
+    enforced = 0
+    for p in list(doc.paragraphs):
+        txt = (p.text or "").strip()
+        if not body_started:
+            if re.match(r"^(?:CHAPITRE\s+I\b|CHAPTER\s+I\b|I\.1\.|INTRODUCTION\b)", txt, re.IGNORECASE):
+                body_started = True
+            else:
+                continue
+        if not txt or len(txt) > 180 or caption_pat.match(txt):
+            continue
+        # Exclude full-page boxed chapter dividers (grand_title_frame) and paragraphs followed by explicit page break
+        if _is_boxed_or_pagebreak(p._p):
+            continue
+        nxt = p._p.getnext()
+        if nxt is not None and nxt.xpath(".//*[local-name()='br' and @*[local-name()='type']='page']"):
+            continue
+        # Exclude TOC / Table of Figures entries
+        style_name = (p.style.name or "").lower() if p.style else ""
+        if "toc" in style_name or "table of figures" in style_name:
+            continue
+        # Exclude bullet items and signature/date lines
+        if txt.startswith(("•", "–", "-", "Fait à", "Yaoundé, le")):
+            continue
+
+        has_outline = bool(p._p.xpath(".//*[local-name()='outlineLvl']"))
+        non_empty_runs = [r for r in p.runs if (r.text or "").strip()]
+        is_all_bold = bool(non_empty_runs) and all(bool(r.bold) for r in non_empty_runs)
+        is_heading = (
+            has_outline
+            or bool(heading_pat.match(txt))
+            or (is_all_bold and len(txt) <= 130 and not txt.endswith((".", "?", "!", ";")))
+        )
+        if not is_heading:
+            continue
+
+        p.paragraph_format.keep_with_next = True
+        p.paragraph_format.keep_together = True
+        enforced += 1
+
+        # Remove an empty non-pagebreak spacer paragraph directly following a heading so keep_with_next
+        # binds the heading straight to the first body paragraph / table.
+        nxt = p._p.getnext()
+        if (
+            nxt is not None
+            and nxt.tag.endswith("}p")
+            and not "".join(nxt.xpath(".//*[local-name()='t']/text()")).strip()
+            and not nxt.xpath(".//*[local-name()='blip']")
+            and not nxt.xpath(".//*[local-name()='sectPr']")
+            and not _is_boxed_or_pagebreak(nxt)
+        ):
+            parent = nxt.getparent()
+            if parent is not None:
+                parent.remove(nxt)
+    return enforced

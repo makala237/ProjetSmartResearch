@@ -719,6 +719,33 @@ export const api = {
       method: "POST",
     }),
 
+  removeInlineMedia: (
+    projectId: string,
+    sectionId: string,
+    kind: "table" | "image",
+    index: number
+  ) =>
+    request<ProtocolProject>(
+      `/api/projects/${projectId}/sections/${sectionId}/inline-media/remove`,
+      {
+        method: "POST",
+        body: JSON.stringify({ kind, index }),
+      }
+    ),
+
+  convertInlineTable: (
+    projectId: string,
+    sectionId: string,
+    index: number
+  ) =>
+    request<ProtocolProject>(
+      `/api/projects/${projectId}/sections/${sectionId}/inline-media/convert-table`,
+      {
+        method: "POST",
+        body: JSON.stringify({ kind: "table", index }),
+      }
+    ),
+
   suggestSectionDiagram: (
     projectId: string,
     sectionId: string,

@@ -2114,6 +2114,16 @@ def delete_section_table(
         raise HTTPException(status_code=404, detail="Section inconnue.")
     sec = project.sections[section_id]
 
+    if table_id == "__structured_abbreviations__":
+        project.abbreviations = []
+        _sync_module2_queue(project)
+        return project_storage.save(project)
+
+    if table_id == "__structured_crf__":
+        project.crf_fields = []
+        _sync_module2_queue(project)
+        return project_storage.save(project)
+
     if table_id.startswith("__structured"):
         cleared = clear_structured_table_for_section(project, section_id)
         if not cleared:
@@ -2131,6 +2141,174 @@ def delete_section_table(
     if section_id in ("chap1_variables", "chap2_etat_connaissances", "chap3_chronogramme", "chap3_budget") and not sec.custom_tables:
         clear_structured_table_for_section(project, section_id)
     _strip_table_from_section_text(sec, removed.title)
+    _sync_module2_queue(project)
+    return project_storage.save(project)
+
+
+class InlineMediaActionRequest(BaseModel):
+    kind: str = "table"  # "table" | "image"
+    index: int = 0
+
+
+def _strip_nth_markdown_pipe_table(md: str, index: int) -> str:
+    """Remove the N-th Markdown pipe table block from markdown text."""
+    lines = (md or "").splitlines()
+    out: List[str] = []
+    i = 0
+    tbl_idx = 0
+    n = len(lines)
+    while i < n:
+        s = lines[i].strip()
+        if s.startswith("|") and s.endswith("|"):
+            j = i
+            block: List[str] = []
+            while j < n and lines[j].strip().startswith("|") and lines[j].strip().endswith("|"):
+                block.append(lines[j])
+                j += 1
+            if len(block) >= 2:
+                if tbl_idx == index:
+                    tbl_idx += 1
+                    i = j
+                    continue
+                tbl_idx += 1
+            out.extend(block)
+            i = j
+            continue
+        out.append(lines[i])
+        i += 1
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip()
+
+
+def _parse_single_html_table(table_html: str) -> Optional[tuple[List[str], List[List[str]]]]:
+    """Parse a single HTML <table>...</table> string into (headers, rows)."""
+    from html.parser import HTMLParser
+
+    class _OneTableParser(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.rows: List[List[str]] = []
+            self._cur_row: Optional[List[str]] = None
+            self._buf: List[str] = []
+            self._in_cell = False
+
+        def handle_starttag(self, tag: str, attrs) -> None:
+            t = tag.lower()
+            if t == "tr":
+                self._cur_row = []
+            elif t in ("td", "th") and self._cur_row is not None:
+                self._in_cell = True
+                self._buf = []
+
+        def handle_endtag(self, tag: str) -> None:
+            t = tag.lower()
+            if t in ("td", "th") and self._in_cell and self._cur_row is not None:
+                self._cur_row.append(re.sub(r"\s+", " ", "".join(self._buf)).strip())
+                self._in_cell = False
+                self._buf = []
+            elif t == "tr" and self._cur_row is not None:
+                if any(c for c in self._cur_row):
+                    self.rows.append(self._cur_row)
+                self._cur_row = None
+
+        def handle_data(self, data: str) -> None:
+            if self._in_cell:
+                self._buf.append(data)
+
+    p = _OneTableParser()
+    p.feed(table_html or "")
+    if len(p.rows) < 2:
+        return None
+    headers = p.rows[0]
+    col_n = len(headers)
+    norm_rows: List[List[str]] = []
+    for r in p.rows[1:]:
+        if len(r) < col_n:
+            norm_rows.append(r + [""] * (col_n - len(r)))
+        else:
+            norm_rows.append(r[:col_n])
+    return headers, norm_rows
+
+
+@app.post("/api/projects/{project_id}/sections/{section_id}/inline-media/remove", response_model=ProtocolProject)
+def remove_section_inline_media(
+    project_id: str,
+    section_id: str,
+    payload: InlineMediaActionRequest,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    """Remove the N-th inline HTML/Markdown <table> or <img> embedded inside a section's body."""
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+    sec = project.sections[section_id]
+    idx = max(0, int(payload.index))
+
+    if payload.kind == "table":
+        html_src = sec.content_html or ""
+        matches = list(re.finditer(r"<table\b[^>]*>.*?</table>", html_src, flags=re.IGNORECASE | re.DOTALL))
+        if idx < len(matches):
+            m = matches[idx]
+            sec.content_html = (html_src[: m.start()] + html_src[m.end() :]).strip()
+        if sec.content_markdown:
+            sec.content_markdown = _strip_nth_markdown_pipe_table(sec.content_markdown, idx)
+    elif payload.kind == "image":
+        html_src = sec.content_html or ""
+        matches = list(re.finditer(r"<figure\b[^>]*>.*?</figure>|<img\b[^>]*>", html_src, flags=re.IGNORECASE | re.DOTALL))
+        if idx < len(matches):
+            m = matches[idx]
+            sec.content_html = (html_src[: m.start()] + html_src[m.end() :]).strip()
+        if sec.content_markdown:
+            md_matches = list(re.finditer(r"!\[[^\]]*\]\([^)]+\)", sec.content_markdown))
+            if idx < len(md_matches):
+                mm = md_matches[idx]
+                sec.content_markdown = (sec.content_markdown[: mm.start()] + sec.content_markdown[mm.end() :]).strip()
+    else:
+        raise HTTPException(status_code=400, detail="Type de média inline invalide ('table' ou 'image').")
+
+    _sync_module2_queue(project)
+    return project_storage.save(project)
+
+
+@app.post("/api/projects/{project_id}/sections/{section_id}/inline-media/convert-table", response_model=ProtocolProject)
+def convert_section_inline_table(
+    project_id: str,
+    section_id: str,
+    payload: InlineMediaActionRequest,
+    current_user: UserRecord = Depends(require_module_write("module1")),
+) -> ProtocolProject:
+    """Convert the N-th inline HTML/Markdown table in a section into an editable tool table
+    (Chronogramme TimelineGrid, Budget, or SectionTable) and remove the raw inline copy.
+    """
+    from app.services.importer import route_structured_table_into_project
+
+    project = get_authorized_project(project_id, current_user)
+    if section_id not in project.sections:
+        raise HTTPException(status_code=404, detail="Section inconnue.")
+    sec = project.sections[section_id]
+    idx = max(0, int(payload.index))
+
+    html_src = sec.content_html or ""
+    matches = list(re.finditer(r"<table\b[^>]*>.*?</table>", html_src, flags=re.IGNORECASE | re.DOTALL))
+    if idx >= len(matches):
+        raise HTTPException(status_code=404, detail="Tableau inline introuvable.")
+    m = matches[idx]
+    parsed = _parse_single_html_table(m.group(0))
+    if parsed is None:
+        raise HTTPException(status_code=400, detail="Impossible de lire la structure de ce tableau.")
+    headers, rows = parsed
+
+    route_structured_table_into_project(
+        project=project,
+        sec=sec,
+        section_id=section_id,
+        title=f"Tableau converti — {section_id}",
+        headers=headers,
+        rows=rows,
+    )
+    sec.content_html = (html_src[: m.start()] + html_src[m.end() :]).strip()
+    if sec.content_markdown:
+        sec.content_markdown = _strip_nth_markdown_pipe_table(sec.content_markdown, idx)
+
     _sync_module2_queue(project)
     return project_storage.save(project)
 

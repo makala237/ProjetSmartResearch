@@ -10,13 +10,17 @@ from pypdf import PdfReader
 from app.data.fmsb_canvas import FMSB_SECTIONS
 from app.data.i18n import get_localized_canvas, normalize_lang
 from app.schemas.protocol import (
+    BudgetItem,
     EntryMode,
     InternalLibraryEntry,
     InternalSourceDocument,
     ProtocolProject,
     ReferenceItem,
     SectionState,
+    SectionTable,
     StepStatus,
+    TimelineGrid,
+    TimelineGridRow,
 )
 from app.services.annexe_engine import extract_all_sub_annexes_from_blocks
 from app.services.crf_builder import (
@@ -35,7 +39,10 @@ from app.services.drafting import deterministic_section_checks
 from app.services.figure_extractor import extract_images_from_uploaded_document
 from app.services.gemini_client import gemini_router
 from app.services.pipeline_tracker import emit_pipeline_step
-from app.services.rich_formatter import markdown_to_clean_html
+from app.services.rich_formatter import (
+    extract_markdown_tables_to_structured,
+    markdown_to_clean_html,
+)
 from app.services.vancouver import (
     format_vancouver_citation,
     parse_raw_vancouver_line,
@@ -464,6 +471,211 @@ def _extract_markdown_tables(md: str) -> List[str]:
     if len(curr) >= 3 and any("---" in l or ":---" in l for l in curr[:3]):
         tables.append("\n".join(curr).strip())
     return tables
+
+
+_TIMELINE_PERIOD_RE = re.compile(
+    r"(?:janv?|f[ée]vr?|mars?|avr|apr|mai|may|juin|jun|juil|jul|ao[ûu]t?|aug|sept?|oct|nov|d[ée]c|"
+    r"20\d{2}|m\s*\d{1,2}|s\s*\d{1,2}|t\s*[1-4]|q\s*[1-4]|sem(?:aine)?|trim(?:estre)?|mois|month)",
+    re.IGNORECASE,
+)
+_TIMELINE_INACTIVE_CELLS = {"", "-", "—", "–", "0", "non", "no", "false", "n/a", "na", "aucun", "none"}
+
+
+def is_timeline_table(headers: List[str], rows: List[List[str]], section_id: str = "") -> bool:
+    if not headers or len(headers) < 3 or not rows:
+        return False
+    if section_id == "chap3_chronogramme":
+        return True
+    first = (headers[0] or "").strip().lower()
+    period_hits = sum(1 for h in headers[1:] if _TIMELINE_PERIOD_RE.search(h or ""))
+    if period_hits >= 2 and any(k in first for k in ("activit", "étape", "etape", "tâche", "tache", "phase", "task", "milestone")):
+        return True
+    return period_hits >= 4
+
+
+def convert_table_to_timeline_grid(headers: List[str], rows: List[List[str]]) -> Optional[TimelineGrid]:
+    """Convert an imported matrix table (Activity × Periods) into an editable TimelineGrid."""
+    if not headers or len(headers) < 3 or not rows:
+        return None
+    periods = [str(h or "").strip() for h in headers[1:] if str(h or "").strip()]
+    if not periods:
+        return None
+    grid_rows: List[TimelineGridRow] = []
+    for r in rows:
+        if not r:
+            continue
+        activity = str(r[0] or "").strip()
+        if not activity or activity.lower() in ("activité", "activite", "activity", "tâche", "task", "total"):
+            continue
+        active_periods: List[str] = []
+        for idx, period_label in enumerate(periods):
+            cell_val = str(r[idx + 1] if idx + 1 < len(r) else "").strip()
+            if cell_val.lower() not in _TIMELINE_INACTIVE_CELLS:
+                active_periods.append(period_label)
+        grid_rows.append(TimelineGridRow(activity=activity, active_periods=active_periods))
+    if not grid_rows:
+        return None
+    return TimelineGrid(periods=periods, rows=grid_rows)
+
+
+def _parse_numeric_amount(val: str) -> float:
+    cleaned = re.sub(r"[^\d.,]", "", (val or "").replace("\xa0", "").replace(" ", ""))
+    if not cleaned:
+        return 0.0
+    if "," in cleaned and "." not in cleaned:
+        parts = cleaned.split(",")
+        if len(parts[-1]) <= 2:
+            cleaned = "".join(parts[:-1]) + "." + parts[-1]
+        else:
+            cleaned = cleaned.replace(",", "")
+    else:
+        cleaned = cleaned.replace(",", "")
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
+def is_budget_table(headers: List[str], rows: List[List[str]], section_id: str = "") -> bool:
+    if not headers or len(headers) < 3 or not rows:
+        return False
+    if section_id == "chap3_budget":
+        return True
+    joined = " ".join(h.lower() for h in headers)
+    return (
+        any(k in joined for k in ("désignation", "designation", "rubrique", "poste", "item"))
+        and any(k in joined for k in ("fcfa", "prix", "coût", "cout", "montant", "total", "cost"))
+    )
+
+
+def convert_table_to_budget_items(headers: List[str], rows: List[List[str]]) -> List[BudgetItem]:
+    """Convert an imported budget table into editable BudgetItem rows."""
+    if not headers or len(headers) < 2 or not rows:
+        return []
+    h_low = [str(h or "").strip().lower() for h in headers]
+    des_idx = next((i for i, h in enumerate(h_low) if any(k in h for k in ("désignation", "designation", "rubrique", "poste", "item", "libellé", "libelle"))), 0)
+    qty_idx = next((i for i, h in enumerate(h_low) if any(k in h for k in ("quantit", "qté", "qte", "qty", "nombre", "nb"))), -1)
+    unit_idx = next((i for i, h in enumerate(h_low) if any(k in h for k in ("unitaire", "pu", "unit"))), -1)
+    tot_idx = next((i for i, h in enumerate(h_low) if "total" in h or "montant" in h), len(headers) - 1)
+
+    items: List[BudgetItem] = []
+    for r in rows:
+        if not r or des_idx >= len(r):
+            continue
+        designation = str(r[des_idx] or "").strip()
+        low_des = designation.lower()
+        if not designation or any(k in low_des for k in ("sous-total", "sous total", "total général", "total general", "grand total", "imprévu", "imprevu", "contingency")):
+            continue
+        if low_des in ("total", "désignation", "designation"):
+            continue
+        qty = _parse_numeric_amount(str(r[qty_idx])) if 0 <= qty_idx < len(r) else 1.0
+        if qty <= 0:
+            qty = 1.0
+        unit_cost = _parse_numeric_amount(str(r[unit_idx])) if 0 <= unit_idx < len(r) else 0.0
+        total_val = _parse_numeric_amount(str(r[tot_idx])) if 0 <= tot_idx < len(r) else 0.0
+        if unit_cost <= 0 and total_val > 0:
+            unit_cost = round(total_val / qty, 2)
+        if total_val <= 0 and unit_cost > 0:
+            total_val = round(unit_cost * qty, 2)
+        items.append(
+            BudgetItem(
+                category="Budget importé",
+                designation=designation,
+                quantity=qty,
+                unit_cost_fcfa=unit_cost,
+                total_fcfa=total_val,
+            )
+        )
+    return items
+
+
+def route_structured_table_into_project(
+    project: ProtocolProject,
+    sec: SectionState,
+    section_id: str,
+    title: str,
+    headers: List[str],
+    rows: List[List[str]],
+    anchor_hint: str = "",
+) -> str:
+    """Route a single extracted table into TimelineGrid, Budget, or editable SectionTable.
+    Returns one of: 'timeline', 'budget', 'custom_table', 'skipped'.
+    """
+    if not headers or len(headers) < 2 or not rows:
+        return "skipped"
+
+    if is_timeline_table(headers, rows, section_id):
+        grid = convert_table_to_timeline_grid(headers, rows)
+        if grid is not None:
+            project.timeline_grid = grid
+            sec.suppress_structured_table = False
+            sec.custom_tables = [
+                t for t in sec.custom_tables
+                if not is_timeline_table(t.headers, t.rows, section_id)
+            ]
+            return "timeline"
+
+    if is_budget_table(headers, rows, section_id):
+        b_items = convert_table_to_budget_items(headers, rows)
+        if b_items:
+            project.budget = b_items
+            sec.suppress_structured_table = False
+            sec.custom_tables = [
+                t for t in sec.custom_tables
+                if not is_budget_table(t.headers, t.rows, section_id)
+            ]
+            return "budget"
+
+    sig = (tuple(h.strip().lower() for h in headers), len(rows), (rows[0][0].strip().lower() if rows and rows[0] else ""))
+    for existing in sec.custom_tables:
+        ex_sig = (
+            tuple(h.strip().lower() for h in existing.headers),
+            len(existing.rows),
+            (existing.rows[0][0].strip().lower() if existing.rows and existing.rows[0] else ""),
+        )
+        if ex_sig == sig:
+            return "custom_table"
+
+    sec.custom_tables.append(
+        SectionTable(
+            title=title or "Tableau importé",
+            anchor_hint=anchor_hint[:140],
+            headers=headers,
+            rows=rows,
+        )
+    )
+    return "custom_table"
+
+
+def extract_and_route_imported_tables(
+    project: ProtocolProject,
+    sec: SectionState,
+    section_id: str,
+    reassembled_text: str,
+    fallback_title: str = "Tableau importé",
+) -> str:
+    """Extract Markdown pipe tables from imported section text and route them into editable tools
+    (TimelineGrid, Budget, or SectionTable) so they never duplicate as non-deletable inline tables.
+    """
+    if section_id in ("cover_page", "references", "annexe_fiche_collecte", "toc", "abbreviations", "list_tables", "list_figures"):
+        return reassembled_text
+    cleaned_md, extracted = extract_markdown_tables_to_structured(
+        reassembled_text,
+        fallback_title=fallback_title,
+    )
+    if not extracted:
+        return reassembled_text
+    for tbl in extracted:
+        route_structured_table_into_project(
+            project=project,
+            sec=sec,
+            section_id=section_id,
+            title=str(tbl.get("title") or fallback_title),
+            headers=[str(h) for h in (tbl.get("headers") or [])],
+            rows=[[str(c) for c in r] for r in (tbl.get("rows") or [])],
+            anchor_hint=str(tbl.get("anchor_hint") or ""),
+        )
+    return cleaned_md
 
 
 def _fallback_detect_citability(filename: str, front_text: str) -> SourceCitabilityMetadata:
@@ -924,10 +1136,18 @@ Tâches (NE RECOPIE PAS le texte des blocs, renvoie UNIQUEMENT les numéros de b
             continue
         reassembled_text = "\n\n".join(valid_blocks)
         sec = project.sections[item.section_id]
-        sec.content_markdown = reassembled_text
-        sec.content_html = markdown_to_clean_html(reassembled_text)
+        # Extract & route any imported tables into editable tools (Chronogramme, Budget, or SectionTable)
+        cleaned_text = extract_and_route_imported_tables(
+            project=project,
+            sec=sec,
+            section_id=item.section_id,
+            reassembled_text=reassembled_text,
+            fallback_title=f"Tableau — {item.section_id}",
+        )
+        sec.content_markdown = cleaned_text
+        sec.content_html = markdown_to_clean_html(cleaned_text)
         sec.status = StepStatus(item.status)
-        det_notes = deterministic_section_checks(project, item.section_id, reassembled_text)
+        det_notes = deterministic_section_checks(project, item.section_id, cleaned_text)
         sec.audit_notes = det_notes + ([item.diagnostic_note] if item.diagnostic_note else [])
         mapped_count += 1
         mapped_section_ids.add(item.section_id)
