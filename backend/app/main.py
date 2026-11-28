@@ -888,7 +888,7 @@ def _ensure_local_or_blob(project_id: str, path_str: Optional[str]) -> Optional[
     fname = path_str.replace("\\", "/").rsplit("/", 1)[-1].strip()
     if not fname:
         return None
-    canonical = UPLOADS_DIR / project_id / fname
+    canonical = get_settings().storage_dir / "uploads" / project_id / fname
     if canonical.exists() and canonical.is_file():
         return canonical
     blob = get_blob_storage()
